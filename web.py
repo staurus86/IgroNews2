@@ -1459,63 +1459,71 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           </div>
         </div>
 
-        <!-- Preview -->
-        <div class="editor-preview-card">
-          <div id="editor-preview" style="color:#8899a6;font-size:0.9em">
+        <!-- Preview + Result in same card with tabs -->
+        <div class="editor-preview-card" style="display:flex;flex-direction:column">
+          <div style="display:flex;align-items:center;gap:0;margin-bottom:12px;border-bottom:1px solid #22303c;padding-bottom:0">
+            <button class="editor-view-tab active" id="tab-preview-btn" onclick="switchEditorView('preview')" style="padding:8px 16px;background:none;border:none;border-bottom:2px solid #1da1f2;color:#1da1f2;cursor:pointer;font-size:0.9em;font-weight:500">Оригинал</button>
+            <button class="editor-view-tab" id="tab-result-btn" onclick="switchEditorView('result')" style="padding:8px 16px;background:none;border:none;border-bottom:2px solid transparent;color:#8899a6;cursor:pointer;font-size:0.9em">Результат</button>
+            <div style="flex:1"></div>
+            <div id="rw-copy-buttons" style="display:none;gap:6px;display:none">
+              <button class="btn btn-sm btn-success" onclick="copyRewrite()" title="Заголовок + текст">&#128203; Текст</button>
+              <button class="btn btn-sm btn-secondary" onclick="copyRewriteSeo()" title="SEO-поля">SEO</button>
+              <button class="btn btn-sm btn-secondary" onclick="copyRewriteJson()" title="Весь JSON">{}</button>
+              <button class="btn btn-sm btn-secondary" onclick="copyRewriteHtml()" title="Как HTML">&lt;/&gt;</button>
+            </div>
+          </div>
+
+          <!-- Preview view -->
+          <div id="editor-view-preview" style="flex:1;overflow-y:auto;color:#8899a6;font-size:0.9em">
             <div style="text-align:center;padding:60px 20px">
               <div style="font-size:2em;margin-bottom:10px;opacity:0.3">&#128196;</div>
               <div>Выберите новость из списка слева</div>
               <div style="font-size:0.85em;margin-top:6px">Используйте чекбоксы для выбора нескольких новостей на объединение</div>
             </div>
           </div>
-        </div>
 
-        <!-- Result -->
-        <div class="editor-result-card" id="rewrite-result" style="display:none">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-            <h2 style="margin:0;font-size:1em" id="rw-result-header">Результат</h2>
-            <div style="display:flex;gap:6px">
-              <button class="btn btn-sm btn-success" onclick="copyRewrite()" title="Скопировать заголовок + текст">&#128203; Текст</button>
-              <button class="btn btn-sm btn-secondary" onclick="copyRewriteSeo()" title="Скопировать SEO-поля">SEO</button>
-              <button class="btn btn-sm btn-secondary" onclick="copyRewriteJson()" title="Скопировать весь JSON">{} JSON</button>
-              <button class="btn btn-sm btn-secondary" onclick="copyRewriteHtml()" title="Скопировать как HTML">&lt;/&gt; HTML</button>
+          <!-- Result view -->
+          <div id="editor-view-result" style="display:none;flex:1;overflow-y:auto">
+            <div id="rw-empty" style="text-align:center;padding:60px 20px;color:#8899a6">
+              <div style="font-size:2em;margin-bottom:10px;opacity:0.3">&#9998;</div>
+              <div>Нажмите «Переписать» или «Объединить»</div>
             </div>
-          </div>
-
-          <div class="rw-field">
-            <div class="rw-field-label">Заголовок</div>
-            <div class="rw-field-value" id="rw-title" style="color:#1da1f2;font-size:1.05em;font-weight:500"></div>
-            <button class="rw-copy-btn" onclick="copyField('rw-title')">Копировать</button>
-          </div>
-
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-            <div class="rw-field">
-              <div class="rw-field-label">SEO Title (до 60 симв.)</div>
-              <div class="rw-field-value" id="rw-seo-title" style="color:#17bf63"></div>
-              <button class="rw-copy-btn" onclick="copyField('rw-seo-title')">Копировать</button>
-            </div>
-            <div class="rw-field">
-              <div class="rw-field-label">Meta Description (до 160 симв.)</div>
-              <div class="rw-field-value" id="rw-seo-desc" style="color:#8899a6"></div>
-              <button class="rw-copy-btn" onclick="copyField('rw-seo-desc')">Копировать</button>
-            </div>
-          </div>
-
-          <div class="rw-field" id="rw-tags-wrap">
-            <div class="rw-field-label">Теги</div>
-            <div class="rw-field-value" id="rw-tags"></div>
-            <button class="rw-copy-btn" onclick="copyField('rw-tags')">Копировать</button>
-          </div>
-
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
-            <div>
-              <div style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Переписанный текст</div>
-              <div id="rw-text" style="white-space:pre-wrap;color:#e1e8ed;font-size:0.88em;line-height:1.6;padding:14px;background:#22303c;border-radius:8px;max-height:400px;overflow-y:auto;position:relative">
+            <div id="rewrite-result" style="display:none">
+              <div class="rw-field">
+                <div class="rw-field-label">Заголовок</div>
+                <div class="rw-field-value" id="rw-title" style="color:#1da1f2;font-size:1.05em;font-weight:500"></div>
+                <button class="rw-copy-btn" onclick="copyField('rw-title')">Копировать</button>
               </div>
-            </div>
-            <div>
-              <div style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Оригинал</div>
-              <div id="rw-original" style="white-space:pre-wrap;color:#8899a6;font-size:0.83em;line-height:1.5;padding:14px;background:#22303c;border-radius:8px;max-height:400px;overflow-y:auto"></div>
+
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                <div class="rw-field">
+                  <div class="rw-field-label">SEO Title <span id="rw-seo-title-len" style="color:#657786"></span></div>
+                  <div class="rw-field-value" id="rw-seo-title" style="color:#17bf63"></div>
+                  <button class="rw-copy-btn" onclick="copyField('rw-seo-title')">Копировать</button>
+                </div>
+                <div class="rw-field">
+                  <div class="rw-field-label">Meta Description <span id="rw-seo-desc-len" style="color:#657786"></span></div>
+                  <div class="rw-field-value" id="rw-seo-desc" style="color:#8899a6"></div>
+                  <button class="rw-copy-btn" onclick="copyField('rw-seo-desc')">Копировать</button>
+                </div>
+              </div>
+
+              <div class="rw-field" id="rw-tags-wrap">
+                <div class="rw-field-label">Теги</div>
+                <div class="rw-field-value" id="rw-tags"></div>
+                <button class="rw-copy-btn" onclick="copyField('rw-tags')">Копировать</button>
+              </div>
+
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
+                <div>
+                  <div style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Переписанный текст</div>
+                  <div id="rw-text" style="white-space:pre-wrap;color:#e1e8ed;font-size:0.88em;line-height:1.6;padding:14px;background:#22303c;border-radius:8px;max-height:400px;overflow-y:auto"></div>
+                </div>
+                <div>
+                  <div style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Оригинал</div>
+                  <div id="rw-original" style="white-space:pre-wrap;color:#8899a6;font-size:0.83em;line-height:1.5;padding:14px;background:#22303c;border-radius:8px;max-height:400px;overflow-y:auto"></div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -2697,6 +2705,31 @@ function selectStyle(btn) {
   _editorSelectedStyle = btn.dataset.style;
 }
 
+function switchEditorView(view) {
+  const previewEl = document.getElementById('editor-view-preview');
+  const resultEl = document.getElementById('editor-view-result');
+  const previewBtn = document.getElementById('tab-preview-btn');
+  const resultBtn = document.getElementById('tab-result-btn');
+  const copyBtns = document.getElementById('rw-copy-buttons');
+  if (view === 'result') {
+    previewEl.style.display = 'none';
+    resultEl.style.display = 'block';
+    previewBtn.style.borderBottomColor = 'transparent';
+    previewBtn.style.color = '#8899a6';
+    resultBtn.style.borderBottomColor = '#1da1f2';
+    resultBtn.style.color = '#1da1f2';
+    copyBtns.style.display = _lastRewrite ? 'flex' : 'none';
+  } else {
+    previewEl.style.display = 'block';
+    resultEl.style.display = 'none';
+    previewBtn.style.borderBottomColor = '#1da1f2';
+    previewBtn.style.color = '#1da1f2';
+    resultBtn.style.borderBottomColor = 'transparent';
+    resultBtn.style.color = '#8899a6';
+    copyBtns.style.display = 'none';
+  }
+}
+
 function updateMergeCounter() {
   const cnt = _editorMergeIds.size;
   const el = document.getElementById('merge-counter');
@@ -2762,7 +2795,8 @@ async function selectEditorNews(id) {
   _editorNewsId = id;
   document.getElementById('rewrite-btn').disabled = false;
   filterEditorNews();
-  const preview = document.getElementById('editor-preview');
+  switchEditorView('preview');
+  const preview = document.getElementById('editor-view-preview');
   preview.innerHTML = '<div style="text-align:center;padding:30px;color:#8899a6">Загрузка...</div>';
   const r = await api('/api/news/detail', {news_id: id});
   if (r.status !== 'ok') { toast(r.message, true); return; }
@@ -2797,6 +2831,8 @@ async function selectEditorNews(id) {
   html += `<div style="padding:12px;background:#22303c;border-radius:8px;font-size:0.85em;max-height:350px;overflow-y:auto;white-space:pre-wrap;line-height:1.55;color:#d9d9d9">${esc(n.plain_text||'Текст не загружен')}</div>`;
 
   preview.innerHTML = html;
+  // Store original text for result comparison
+  window._editorOriginalText = (n.title||'') + '\n\n' + (n.plain_text||'');
 }
 
 async function rewriteNews() {
@@ -2810,15 +2846,7 @@ async function rewriteNews() {
   document.getElementById('rewrite-btn').disabled = false;
   if (r.status !== 'ok') { toast(r.message, true); return; }
   _lastRewrite = r.result;
-  document.getElementById('rw-result-header').textContent = 'Результат — ' + _editorSelectedStyle;
-  document.getElementById('rw-title').textContent = r.result.title || '';
-  document.getElementById('rw-seo-title').textContent = r.result.seo_title || '';
-  document.getElementById('rw-seo-desc').textContent = r.result.seo_description || '';
-  document.getElementById('rw-tags').innerHTML = (r.result.tags||[]).map(t => `<span class="tag tag-release" style="cursor:pointer" onclick="copyField(null,'${esc(t)}')">${esc(t)}</span>`).join(' ');
-  document.getElementById('rw-text').textContent = r.result.text || '';
-  document.getElementById('rw-original').textContent = r.original_title + '\n\n' + (document.querySelector('#editor-preview div[style*="pre-wrap"]')?.textContent || '');
-  document.getElementById('rewrite-result').style.display = 'block';
-  document.getElementById('rewrite-result').scrollIntoView({behavior:'smooth', block:'start'});
+  showRewriteResult(r.result, window._editorOriginalText || r.original_title);
   toast('Переписано!');
 }
 
@@ -2832,18 +2860,33 @@ async function mergeSelected() {
   document.getElementById('merge-btn').disabled = _editorMergeIds.size < 2;
   if (r.status !== 'ok') { toast(r.message, true); return; }
   _lastRewrite = r.result;
-  document.getElementById('rw-result-header').textContent = 'Объединённая новость';
-  document.getElementById('rw-title').textContent = r.result.merged_title || '';
-  document.getElementById('rw-seo-title').textContent = 'Лучший источник: ' + (r.result.best_source||'');
-  document.getElementById('rw-seo-desc').textContent = 'Источники: ' + (r.sources||[]).join(', ');
-  const facts = r.result.unique_facts || [];
-  document.getElementById('rw-tags').innerHTML = facts.map(f => `<span class="tag tag-release">${esc(f)}</span>`).join(' ');
-  document.getElementById('rw-tags-wrap').querySelector('.rw-field-label').textContent = 'Уникальные факты';
-  document.getElementById('rw-text').textContent = r.result.merged_text || '';
-  document.getElementById('rw-original').textContent = 'Источники объединения:\n' + (r.sources||[]).map((s,i) => (i+1)+'. '+s).join('\n');
-  document.getElementById('rewrite-result').style.display = 'block';
-  document.getElementById('rewrite-result').scrollIntoView({behavior:'smooth', block:'start'});
+  const mergeResult = {
+    title: r.result.merged_title || '',
+    text: r.result.merged_text || '',
+    seo_title: 'Лучший источник: ' + (r.result.best_source||''),
+    seo_description: 'Источники: ' + (r.sources||[]).join(', '),
+    tags: r.result.unique_facts || [],
+  };
+  showRewriteResult(mergeResult, 'Источники:\n' + (r.sources||[]).map((s,i) => (i+1)+'. '+s).join('\n'), true);
   toast('Объединено!');
+}
+
+function showRewriteResult(result, originalText, isMerge) {
+  document.getElementById('rw-title').textContent = result.title || '';
+  const seoTitle = result.seo_title || '';
+  const seoDesc = result.seo_description || '';
+  document.getElementById('rw-seo-title').textContent = seoTitle;
+  document.getElementById('rw-seo-desc').textContent = seoDesc;
+  document.getElementById('rw-seo-title-len').textContent = seoTitle ? '(' + seoTitle.length + ')' : '';
+  document.getElementById('rw-seo-desc-len').textContent = seoDesc ? '(' + seoDesc.length + ')' : '';
+  const tagsLabel = isMerge ? 'Уникальные факты' : 'Теги';
+  document.getElementById('rw-tags-wrap').querySelector('.rw-field-label').textContent = tagsLabel;
+  document.getElementById('rw-tags').innerHTML = (result.tags||[]).map(t => `<span class="tag tag-release" style="cursor:pointer" onclick="copyField(null,'${esc(t)}')">${esc(t)}</span>`).join(' ');
+  document.getElementById('rw-text').textContent = result.text || '';
+  document.getElementById('rw-original').textContent = originalText || '';
+  document.getElementById('rw-empty').style.display = 'none';
+  document.getElementById('rewrite-result').style.display = 'block';
+  switchEditorView('result');
 }
 
 function copyField(elId, directText) {
