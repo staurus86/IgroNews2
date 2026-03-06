@@ -161,6 +161,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/merge": lambda: self._merge_news(body),
             "/api/news/detail": lambda: self._news_detail(body),
             "/api/export_sheets_bulk": lambda: self._export_sheets_bulk(body),
+            "/api/analyze_news": lambda: self._analyze_news(body),
             "/api/articles/save": lambda: self._save_article(body),
             "/api/articles/update": lambda: self._update_article(body),
             "/api/articles/delete": lambda: self._delete_article(body),
@@ -1041,6 +1042,79 @@ async function login() {
                 analysis = dict(arow)
         self._json({"status": "ok", "news": news, "analysis": analysis})
 
+    def _analyze_news(self, body):
+        """Полный анализ одной новости: viral, freshness, quality, relevance, sentiment, tags, trends, keyso."""
+        news_id = body.get("news_id")
+        if not news_id:
+            self._json({"status": "error", "message": "news_id required"})
+            return
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
+        row = cur.fetchone()
+        if not row:
+            self._json({"status": "error", "message": "Not found"})
+            return
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            news = dict(zip(columns, row))
+        else:
+            news = dict(row)
+
+        from checks.viral_score import viral_score
+        from checks.freshness import check_freshness
+        from checks.quality import check_quality
+        from checks.relevance import check_relevance
+        from checks.sentiment import analyze_sentiment
+        from checks.tags import auto_tag
+        from checks.momentum import get_momentum
+
+        result = {
+            "viral": viral_score(news),
+            "freshness": check_freshness(news),
+            "quality": check_quality(news),
+            "relevance": check_relevance(news),
+            "sentiment": analyze_sentiment(news),
+            "tags": auto_tag(news),
+            "momentum": get_momentum(news),
+        }
+
+        # Get existing analysis data (trends, keyso, llm)
+        cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (news_id,))
+        arow = cur.fetchone()
+        if arow:
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                analysis = dict(zip(columns, arow))
+            else:
+                analysis = dict(arow)
+            import json
+            try:
+                result["trends_data"] = json.loads(analysis.get("trends_data", "{}"))
+            except Exception:
+                result["trends_data"] = {}
+            try:
+                result["keyso_data"] = json.loads(analysis.get("keyso_data", "{}"))
+            except Exception:
+                result["keyso_data"] = {}
+            result["llm_recommendation"] = analysis.get("llm_recommendation", "")
+            result["llm_trend_forecast"] = analysis.get("llm_trend_forecast", "")
+            try:
+                result["bigrams"] = json.loads(analysis.get("bigrams", "[]"))
+            except Exception:
+                result["bigrams"] = []
+        else:
+            result["trends_data"] = {}
+            result["keyso_data"] = {}
+            result["llm_recommendation"] = ""
+            result["llm_trend_forecast"] = ""
+            result["bigrams"] = []
+
+        total = sum(result[k]["score"] for k in ("viral", "freshness", "quality", "relevance")) // 4
+        result["total_score"] = min(100, total + result["momentum"]["score"] // 5)
+        self._json({"status": "ok", "analysis": result})
+
     # --- Articles ---
     def _get_articles(self):
         conn = get_connection()
@@ -1748,6 +1822,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
             </button>
             <button class="btn btn-warning" onclick="mergeSelected()" id="merge-btn" disabled style="white-space:nowrap">
               &#128279; Объединить
+            </button>
+            <button class="btn btn-secondary" onclick="analyzeEditorNews()" id="analyze-btn" disabled style="white-space:nowrap">
+              &#128202; Анализ
             </button>
             <span id="rewrite-loading" style="color:#8899a6;font-size:0.85em"></span>
           </div>
@@ -2649,7 +2726,7 @@ function renderReviewRows(results) {
       <td style="color:${q.pass?'#17bf63':'#e0245e'}">${q.score}</td>
       <td style="color:${rel.pass?'#17bf63':'#e0245e'}">${rel.score}</td>
       <td>${f.score} <span style="color:#8899a6;font-size:0.8em">${f.status||''}</span></td>
-      <td>${v.score} <span style="color:#8899a6;font-size:0.8em">${v.level||''}</span></td>
+      <td>${v.score} <span style="color:#8899a6;font-size:0.8em">${v.level||''}</span>${(v.triggers||[]).length?'<div style="margin-top:2px;display:flex;flex-wrap:wrap;gap:2px">'+v.triggers.map(t=>{const c=t.weight>=40?'#e0245e':t.weight>=20?'#ffad1f':'#1da1f2';return `<span style="font-size:0.7em;padding:1px 5px;background:${c}18;border-radius:8px;color:${c}" title="+${t.weight}">${t.label}</span>`;}).join('')+'</div>':''}</td>
       <td style="color:${sentColor}">${sent.score||0} ${sent.label||''}</td>
       <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis">${tags}</td>
       <td><b style="color:${r.total_score>=60?'#17bf63':r.total_score>=30?'#ffad1f':'#e0245e'}">${r.total_score}</b></td>
@@ -3220,6 +3297,7 @@ function toggleMerge(id, checked) {
 async function selectEditorNews(id) {
   _editorNewsId = id;
   document.getElementById('rewrite-btn').disabled = false;
+  document.getElementById('analyze-btn').disabled = false;
   filterEditorNews();
   switchEditorView('preview');
   const preview = document.getElementById('editor-view-preview');
@@ -3244,20 +3322,27 @@ async function selectEditorNews(id) {
     html += `<div style="margin-bottom:8px;padding:6px 10px;background:#22303c;border-radius:6px;font-size:0.85em"><span style="color:#8899a6">Desc:</span> ${esc(n.description).slice(0,300)}</div>`;
   }
 
+  // Analysis badges from stored data
   if (a) {
-    html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;font-size:0.82em">`;
-    if (a.llm_trend_forecast) html += `<span style="padding:3px 8px;background:#22303c;border-radius:12px">Score: <b style="color:#ffad1f">${a.llm_trend_forecast}</b></span>`;
-    if (a.llm_recommendation) html += `<span style="padding:3px 8px;background:#22303c;border-radius:12px">${esc(a.llm_recommendation)}</span>`;
-    if (a.bigrams) { try { const bg = JSON.parse(a.bigrams); if (bg.length) html += `<span style="padding:3px 8px;background:#22303c;border-radius:12px;color:#8899a6">${bg.slice(0,5).map(b=>b[0]).join(', ')}</span>`; } catch(e){} }
+    html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;font-size:0.82em">`;
+    if (a.llm_trend_forecast) html += `<span style="padding:3px 10px;background:#ffad1f20;border:1px solid #ffad1f40;border-radius:12px;color:#ffad1f">LLM Score: <b>${a.llm_trend_forecast}</b></span>`;
+    if (a.llm_recommendation) html += `<span style="padding:3px 10px;background:#22303c;border-radius:12px">${esc(a.llm_recommendation)}</span>`;
+    if (a.bigrams) { try { const bg = JSON.parse(a.bigrams); if (bg.length) html += `<span style="padding:3px 10px;background:#22303c;border-radius:12px;color:#8899a6">${bg.slice(0,5).map(b=>b[0]).join(', ')}</span>`; } catch(e){} }
+    // Trends data
+    if (a.trends_data) { try { const td = JSON.parse(a.trends_data); const tKeys = Object.entries(td).filter(([k,v])=>v); if (tKeys.length) html += `<span style="padding:3px 10px;background:#1da1f220;border:1px solid #1da1f240;border-radius:12px;color:#1da1f2">Trends: ${tKeys.map(([k,v])=>k+':'+v).join(' ')}</span>`; } catch(e){} }
+    // Keyso data
+    if (a.keyso_data) { try { const kd = JSON.parse(a.keyso_data); if (kd.freq) html += `<span style="padding:3px 10px;background:#17bf6320;border:1px solid #17bf6340;border-radius:12px;color:#17bf63">Keys.so: ${kd.freq}</span>`; } catch(e){} }
     html += `</div>`;
   }
+
+  // Placeholder for analysis panel
+  html += `<div id="editor-analysis-panel"></div>`;
 
   const textLen = (n.plain_text||'').length;
   html += `<div style="font-size:0.75em;color:#8899a6;margin-bottom:4px">Текст (${textLen} симв.)</div>`;
   html += `<div style="padding:12px;background:#22303c;border-radius:8px;font-size:0.85em;max-height:350px;overflow-y:auto;white-space:pre-wrap;line-height:1.55;color:#d9d9d9">${esc(n.plain_text||'Текст не загружен')}</div>`;
 
   preview.innerHTML = html;
-  // Store original text for result comparison
   window._editorOriginalText = (n.title||'') + '\n\n' + (n.plain_text||'');
 }
 
@@ -3295,6 +3380,107 @@ async function mergeSelected() {
   };
   showRewriteResult(mergeResult, 'Источники:\n' + (r.sources||[]).map((s,i) => (i+1)+'. '+s).join('\n'), true);
   toast('Объединено!');
+}
+
+async function analyzeEditorNews() {
+  if (!_editorNewsId) { toast('Выберите новость', true); return; }
+  const loadEl = document.getElementById('rewrite-loading');
+  loadEl.innerHTML = '<span style="display:inline-flex;align-items:center;gap:6px"><span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#17bf63;border-radius:50%;animation:spin .8s linear infinite;display:inline-block"></span> Анализируем...</span>';
+  const r = await api('/api/analyze_news', {news_id: _editorNewsId});
+  loadEl.textContent = '';
+  if (r.status !== 'ok') { toast(r.message, true); return; }
+  const a = r.analysis;
+  renderAnalysisPanel(a);
+  toast('Анализ завершён!');
+}
+
+function renderAnalysisPanel(a) {
+  const panel = document.getElementById('editor-analysis-panel');
+  if (!panel) return;
+
+  const triggerColor = (level) => level==='high'?'#e0245e':level==='medium'?'#ffad1f':level==='low'?'#1da1f2':'#38444d';
+  const scoreBar = (score, max, color) => `<div style="display:flex;align-items:center;gap:8px"><div style="flex:1;height:6px;background:#22303c;border-radius:3px;overflow:hidden"><div style="width:${Math.min(100,score)}%;height:100%;background:${color};border-radius:3px"></div></div><span style="font-size:0.82em;font-weight:600;color:${color}">${score}</span></div>`;
+
+  let html = '<div style="margin:12px 0;padding:14px;background:#15202b;border:1px solid #22303c;border-radius:10px">';
+  html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px"><span style="font-size:0.8em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px">Полный анализ</span>';
+  html += `<span style="padding:4px 12px;border-radius:12px;font-weight:600;font-size:0.9em;background:${a.total_score>=60?'#17bf6320':a.total_score>=30?'#ffad1f20':'#e0245e20'};color:${a.total_score>=60?'#17bf63':a.total_score>=30?'#ffad1f':'#e0245e'}">Общий: ${a.total_score}/100</span></div>`;
+
+  // Score bars
+  html += '<div style="display:grid;grid-template-columns:80px 1fr;gap:6px 10px;margin-bottom:12px;font-size:0.82em">';
+  html += `<span style="color:#8899a6">Виральность</span>${scoreBar(a.viral.score,100,triggerColor(a.viral.level))}`;
+  html += `<span style="color:#8899a6">Качество</span>${scoreBar(a.quality.score,100,a.quality.pass?'#17bf63':'#e0245e')}`;
+  html += `<span style="color:#8899a6">Релевантность</span>${scoreBar(a.relevance.score,100,a.relevance.pass?'#17bf63':'#e0245e')}`;
+  html += `<span style="color:#8899a6">Свежесть</span>${scoreBar(a.freshness.score,100,a.freshness.score>=50?'#17bf63':'#ffad1f')}`;
+  html += `<span style="color:#8899a6">Моментум</span>${scoreBar(a.momentum.score,100,'#1da1f2')}`;
+  html += '</div>';
+
+  // Viral triggers
+  if (a.viral.triggers && a.viral.triggers.length) {
+    html += '<div style="margin-bottom:10px"><span style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px">Виральные триггеры</span>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:5px">';
+    a.viral.triggers.forEach(t => {
+      const col = t.weight>=40?'#e0245e':t.weight>=20?'#ffad1f':'#1da1f2';
+      html += `<span style="padding:3px 10px;background:${col}18;border:1px solid ${col}40;border-radius:12px;font-size:0.8em;color:${col}" title="Weight: ${t.weight}">${t.label} <b>+${t.weight}</b></span>`;
+    });
+    html += '</div></div>';
+  } else {
+    html += '<div style="margin-bottom:10px;font-size:0.82em;color:#657786">Виральные триггеры не обнаружены</div>';
+  }
+
+  // Sentiment
+  if (a.sentiment) {
+    const sc = a.sentiment.label==='positive'?'#17bf63':a.sentiment.label==='negative'?'#e0245e':'#8899a6';
+    html += `<div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;font-size:0.82em">`;
+    html += `<span style="color:#8899a6">Тональность:</span>`;
+    html += `<span style="padding:2px 8px;background:${sc}18;border:1px solid ${sc}40;border-radius:10px;color:${sc}">${a.sentiment.label} (${a.sentiment.score})</span>`;
+    html += `</div>`;
+  }
+
+  // Tags
+  if (a.tags && a.tags.length) {
+    html += '<div style="margin-bottom:10px"><span style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px">Авто-теги</span>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px">';
+    a.tags.forEach(t => { html += `<span class="tag tag-${t.id}" style="font-size:0.8em">${t.label}</span>`; });
+    html += '</div></div>';
+  }
+
+  // Trends + Keyso
+  const hasTrends = a.trends_data && Object.keys(a.trends_data).length;
+  const hasKeyso = a.keyso_data && (a.keyso_data.freq || a.keyso_data.similar);
+  if (hasTrends || hasKeyso || a.bigrams?.length) {
+    html += '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:0.82em">';
+    if (hasTrends) {
+      html += '<div style="padding:8px 12px;background:#22303c;border-radius:8px;flex:1;min-width:120px"><span style="color:#8899a6;font-size:0.9em">Google Trends</span>';
+      Object.entries(a.trends_data).forEach(([k,v]) => {
+        if (v) html += `<div style="margin-top:3px">${k}: <b style="color:#1da1f2">${v}</b></div>`;
+      });
+      html += '</div>';
+    }
+    if (hasKeyso) {
+      html += '<div style="padding:8px 12px;background:#22303c;border-radius:8px;flex:1;min-width:120px"><span style="color:#8899a6;font-size:0.9em">Keys.so</span>';
+      if (a.keyso_data.freq) html += `<div style="margin-top:3px">Частота: <b style="color:#17bf63">${a.keyso_data.freq}</b></div>`;
+      if (a.keyso_data.similar?.length) html += `<div style="margin-top:3px;color:#8899a6">Похожие: ${a.keyso_data.similar.slice(0,5).join(', ')}</div>`;
+      html += '</div>';
+    }
+    if (a.bigrams?.length) {
+      html += '<div style="padding:8px 12px;background:#22303c;border-radius:8px;flex:1;min-width:120px"><span style="color:#8899a6;font-size:0.9em">Биграммы</span>';
+      html += `<div style="margin-top:3px;color:#e1e8ed">${a.bigrams.slice(0,8).map(b=>Array.isArray(b)?b[0]:b).join(', ')}</div>`;
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
+  // LLM recommendation
+  if (a.llm_recommendation || a.llm_trend_forecast) {
+    html += `<div style="margin-top:10px;padding:8px 12px;background:#22303c;border-radius:8px;font-size:0.82em">`;
+    html += `<span style="color:#8899a6">LLM:</span> `;
+    if (a.llm_trend_forecast) html += `Score <b style="color:#ffad1f">${a.llm_trend_forecast}</b> `;
+    if (a.llm_recommendation) html += `— ${esc(a.llm_recommendation)}`;
+    html += '</div>';
+  }
+
+  html += '</div>';
+  panel.innerHTML = html;
 }
 
 function showRewriteResult(result, originalText, isMerge) {
