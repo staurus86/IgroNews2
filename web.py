@@ -1381,20 +1381,35 @@ async function login() {
         if not vid:
             self._json({"status": "error", "message": "id required"})
             return
-        # Get prompt name
-        cur.execute(f"SELECT prompt_name FROM prompt_versions WHERE id = {ph}", (vid,))
+        # Get prompt name and content
+        cur.execute(f"SELECT prompt_name, content FROM prompt_versions WHERE id = {ph}", (vid,))
         row = cur.fetchone()
         if not row:
             self._json({"status": "error", "message": "not found"})
             return
-        name = row[0] if _is_postgres() else row["prompt_name"]
+        if _is_postgres():
+            name, content = row[0], row[1]
+        else:
+            name, content = row["prompt_name"], row["content"]
         # Deactivate all for this name
         cur.execute(f"UPDATE prompt_versions SET is_active = 0 WHERE prompt_name = {ph}", (name,))
         # Activate this one
         cur.execute(f"UPDATE prompt_versions SET is_active = 1 WHERE id = {ph}", (vid,))
         if not _is_postgres():
             conn.commit()
-        self._json({"status": "ok"})
+        # Apply to live prompts
+        import apis.llm as llm
+        prompt_map = {
+            "trend_forecast": "PROMPT_TREND_FORECAST",
+            "merge_analysis": "PROMPT_MERGE_ANALYSIS",
+            "keyso_queries": "PROMPT_KEYSO_QUERIES",
+            "rewrite": "PROMPT_REWRITE",
+        }
+        attr = prompt_map.get(name)
+        if attr and hasattr(llm, attr):
+            setattr(llm, attr, content)
+            logger.info("Activated prompt version %s for %s", vid, name)
+        self._json({"status": "ok", "prompt_name": name, "applied": bool(attr)})
 
     def _generate_digest(self, body):
         """Генерирует дайджест за указанный период."""
@@ -1420,17 +1435,25 @@ async function login() {
 
         from apis.llm import _call_llm
         news_text = "\n".join(f"- [{n['source']}] {n['title']}" for n in news_list)
-        prompt = f"""Ты — редактор игрового медиа. Составь краткий дайджест «Главное за {'неделю' if period == 'week' else 'день'}» из этих новостей.
+        period_label = 'неделю' if period == 'week' else 'день'
+        prompt = f"""Ты — главный редактор крупного игрового портала. Составь профессиональный дайджест «Главное за {period_label}» из новостей ниже.
 
-Новости:
+## Новости ({len(news_list)} шт.):
 {news_text}
 
-Формат ответа JSON:
+## Правила:
+1. title — яркий заголовок дайджеста (напр. «Игровой дайджест: GTA 6, новый патч Elden Ring и скандал вокруг Ubisoft»)
+2. summary — связный текст на 4-6 предложений, охватывающий самые значимые события, не простое перечисление
+3. top_news — 3-5 самых важных новостей, одной фразой каждая (не копируй заголовки дословно, перефразируй)
+4. trends — 2-3 тенденции, которые прослеживаются в потоке новостей (напр. «Рост интереса к ретро-играм», «Волна переносов релизов»)
+5. Язык: русский
+
+Ответь строго JSON без markdown:
 {{
   "title": "Заголовок дайджеста",
-  "summary": "3-5 предложений — самое важное",
-  "top_news": ["Главная новость 1", "Главная новость 2", "Главная новость 3"],
-  "trends": ["Тренд 1", "Тренд 2"]
+  "summary": "Связный обзорный текст",
+  "top_news": ["Ключевая новость 1", "Ключевая новость 2", "Ключевая новость 3"],
+  "trends": ["Тенденция 1", "Тенденция 2"]
 }}"""
         result = _call_llm(prompt)
         if result:
@@ -4962,7 +4985,38 @@ setInterval(loadQueue, 15000);
 </html>"""
 
 
+def _load_active_prompts():
+    """Загружает активные версии промптов из БД при старте."""
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT prompt_name, content FROM prompt_versions WHERE is_active = 1")
+        import apis.llm as llm
+        prompt_map = {
+            "trend_forecast": "PROMPT_TREND_FORECAST",
+            "merge_analysis": "PROMPT_MERGE_ANALYSIS",
+            "keyso_queries": "PROMPT_KEYSO_QUERIES",
+            "rewrite": "PROMPT_REWRITE",
+        }
+        if _is_postgres():
+            for row in cur.fetchall():
+                attr = prompt_map.get(row[0])
+                if attr and hasattr(llm, attr):
+                    setattr(llm, attr, row[1])
+                    logger.info("Loaded active prompt: %s", row[0])
+        else:
+            for row in cur.fetchall():
+                r = dict(row)
+                attr = prompt_map.get(r["prompt_name"])
+                if attr and hasattr(llm, attr):
+                    setattr(llm, attr, r["content"])
+                    logger.info("Loaded active prompt: %s", r["prompt_name"])
+    except Exception as e:
+        logger.debug("Could not load active prompts: %s", e)
+
+
 def start_web():
+    _load_active_prompts()
     server = HTTPServer(("0.0.0.0", PORT), AdminHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
