@@ -692,19 +692,23 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
 .container { max-width:1400px; margin:0 auto; padding:15px; }
 h1 { color:#1da1f2; font-size:1.5em; }
 h2 { color:#1da1f2; font-size:1.1em; margin-bottom:10px; }
-header { background:#192734; padding:12px 20px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid #22303c; }
+header { background:linear-gradient(135deg,#192734 0%,#1a3a4a 100%); padding:12px 20px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid #22303c; box-shadow:0 2px 8px rgba(0,0,0,0.3); }
 
 /* Tabs */
-.tabs { display:flex; gap:0; background:#192734; border-radius:8px; margin:15px 0; overflow:hidden; }
-.tab { padding:10px 20px; cursor:pointer; color:#8899a6; border:none; background:none; font-size:0.9em; transition:all .2s; }
+.tabs { display:flex; gap:0; background:#192734; border-radius:8px; margin:15px 0; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,0.2); }
+.tab { padding:10px 20px; cursor:pointer; color:#8899a6; border:none; background:none; font-size:0.9em; transition:all .2s; position:relative; }
 .tab:hover { color:#e1e8ed; background:#22303c; }
 .tab.active { color:#1da1f2; background:#22303c; border-bottom:2px solid #1da1f2; }
-.panel { display:none; }
+
+.panel { display:none; animation:fadeIn .3s; }
 .panel.active { display:block; }
+@keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
 
 /* Stats */
 .stats { display:flex; gap:12px; margin-bottom:20px; flex-wrap:wrap; }
-.stat { background:#192734; border-radius:10px; padding:15px 20px; min-width:120px; }
+.stat { background:#192734; border-radius:10px; padding:15px 20px; min-width:120px; cursor:pointer; transition:all .2s; border:1px solid transparent; }
+.stat:hover { border-color:#38444d; transform:translateY(-2px); box-shadow:0 4px 12px rgba(0,0,0,0.3); }
+.stat.active-filter { border-color:#1da1f2; box-shadow:0 0 0 1px #1da1f2; }
 .stat .num { font-size:1.8em; font-weight:bold; color:#1da1f2; }
 .stat .lbl { color:#8899a6; font-size:0.8em; }
 .stat.new .num { color:#ffad1f; }
@@ -712,56 +716,81 @@ header { background:#192734; padding:12px 20px; display:flex; align-items:center
 
 /* Buttons */
 .btn { padding:8px 16px; border:none; border-radius:6px; cursor:pointer; font-size:0.85em; transition:all .2s; }
+.btn:active { transform:scale(0.96); }
 .btn-primary { background:#1da1f2; color:#fff; }
-.btn-primary:hover { background:#1a91da; }
+.btn-primary:hover { background:#1a91da; box-shadow:0 2px 8px rgba(29,161,242,0.3); }
 .btn-success { background:#17bf63; color:#fff; }
-.btn-success:hover { background:#14a857; }
+.btn-success:hover { background:#14a857; box-shadow:0 2px 8px rgba(23,191,99,0.3); }
 .btn-danger { background:#e0245e; color:#fff; }
 .btn-danger:hover { background:#c81e52; }
 .btn-secondary { background:#38444d; color:#e1e8ed; }
 .btn-secondary:hover { background:#4a5568; }
 .btn-sm { padding:4px 10px; font-size:0.8em; }
-.btn-group { display:flex; gap:8px; margin-bottom:15px; flex-wrap:wrap; }
+.btn-group { display:flex; gap:8px; margin-bottom:15px; flex-wrap:wrap; align-items:center; }
+.btn-warning { background:#ffad1f; color:#000; }
+.btn-warning:hover { background:#e69d1c; }
 
 /* Table */
 table { width:100%; border-collapse:collapse; background:#192734; border-radius:10px; overflow:hidden; font-size:0.85em; }
-th { background:#22303c; text-align:left; padding:10px 12px; color:#8899a6; font-size:0.8em; white-space:nowrap; }
+th { background:#22303c; text-align:left; padding:10px 12px; color:#8899a6; font-size:0.8em; white-space:nowrap; position:sticky; top:0; z-index:2; }
 td { padding:8px 12px; border-bottom:1px solid #22303c; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+tr { transition:background .15s; }
 tr:hover { background:#22303c; }
+tr.highlighted { background:#1da1f215; }
 a { color:#1da1f2; text-decoration:none; }
-.badge { padding:2px 8px; border-radius:10px; font-size:0.75em; }
+a:hover { text-decoration:underline; }
+.badge { padding:2px 8px; border-radius:10px; font-size:0.75em; font-weight:500; }
 .badge-new { background:#ffad1f22; color:#ffad1f; }
+.badge-in_review { background:#794bc422; color:#b48eff; }
+.badge-duplicate { background:#e0245e22; color:#e0245e; }
 .badge-processed { background:#17bf6322; color:#17bf63; }
 .badge-approved { background:#1da1f222; color:#1da1f2; }
+.badge-rejected { background:#e0245e22; color:#e0245e; }
+.badge-ready { background:#17bf6322; color:#17bf63; }
 
 /* Forms */
 .form-group { margin-bottom:12px; }
 .form-group label { display:block; color:#8899a6; font-size:0.85em; margin-bottom:4px; }
-input, select { background:#22303c; border:1px solid #38444d; color:#e1e8ed; padding:8px 12px; border-radius:6px; width:100%; font-size:0.9em; }
+input, select { background:#22303c; border:1px solid #38444d; color:#e1e8ed; padding:8px 12px; border-radius:6px; width:100%; font-size:0.9em; transition:border-color .2s; }
 textarea { background:#22303c; border:1px solid #38444d; color:#e1e8ed; padding:10px; border-radius:6px; width:100%; font-size:0.85em; font-family:monospace; min-height:150px; resize:vertical; }
-input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; }
+input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; box-shadow:0 0 0 2px #1da1f233; }
 
 /* Grid */
 .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:15px; }
-.card { background:#192734; border-radius:10px; padding:15px; }
+.card { background:#192734; border-radius:10px; padding:15px; transition:box-shadow .2s; }
+.card:hover { box-shadow:0 2px 12px rgba(0,0,0,0.2); }
 
 /* Toast */
-.toast { position:fixed; bottom:20px; right:20px; background:#17bf63; color:#fff; padding:12px 20px; border-radius:8px; z-index:999; display:none; font-size:0.9em; }
+.toast { position:fixed; bottom:20px; right:20px; background:#17bf63; color:#fff; padding:12px 20px; border-radius:8px; z-index:999; display:none; font-size:0.9em; box-shadow:0 4px 16px rgba(0,0,0,0.4); animation:slideUp .3s; }
 .toast.error { background:#e0245e; }
+@keyframes slideUp { from{transform:translateY(20px);opacity:0} to{transform:translateY(0);opacity:1} }
 
-/* Filters */
+/* Dashboard Filters */
+.dash-filters { display:flex; gap:8px; margin-bottom:12px; align-items:center; flex-wrap:wrap; background:#192734; padding:12px 15px; border-radius:10px; }
+.dash-filters select, .dash-filters input { width:auto; min-width:130px; padding:6px 10px; font-size:0.85em; }
+.dash-filters input[type="search"] { min-width:200px; }
+.dash-filters input[type="date"] { min-width:140px; }
+.dash-filters .filter-label { color:#8899a6; font-size:0.8em; margin-right:-4px; }
+.dash-filters .filter-sep { width:1px; height:24px; background:#38444d; margin:0 4px; }
+.active-filters { display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
+.active-filter-chip { background:#1da1f233; color:#1da1f2; padding:3px 10px; border-radius:12px; font-size:0.78em; display:flex; align-items:center; gap:4px; cursor:pointer; transition:all .2s; }
+.active-filter-chip:hover { background:#1da1f255; }
+.active-filter-chip .chip-x { font-weight:bold; }
+
+/* Filters (news tab) */
 .filters { display:flex; gap:10px; margin-bottom:15px; align-items:center; flex-wrap:wrap; }
 .filters select, .filters input { width:auto; min-width:150px; }
 
 /* Modal */
 .modal-overlay { display:none; position:fixed; top:0;left:0;right:0;bottom:0; background:rgba(0,0,0,0.7); z-index:100; justify-content:center; align-items:center; }
 .modal-overlay.show { display:flex; }
-.modal { background:#192734; border-radius:12px; padding:25px; width:450px; max-width:90vw; }
+.modal { background:#192734; border-radius:12px; padding:25px; width:450px; max-width:90vw; box-shadow:0 8px 32px rgba(0,0,0,0.5); animation:fadeIn .2s; }
 .modal h2 { margin-bottom:15px; }
 .modal-buttons { display:flex; gap:10px; margin-top:15px; justify-content:flex-end; }
 
 /* Tags */
-.tag { display:inline-block; padding:1px 6px; border-radius:8px; font-size:0.7em; margin:1px; white-space:nowrap; }
+.tag { display:inline-block; padding:2px 7px; border-radius:8px; font-size:0.7em; margin:1px; white-space:nowrap; cursor:pointer; transition:all .15s; }
+.tag:hover { filter:brightness(1.3); transform:scale(1.05); }
 .tag-release { background:#17bf6333; color:#17bf63; }
 .tag-update { background:#1da1f233; color:#1da1f2; }
 .tag-announcement { background:#794bc433; color:#b48eff; }
@@ -771,7 +800,15 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 .tag-rumor { background:#ffad1f33; color:#ffad1f; }
 .tag-review { background:#17bf6333; color:#1da1f2; }
 .tag-industry { background:#794bc433; color:#b48eff; }
-.group-marker { display:inline-block; padding:1px 6px; border-radius:8px; font-size:0.7em; font-weight:bold; }
+.group-marker { display:inline-block; padding:2px 7px; border-radius:8px; font-size:0.72em; font-weight:bold; cursor:pointer; transition:all .15s; }
+.group-marker:hover { filter:brightness(1.3); transform:scale(1.1); }
+
+/* Table counter */
+.table-info { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; color:#8899a6; font-size:0.82em; }
+
+/* Empty state */
+.empty-state { text-align:center; padding:40px 20px; color:#8899a6; }
+.empty-state .empty-icon { font-size:2.5em; margin-bottom:10px; opacity:0.5; }
 
 /* Responsive */
 @media(max-width:768px) {
@@ -779,6 +816,8 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   .stats { gap:8px; }
   .stat { min-width:80px; padding:10px; }
   .stat .num { font-size:1.4em; }
+  .dash-filters { flex-direction:column; }
+  .dash-filters select, .dash-filters input { width:100%; }
 }
 </style>
 </head>
@@ -806,21 +845,85 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   <!-- DASHBOARD -->
   <div class="panel active" id="panel-dashboard">
     <div class="stats" id="stats"></div>
+
+    <!-- Dashboard Filters -->
+    <div class="dash-filters">
+      <span class="filter-label">Поиск:</span>
+      <input type="search" id="dash-search" placeholder="По заголовку..." oninput="applyDashFilters()">
+      <span class="filter-sep"></span>
+      <span class="filter-label">Источник:</span>
+      <select id="dash-source" onchange="applyDashFilters()">
+        <option value="">Все</option>
+      </select>
+      <span class="filter-sep"></span>
+      <span class="filter-label">Статус:</span>
+      <select id="dash-status" onchange="applyDashFilters()">
+        <option value="">Все</option>
+        <option value="new">Новые</option>
+        <option value="in_review">На проверке</option>
+        <option value="approved">Одобрены</option>
+        <option value="processed">Обогащены</option>
+        <option value="duplicate">Дубликаты</option>
+        <option value="rejected">Отклонены</option>
+      </select>
+      <span class="filter-sep"></span>
+      <span class="filter-label">Тег:</span>
+      <select id="dash-tag" onchange="applyDashFilters()">
+        <option value="">Все</option>
+        <option value="release">Release</option>
+        <option value="update">Update/Patch</option>
+        <option value="announcement">Announcement</option>
+        <option value="esports">Esports</option>
+        <option value="hardware">Hardware</option>
+        <option value="controversy">Controversy</option>
+        <option value="rumor">Rumor/Leak</option>
+        <option value="review">Review</option>
+        <option value="industry">Industry</option>
+      </select>
+      <span class="filter-sep"></span>
+      <span class="filter-label">С:</span>
+      <input type="date" id="dash-date-from" onchange="applyDashFilters()">
+      <span class="filter-label">По:</span>
+      <input type="date" id="dash-date-to" onchange="applyDashFilters()">
+      <button class="btn btn-sm btn-secondary" onclick="resetDashFilters()">Сбросить</button>
+    </div>
+    <div class="active-filters" id="active-filters"></div>
+
+    <!-- Action buttons -->
     <div class="btn-group">
       <button class="btn btn-primary" onclick="sendToReview()">Отправить на проверку</button>
       <button class="btn btn-success" onclick="runProcess()">Обогатить одобренные</button>
-      <button class="btn btn-secondary" onclick="loadDashboardGroups()">Найти группы</button>
+      <button class="btn btn-warning" onclick="loadDashboardGroups()">Найти группы</button>
       <button class="btn btn-secondary" onclick="selectAll()">Выбрать все</button>
       <button class="btn btn-secondary" onclick="deselectAll()">Снять выбор</button>
       <button class="btn btn-secondary" onclick="selectGroup()">Выбрать группу</button>
-      <button class="btn btn-secondary" onclick="loadNews()">Обновить</button>
-      <span id="selected-count" style="color:#8899a6;font-size:0.9em;margin-left:10px"></span>
+      <span id="selected-count" style="color:#1da1f2;font-size:0.9em;font-weight:500;margin-left:6px"></span>
     </div>
     <div id="groups-summary" style="display:none;margin-bottom:12px"></div>
+
+    <div class="table-info">
+      <span id="dash-table-count"></span>
+      <span id="dash-showing"></span>
+    </div>
     <table>
-      <thead><tr><th style="width:30px"><input type="checkbox" id="check-all" onchange="toggleAll(this)"></th><th>Источник</th><th>Заголовок</th><th>Теги</th><th>Группа</th><th>Опубл.</th><th>Собр.</th><th>Статус</th><th>Скор</th><th>Действия</th></tr></thead>
+      <thead><tr>
+        <th style="width:30px"><input type="checkbox" id="check-all" onchange="toggleAll(this)"></th>
+        <th>Источник</th>
+        <th>Заголовок</th>
+        <th>Теги</th>
+        <th>Группа</th>
+        <th>Опубл.</th>
+        <th>Собр.</th>
+        <th>Статус</th>
+        <th>Скор</th>
+        <th>Действия</th>
+      </tr></thead>
       <tbody id="dash-news"></tbody>
     </table>
+    <div id="dash-empty" class="empty-state" style="display:none">
+      <div class="empty-icon">&#128270;</div>
+      <div>Нет новостей по заданным фильтрам</div>
+    </div>
 
   </div>
 
@@ -1054,17 +1157,30 @@ setInterval(() => {
   document.getElementById('clock').textContent = new Date().toLocaleString('ru-RU');
 }, 1000);
 
-// Stats
+// Stats — clickable cards filter by status
 async function loadStats() {
   const s = await api('/api/stats');
-  document.getElementById('stats').innerHTML =
-    `<div class="stat"><div class="num">${s.total}</div><div class="lbl">Total</div></div>`+
-    `<div class="stat new"><div class="num">${s.new}</div><div class="lbl">New</div></div>`+
-    `<div class="stat"><div class="num">${s.in_review||0}</div><div class="lbl">In Review</div></div>`+
-    `<div class="stat"><div class="num">${s.duplicate||0}</div><div class="lbl">Duplicate</div></div>`+
-    `<div class="stat"><div class="num">${s.approved||0}</div><div class="lbl">Approved</div></div>`+
-    `<div class="stat proc"><div class="num">${s.processed||0}</div><div class="lbl">Enriched</div></div>`+
-    `<div class="stat"><div class="num">${s.ready||0}</div><div class="lbl">Ready</div></div>`;
+  const items = [
+    {key:'',     num:s.total,         lbl:'Всего',       cls:''},
+    {key:'new',  num:s.new,           lbl:'Новые',       cls:'new'},
+    {key:'in_review', num:s.in_review||0, lbl:'На проверке', cls:''},
+    {key:'duplicate', num:s.duplicate||0, lbl:'Дубликаты',   cls:''},
+    {key:'approved',  num:s.approved||0,  lbl:'Одобрены',    cls:''},
+    {key:'processed', num:s.processed||0, lbl:'Обогащены',   cls:'proc'},
+    {key:'ready',     num:s.ready||0,     lbl:'Готовы',      cls:''},
+  ];
+  const activeStatus = document.getElementById('dash-status')?.value || '';
+  document.getElementById('stats').innerHTML = items.map(i =>
+    `<div class="stat ${i.cls} ${activeStatus===i.key?'active-filter':''}" onclick="filterByStatus('${i.key}')">
+      <div class="num">${i.num}</div><div class="lbl">${i.lbl}</div>
+    </div>`
+  ).join('');
+}
+
+function filterByStatus(status) {
+  document.getElementById('dash-status').value = status;
+  applyDashFilters();
+  loadStats();
 }
 
 // Dashboard groups data
@@ -1121,67 +1237,181 @@ function selectGroup() {
   selectGroupById(gid);
 }
 
-function renderTags(newsId) {
-  const tags = _dashTags[newsId] || [];
-  if (!tags.length) return '<span style="color:#38444d">-</span>';
-  return tags.map(t => `<span class="tag tag-${t.id}">${t.label}</span>`).join('');
-}
-
-function renderGroup(newsId) {
-  const gid = _dashIdToGroup[newsId];
-  if (!gid) return '';
-  const color = GROUP_COLORS[(gid - 1) % GROUP_COLORS.length];
-  const g = _dashGroups.find(x => x.group === gid);
-  return `<span class="group-marker" style="background:${color}33;color:${color}" title="${g ? g.count + ' шт' : ''}">G${gid}</span>`;
-}
+// renderTags and renderGroup replaced by renderTagsClickable and renderGroupClickable
 
 // News
+let _allNews = []; // full news array for client-side filtering
+
 async function loadNews() {
   const status = document.getElementById('filter-status')?.value || '';
   const source = document.getElementById('filter-source')?.value || '';
   const limit = document.getElementById('filter-limit')?.value || 100;
-  let url = `/api/news?limit=${limit}`;
-  if (status) url += `&status=${status}`;
-  if (source) url += `&source=${encodeURIComponent(source)}`;
+  let url = `/api/news?limit=500`;
 
   const news = await api(url);
+  _allNews = news;
 
-  // Dashboard table
+  // Populate source filters
+  const sources = [...new Set(news.map(n => n.source))].sort();
+  const dashSrc = document.getElementById('dash-source');
+  if (dashSrc && dashSrc.options.length <= 1) {
+    sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; dashSrc.appendChild(o); });
+  }
+  const srcFilter = document.getElementById('filter-source');
+  if (srcFilter && srcFilter.options.length <= 1) {
+    sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; srcFilter.appendChild(o); });
+  }
+
+  applyDashFilters();
+  renderNewsTab(news, status, source, limit);
+}
+
+function applyDashFilters() {
+  const search = (document.getElementById('dash-search')?.value || '').toLowerCase();
+  const source = document.getElementById('dash-source')?.value || '';
+  const status = document.getElementById('dash-status')?.value || '';
+  const tag = document.getElementById('dash-tag')?.value || '';
+  const dateFrom = document.getElementById('dash-date-from')?.value || '';
+  const dateTo = document.getElementById('dash-date-to')?.value || '';
+
+  let filtered = _allNews;
+
+  if (search) filtered = filtered.filter(n => (n.title||'').toLowerCase().includes(search) || (n.description||'').toLowerCase().includes(search));
+  if (source) filtered = filtered.filter(n => n.source === source);
+  if (status) filtered = filtered.filter(n => n.status === status);
+  if (tag) filtered = filtered.filter(n => {
+    const tags = _dashTags[n.id] || [];
+    return tags.some(t => t.id === tag);
+  });
+  if (dateFrom) filtered = filtered.filter(n => {
+    const d = (n.published_at || n.parsed_at || '').slice(0,10);
+    return d >= dateFrom;
+  });
+  if (dateTo) filtered = filtered.filter(n => {
+    const d = (n.published_at || n.parsed_at || '').slice(0,10);
+    return d <= dateTo;
+  });
+
+  renderDashboard(filtered);
+  renderActiveFilters(search, source, status, tag, dateFrom, dateTo);
+}
+
+function renderActiveFilters(search, source, status, tag, dateFrom, dateTo) {
+  const chips = [];
+  if (search) chips.push({label: 'Поиск: ' + search, clear: () => { document.getElementById('dash-search').value = ''; applyDashFilters(); }});
+  if (source) chips.push({label: 'Источник: ' + source, clear: () => { document.getElementById('dash-source').value = ''; applyDashFilters(); }});
+  if (status) chips.push({label: 'Статус: ' + status, clear: () => { document.getElementById('dash-status').value = ''; applyDashFilters(); loadStats(); }});
+  if (tag) chips.push({label: 'Тег: ' + tag, clear: () => { document.getElementById('dash-tag').value = ''; applyDashFilters(); }});
+  if (dateFrom) chips.push({label: 'С: ' + dateFrom, clear: () => { document.getElementById('dash-date-from').value = ''; applyDashFilters(); }});
+  if (dateTo) chips.push({label: 'По: ' + dateTo, clear: () => { document.getElementById('dash-date-to').value = ''; applyDashFilters(); }});
+
+  const container = document.getElementById('active-filters');
+  container.innerHTML = '';
+  chips.forEach((chip, i) => {
+    const el = document.createElement('span');
+    el.className = 'active-filter-chip';
+    el.innerHTML = chip.label + ' <span class="chip-x">&times;</span>';
+    el.onclick = chip.clear;
+    container.appendChild(el);
+  });
+}
+
+function resetDashFilters() {
+  document.getElementById('dash-search').value = '';
+  document.getElementById('dash-source').value = '';
+  document.getElementById('dash-status').value = '';
+  document.getElementById('dash-tag').value = '';
+  document.getElementById('dash-date-from').value = '';
+  document.getElementById('dash-date-to').value = '';
+  applyDashFilters();
+  loadStats();
+}
+
+function filterByTag(tagId) {
+  document.getElementById('dash-tag').value = tagId;
+  applyDashFilters();
+}
+
+function filterBySource(source) {
+  document.getElementById('dash-source').value = source;
+  applyDashFilters();
+}
+
+const STATUS_LABELS = {new:'Новая',in_review:'Проверка',approved:'Одобр.',processed:'Обогащ.',duplicate:'Дубль',rejected:'Откл.',ready:'Готова'};
+
+function renderDashboard(news) {
   const dashTb = document.getElementById('dash-news');
-  if (dashTb) {
-    dashTb.innerHTML = news.slice(0, 100).map(n => {
-      const gid = _dashIdToGroup[n.id];
-      const rowStyle = gid ? `border-left:3px solid ${GROUP_COLORS[(gid-1)%GROUP_COLORS.length]}` : '';
-      return `<tr style="${rowStyle}">
+  const emptyEl = document.getElementById('dash-empty');
+  const infoEl = document.getElementById('dash-table-count');
+  const showEl = document.getElementById('dash-showing');
+
+  if (!news.length) {
+    dashTb.innerHTML = '';
+    emptyEl.style.display = 'block';
+    infoEl.textContent = '';
+    showEl.textContent = '';
+    return;
+  }
+  emptyEl.style.display = 'none';
+
+  const shown = news.slice(0, 200);
+  infoEl.textContent = `${news.length} новостей`;
+  showEl.textContent = news.length > 200 ? '(показано 200)' : '';
+
+  dashTb.innerHTML = shown.map(n => {
+    const gid = _dashIdToGroup[n.id];
+    const rowStyle = gid ? `border-left:3px solid ${GROUP_COLORS[(gid-1)%GROUP_COLORS.length]}` : '';
+    const statusLabel = STATUS_LABELS[n.status] || n.status;
+    return `<tr style="${rowStyle}">
       <td><input type="checkbox" class="news-check" data-id="${n.id}" onchange="updateSelectedCount()"></td>
-      <td>${n.source}</td>
+      <td><span style="cursor:pointer" onclick="filterBySource('${esc(n.source)}')" title="Фильтр по источнику">${n.source}</span></td>
       <td><a href="${n.url}" target="_blank" title="${esc(n.description||'')}">${esc(n.title||'')}</a></td>
-      <td>${renderTags(n.id)}</td>
-      <td>${renderGroup(n.id)}</td>
+      <td>${renderTagsClickable(n.id)}</td>
+      <td>${renderGroupClickable(n.id)}</td>
       <td>${fmtDate(n.published_at)}</td>
       <td>${fmtDate(n.parsed_at)}</td>
-      <td><span class="badge badge-${n.status}">${n.status}</span></td>
+      <td><span class="badge badge-${n.status}" style="cursor:pointer" onclick="filterByStatus('${n.status}')">${statusLabel}</span></td>
       <td>${n.llm_trend_forecast||'-'}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')">Анализ</button>
         <button class="btn btn-sm btn-success" onclick="exportOne('${n.id}')">Sheets</button>
       </td>
     </tr>`;
-    }).join('');
-  }
+  }).join('');
+}
 
-  // News tab table
+function renderTagsClickable(newsId) {
+  const tags = _dashTags[newsId] || [];
+  if (!tags.length) return '<span style="color:#38444d">-</span>';
+  return tags.map(t => `<span class="tag tag-${t.id}" onclick="filterByTag('${t.id}')" title="Фильтр по тегу">${t.label}</span>`).join('');
+}
+
+function renderGroupClickable(newsId) {
+  const gid = _dashIdToGroup[newsId];
+  if (!gid) return '';
+  const color = GROUP_COLORS[(gid - 1) % GROUP_COLORS.length];
+  const g = _dashGroups.find(x => x.group === gid);
+  return `<span class="group-marker" style="background:${color}33;color:${color}" title="${g ? g.count + ' шт — нажми чтобы выбрать' : ''}" onclick="selectGroupById(${gid})">G${gid}</span>`;
+}
+
+function renderNewsTab(news, status, source, limit) {
+  let filtered = news;
+  if (status) filtered = filtered.filter(n => n.status === status);
+  if (source) filtered = filtered.filter(n => n.source === source);
+  filtered = filtered.slice(0, parseInt(limit) || 100);
+
   const newsTb = document.getElementById('news-table');
   if (newsTb) {
-    newsTb.innerHTML = news.map(n => {
+    newsTb.innerHTML = filtered.map(n => {
       let bigrams = '';
       try { bigrams = JSON.parse(n.bigrams||'[]').map(b=>b[0]).join(', '); } catch(e){}
+      const statusLabel = STATUS_LABELS[n.status] || n.status;
       return `<tr>
         <td>${n.source}</td>
         <td><a href="${n.url}" target="_blank">${esc(n.title||'')}</a></td>
         <td>${esc(n.h1||'')}</td>
         <td>${fmtDate(n.published_at)}</td>
-        <td><span class="badge badge-${n.status}">${n.status}</span></td>
+        <td><span class="badge badge-${n.status}">${statusLabel}</span></td>
         <td title="${esc(bigrams)}">${bigrams.slice(0,40)}</td>
         <td>${esc(n.llm_recommendation||'-')}</td>
         <td>${n.llm_trend_forecast||'-'}</td>
@@ -1192,13 +1422,6 @@ async function loadNews() {
         </td>
       </tr>`;
     }).join('');
-  }
-
-  // Populate source filter
-  const srcFilter = document.getElementById('filter-source');
-  if (srcFilter && srcFilter.options.length <= 1) {
-    const sources = [...new Set(news.map(n => n.source))].sort();
-    sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; srcFilter.appendChild(o); });
   }
 }
 
