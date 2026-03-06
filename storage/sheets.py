@@ -75,7 +75,7 @@ def write_news_row(news: dict, analysis: dict) -> int | None:
             str(trends_data.get("US", "")),                     # I: Trends US
             analysis.get("llm_recommendation", ""),             # J: Рекомендация LLM
             analysis.get("llm_trend_forecast", ""),             # K: Прогноз трендовости
-            str(keyso_data.get("similar", "")),                 # L: Похожие запросы
+            ", ".join(keyso_data.get("similar", [])) if isinstance(keyso_data.get("similar"), list) else str(keyso_data.get("similar", "")),  # L: Похожие запросы
             analysis.get("llm_merged_with", ""),                # M: Объединить с
             news.get("status", "new"),                          # N: Статус
             news.get("plain_text", "")[:1000],                  # O: Plain Text
