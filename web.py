@@ -87,6 +87,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/process_one": lambda: self._process_one(body),
             "/api/export_sheets": lambda: self._export_sheets(body),
             "/api/sources/add": lambda: self._add_source(body),
+            "/api/sources/edit": lambda: self._edit_source(body),
             "/api/sources/delete": lambda: self._delete_source(body),
             "/api/prompts/save": lambda: self._save_prompts(body),
             "/api/settings/save": lambda: self._save_settings(body),
@@ -350,6 +351,22 @@ async function login() {
         config.SOURCES.append(source)
         self._json({"status": "ok", "sources": config.SOURCES})
 
+    def _edit_source(self, body):
+        import config
+        old_name = body.get("old_name", "")
+        for s in config.SOURCES:
+            if s["name"] == old_name:
+                s["name"] = body.get("name", s["name"])
+                s["type"] = body.get("type", s["type"])
+                s["url"] = body.get("url", s["url"])
+                s["interval"] = int(body.get("interval", s["interval"]))
+                if body.get("selector"):
+                    s["selector"] = body["selector"]
+                elif "selector" in s and body.get("type") == "rss":
+                    del s["selector"]
+                break
+        self._json({"status": "ok", "sources": config.SOURCES})
+
     def _delete_source(self, body):
         import config
         name = body.get("name")
@@ -499,6 +516,13 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 .filters { display:flex; gap:10px; margin-bottom:15px; align-items:center; flex-wrap:wrap; }
 .filters select, .filters input { width:auto; min-width:150px; }
 
+/* Modal */
+.modal-overlay { display:none; position:fixed; top:0;left:0;right:0;bottom:0; background:rgba(0,0,0,0.7); z-index:100; justify-content:center; align-items:center; }
+.modal-overlay.show { display:flex; }
+.modal { background:#192734; border-radius:12px; padding:25px; width:450px; max-width:90vw; }
+.modal h2 { margin-bottom:15px; }
+.modal-buttons { display:flex; gap:10px; margin-top:15px; justify-content:flex-end; }
+
 /* Responsive */
 @media(max-width:768px) {
   .grid-2 { grid-template-columns:1fr; }
@@ -568,7 +592,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <div class="card">
         <h2>Active Sources</h2>
         <table>
-          <thead><tr><th>Name</th><th>Type</th><th>Interval</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Name</th><th>Type</th><th>URL</th><th>Interval</th><th>Selector</th><th>Actions</th></tr></thead>
           <tbody id="sources-table"></tbody>
         </table>
       </div>
@@ -656,6 +680,26 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <h2>API Status</h2>
         <div id="api-status"></div>
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="edit-modal">
+  <div class="modal">
+    <h2>Edit Source</h2>
+    <input type="hidden" id="edit-old-name">
+    <div class="form-group"><label>Name</label><input id="edit-name"></div>
+    <div class="form-group"><label>Type</label>
+      <select id="edit-type" onchange="document.getElementById('edit-selector-group').style.display=this.value==='html'?'block':'none'">
+        <option value="rss">RSS</option><option value="html">HTML</option>
+      </select>
+    </div>
+    <div class="form-group"><label>URL</label><input id="edit-url"></div>
+    <div class="form-group"><label>Interval (min)</label><input type="number" id="edit-interval"></div>
+    <div class="form-group" id="edit-selector-group" style="display:none"><label>CSS Selector</label><input id="edit-selector"></div>
+    <div class="modal-buttons">
+      <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEditSource()">Save</button>
     </div>
   </div>
 </div>
@@ -787,19 +831,55 @@ async function exportOne(id) {
 }
 
 // Sources
+let _sources = [];
 async function loadSources() {
-  const sources = await api('/api/sources');
-  document.getElementById('sources-table').innerHTML = sources.map(s =>
+  _sources = await api('/api/sources');
+  document.getElementById('sources-table').innerHTML = _sources.map(s =>
     `<tr>
       <td>${s.name}</td>
       <td>${s.type}</td>
+      <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis" title="${esc(s.url)}">${esc(s.url)}</td>
       <td>${s.interval}min</td>
-      <td>
-        <button class="btn btn-sm btn-primary" onclick="reparseSource('${s.name}')">Reparse</button>
-        <button class="btn btn-sm btn-danger" onclick="deleteSource('${s.name}')">Delete</button>
+      <td>${s.selector||'-'}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-secondary" onclick="openEditModal('${esc(s.name)}')">Edit</button>
+        <button class="btn btn-sm btn-primary" onclick="reparseSource('${esc(s.name)}')">Reparse</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteSource('${esc(s.name)}')">Delete</button>
       </td>
     </tr>`
   ).join('');
+}
+
+function openEditModal(name) {
+  const s = _sources.find(x => x.name === name);
+  if (!s) return;
+  document.getElementById('edit-old-name').value = s.name;
+  document.getElementById('edit-name').value = s.name;
+  document.getElementById('edit-type').value = s.type;
+  document.getElementById('edit-url').value = s.url;
+  document.getElementById('edit-interval').value = s.interval;
+  document.getElementById('edit-selector').value = s.selector || '';
+  document.getElementById('edit-selector-group').style.display = s.type === 'html' ? 'block' : 'none';
+  document.getElementById('edit-modal').classList.add('show');
+}
+
+function closeEditModal() {
+  document.getElementById('edit-modal').classList.remove('show');
+}
+
+async function saveEditSource() {
+  const data = {
+    old_name: document.getElementById('edit-old-name').value,
+    name: document.getElementById('edit-name').value,
+    type: document.getElementById('edit-type').value,
+    url: document.getElementById('edit-url').value,
+    interval: document.getElementById('edit-interval').value,
+    selector: document.getElementById('edit-selector').value,
+  };
+  await api('/api/sources/edit', data);
+  toast('Source updated');
+  closeEditModal();
+  loadSources();
 }
 
 async function addSource() {
