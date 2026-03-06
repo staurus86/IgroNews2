@@ -40,13 +40,17 @@ def parse_html_source(source: dict) -> int:
             logger.warning("No items found for %s with selector '%s'", name, selector)
             return 0
 
-        for item in items[:20]:
+        seen_urls = set()
+        for item in items[:40]:
             # Ищем ссылку внутри элемента
             a_tag = item.find("a", href=True) if item.name != "a" else item
             if not a_tag or not a_tag.get("href"):
                 continue
 
             href = a_tag["href"]
+            # Пропускаем якорные ссылки (#comments и т.п.)
+            if "#" in href:
+                href = href.split("#")[0]
             link = urljoin(url, href)
 
             # Фильтр по URL паттерну
@@ -63,8 +67,18 @@ def parse_html_source(source: dict) -> int:
                 title_tag = item.find(["h2", "h3", "h4"]) or a_tag
                 title = title_tag.get_text(strip=True)
 
-            if not title or len(title) < 10:
+            if not title or len(title) < 20:
                 continue
+
+            # Фильтр мусорных заголовков
+            junk = ["комментар", "оставить", "читать далее", "подробнее", "показать"]
+            if any(j in title.lower() for j in junk):
+                continue
+
+            # Дедуп URL внутри одной страницы
+            if link in seen_urls:
+                continue
+            seen_urls.add(link)
 
             if news_exists(link):
                 continue
