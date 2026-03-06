@@ -1366,7 +1366,8 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       .editor-toolbar { background:#192734; border-radius:10px; padding:15px; }
       .editor-preview-card { background:#192734; border-radius:10px; padding:15px; flex:1; }
       .editor-result-card { background:#192734; border-radius:10px; padding:15px; }
-      .editor-news-item { padding:10px 12px; border-bottom:1px solid #22303c; cursor:pointer; display:flex; gap:10px; align-items:start; transition:background .15s; }
+      .editor-news-item { padding:10px 12px; border-bottom:1px solid #22303c; cursor:pointer; display:flex; gap:8px; align-items:start; transition:background .15s; }
+      .editor-news-item input[type="checkbox"] { width:16px; height:16px; min-width:16px; flex-shrink:0; }
       .editor-news-item:hover { background:#22303c; }
       .editor-news-item.selected { background:rgba(29,161,242,0.1); border-left:3px solid #1da1f2; }
       .editor-news-item.merge { background:rgba(255,173,31,0.1); border-left:3px solid #ffad1f; }
@@ -2738,7 +2739,7 @@ function renderEditorList(news) {
     const cls = 'editor-news-item' + (isSelected ? ' selected' : '') + (isMerge ? ' merge' : '');
     const dateStr = fmtDate(n.published_at || n.parsed_at);
     return `<div class="${cls}" onclick="selectEditorNews('${n.id}')">
-      <input type="checkbox" ${isMerge?'checked':''} onclick="event.stopPropagation();toggleMerge('${n.id}',this.checked)" style="margin-top:2px;cursor:pointer">
+      <input type="checkbox" ${isMerge?'checked':''} onclick="event.stopPropagation();toggleMerge('${n.id}',this.checked)" style="margin-top:2px;cursor:pointer;width:16px;height:16px;min-width:16px;flex-shrink:0">
       <div style="flex:1;min-width:0">
         <div style="font-size:0.88em;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden" title="${esc(n.title||'')}">${esc(n.title||'')}</div>
         <div style="font-size:0.72em;color:#8899a6;margin-top:3px;display:flex;align-items:center;gap:6px">
