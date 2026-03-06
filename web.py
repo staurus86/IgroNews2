@@ -732,7 +732,11 @@ header { background:linear-gradient(135deg,#192734 0%,#1a3a4a 100%); padding:12p
 
 /* Table */
 table { width:100%; border-collapse:collapse; background:#192734; border-radius:10px; overflow:hidden; font-size:0.85em; }
-th { background:#22303c; text-align:left; padding:10px 12px; color:#8899a6; font-size:0.8em; white-space:nowrap; position:sticky; top:0; z-index:2; }
+th { background:#22303c; text-align:left; padding:10px 12px; color:#8899a6; font-size:0.8em; white-space:nowrap; position:sticky; top:0; z-index:2; user-select:none; }
+th.sortable { cursor:pointer; transition:color .2s; }
+th.sortable:hover { color:#1da1f2; }
+th.sortable .sort-arrow { margin-left:3px; font-size:0.75em; opacity:0.4; }
+th.sortable.sort-active .sort-arrow { opacity:1; color:#1da1f2; }
 td { padding:8px 12px; border-bottom:1px solid #22303c; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 tr { transition:background .15s; }
 tr:hover { background:#22303c; }
@@ -905,17 +909,17 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <span id="dash-table-count"></span>
       <span id="dash-showing"></span>
     </div>
-    <table>
+    <table id="dash-table">
       <thead><tr>
         <th style="width:30px"><input type="checkbox" id="check-all" onchange="toggleAll(this)"></th>
-        <th>Источник</th>
-        <th>Заголовок</th>
+        <th class="sortable" data-sort="source" onclick="sortDash('source')">Источник <span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort="title" onclick="sortDash('title')">Заголовок <span class="sort-arrow">&#9650;</span></th>
         <th>Теги</th>
-        <th>Группа</th>
-        <th>Опубл.</th>
-        <th>Собр.</th>
-        <th>Статус</th>
-        <th>Скор</th>
+        <th class="sortable" data-sort="group" onclick="sortDash('group')">Группа <span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort="published_at" onclick="sortDash('published_at')">Опубл. <span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort="parsed_at" onclick="sortDash('parsed_at')">Собр. <span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort="status" onclick="sortDash('status')">Статус <span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort="score" onclick="sortDash('score')">Скор <span class="sort-arrow">&#9650;</span></th>
         <th>Действия</th>
       </tr></thead>
       <tbody id="dash-news"></tbody>
@@ -1339,26 +1343,84 @@ function filterBySource(source) {
 
 const STATUS_LABELS = {new:'Новая',in_review:'Проверка',approved:'Одобр.',processed:'Обогащ.',duplicate:'Дубль',rejected:'Откл.',ready:'Готова'};
 
+// Sorting state
+let _sortField = 'parsed_at';
+let _sortDir = 'desc'; // 'asc' or 'desc'
+let _lastFiltered = [];
+
+function sortDash(field) {
+  if (_sortField === field) {
+    _sortDir = _sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _sortField = field;
+    _sortDir = 'asc';
+  }
+  // Update header arrows
+  document.querySelectorAll('#dash-table th.sortable').forEach(th => {
+    const arrow = th.querySelector('.sort-arrow');
+    if (th.dataset.sort === field) {
+      th.classList.add('sort-active');
+      arrow.innerHTML = _sortDir === 'asc' ? '&#9650;' : '&#9660;';
+    } else {
+      th.classList.remove('sort-active');
+      arrow.innerHTML = '&#9650;';
+    }
+  });
+  // Re-sort and render
+  const sorted = sortNews(_lastFiltered, field, _sortDir);
+  renderDashboardRows(sorted);
+}
+
+function sortNews(news, field, dir) {
+  const arr = [...news];
+  const mult = dir === 'asc' ? 1 : -1;
+  arr.sort((a, b) => {
+    let va, vb;
+    if (field === 'source') { va = (a.source||'').toLowerCase(); vb = (b.source||'').toLowerCase(); }
+    else if (field === 'title') { va = (a.title||'').toLowerCase(); vb = (b.title||'').toLowerCase(); }
+    else if (field === 'published_at') { va = a.published_at||''; vb = b.published_at||''; }
+    else if (field === 'parsed_at') { va = a.parsed_at||''; vb = b.parsed_at||''; }
+    else if (field === 'status') { va = a.status||''; vb = b.status||''; }
+    else if (field === 'score') {
+      va = parseFloat(a.llm_trend_forecast) || 0;
+      vb = parseFloat(b.llm_trend_forecast) || 0;
+    }
+    else if (field === 'group') {
+      va = _dashIdToGroup[a.id] || 9999;
+      vb = _dashIdToGroup[b.id] || 9999;
+    }
+    else { va = ''; vb = ''; }
+    if (va < vb) return -1 * mult;
+    if (va > vb) return 1 * mult;
+    return 0;
+  });
+  return arr;
+}
+
 function renderDashboard(news) {
-  const dashTb = document.getElementById('dash-news');
+  _lastFiltered = news;
   const emptyEl = document.getElementById('dash-empty');
   const infoEl = document.getElementById('dash-table-count');
   const showEl = document.getElementById('dash-showing');
 
   if (!news.length) {
-    dashTb.innerHTML = '';
+    document.getElementById('dash-news').innerHTML = '';
     emptyEl.style.display = 'block';
     infoEl.textContent = '';
     showEl.textContent = '';
     return;
   }
   emptyEl.style.display = 'none';
-
-  const shown = news.slice(0, 200);
   infoEl.textContent = `${news.length} новостей`;
   showEl.textContent = news.length > 200 ? '(показано 200)' : '';
 
-  dashTb.innerHTML = shown.map(n => {
+  const sorted = sortNews(news, _sortField, _sortDir);
+  renderDashboardRows(sorted);
+}
+
+function renderDashboardRows(news) {
+  const shown = news.slice(0, 200);
+  document.getElementById('dash-news').innerHTML = shown.map(n => {
     const gid = _dashIdToGroup[n.id];
     const rowStyle = gid ? `border-left:3px solid ${GROUP_COLORS[(gid-1)%GROUP_COLORS.length]}` : '';
     const statusLabel = STATUS_LABELS[n.status] || n.status;
