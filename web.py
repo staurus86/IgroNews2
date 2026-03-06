@@ -147,6 +147,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/rewrite": lambda: self._rewrite_news(body),
             "/api/merge": lambda: self._merge_news(body),
             "/api/news/detail": lambda: self._news_detail(body),
+            "/api/export_sheets_bulk": lambda: self._export_sheets_bulk(body),
         }
         handler = routes.get(path)
         if handler:
@@ -890,6 +891,50 @@ async function login() {
         info["newest"] = str(row[1]) if row[1] else "-"
         return info
 
+    def _export_sheets_bulk(self, body):
+        news_ids = body.get("news_ids", [])
+        if not news_ids:
+            self._json({"status": "error", "message": "news_ids required"})
+            return
+        try:
+            from storage.sheets import write_news_row
+            conn = get_connection()
+            cur = conn.cursor()
+            ph = "%s" if _is_postgres() else "?"
+            exported = 0
+            errors = 0
+            for nid in news_ids:
+                try:
+                    cur.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
+                    row = cur.fetchone()
+                    if not row:
+                        continue
+                    if _is_postgres():
+                        columns = [desc[0] for desc in cur.description]
+                        news = dict(zip(columns, row))
+                    else:
+                        news = dict(row)
+                    cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (nid,))
+                    arow = cur.fetchone()
+                    if arow:
+                        if _is_postgres():
+                            columns = [desc[0] for desc in cur.description]
+                            analysis = dict(zip(columns, arow))
+                        else:
+                            analysis = dict(arow)
+                    else:
+                        analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
+                                   "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
+                    sheet_row = write_news_row(news, analysis)
+                    if sheet_row:
+                        exported += 1
+                except Exception as e:
+                    logger.warning("Bulk export error for %s: %s", nid, e)
+                    errors += 1
+            self._json({"status": "ok", "exported": exported, "errors": errors})
+        except Exception as e:
+            self._json({"status": "error", "message": str(e)})
+
     def _rewrite_news(self, body):
         news_id = body.get("news_id")
         style = body.get("style", "news")
@@ -1209,6 +1254,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <button class="btn btn-secondary" onclick="selectAll()">Выбрать все</button>
       <button class="btn btn-secondary" onclick="deselectAll()">Снять выбор</button>
       <button class="btn btn-secondary" onclick="selectGroup()">Выбрать группу</button>
+      <button class="btn btn-success btn-sm" onclick="exportSelectedToSheetsDash()" title="Экспорт выбранных в Google Sheets">В Sheets</button>
       <span id="selected-count" style="color:#1da1f2;font-size:0.9em;font-weight:500;margin-left:6px"></span>
     </div>
     <div id="groups-summary" style="display:none;margin-bottom:12px"></div>
@@ -1415,6 +1461,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <button class="btn btn-warning btn-sm" onclick="bulkStatusChange('approved')">Одобрить выбранные</button>
       <button class="btn btn-danger btn-sm" onclick="bulkStatusChange('rejected')">Отклонить выбранные</button>
       <button class="btn btn-danger btn-sm" onclick="deleteSelectedNews()" style="margin-left:4px">Удалить выбранные</button>
+      <button class="btn btn-success btn-sm" onclick="exportSelectedToSheets()">В Sheets</button>
       <span id="news-selected-count" style="color:#1da1f2;font-size:0.85em;margin-left:8px"></span>
       <span id="news-count" style="color:#8899a6;font-size:0.85em;margin-left:auto"></span>
     </div>
@@ -2442,6 +2489,26 @@ function updateNewsSelectedCount() {
 function toggleAllNews(el) {
   document.querySelectorAll('.news-tab-check').forEach(c => c.checked = el.checked);
   updateNewsSelectedCount();
+}
+
+async function exportSelectedToSheets() {
+  const ids = getNewsSelectedIds();
+  if (!ids.length) { toast('Сначала выберите новости', true); return; }
+  if (!confirm('Экспортировать ' + ids.length + ' новостей в Google Sheets?')) return;
+  toast('Экспорт в Sheets...');
+  const r = await api('/api/export_sheets_bulk', {news_ids: ids});
+  if (r.status === 'ok') toast('Экспортировано: ' + r.exported + (r.errors ? ', ошибок: ' + r.errors : ''));
+  else toast(r.message, true);
+}
+
+async function exportSelectedToSheetsDash() {
+  const ids = getSelectedIds();
+  if (!ids.length) { toast('Сначала выберите новости', true); return; }
+  if (!confirm('Экспортировать ' + ids.length + ' новостей в Google Sheets?')) return;
+  toast('Экспорт в Sheets...');
+  const r = await api('/api/export_sheets_bulk', {news_ids: ids});
+  if (r.status === 'ok') toast('Экспортировано: ' + r.exported + (r.errors ? ', ошибок: ' + r.errors : ''));
+  else toast(r.message, true);
 }
 
 async function deleteSelectedNews() {
