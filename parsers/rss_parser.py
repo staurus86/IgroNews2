@@ -1,9 +1,14 @@
 import logging
+import time
+from datetime import datetime, timezone, timedelta
+
 import feedparser
 import requests
 from bs4 import BeautifulSoup
 
 from storage.database import insert_news, news_exists
+
+MAX_AGE_DAYS = 30
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +60,8 @@ def parse_rss_source(source: dict) -> int:
             logger.warning("Feed error for %s: %s", name, feed.bozo_exception)
             return 0
 
+        cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
+
         for entry in feed.entries:
             link = entry.get("link", "")
             if not link or news_exists(link):
@@ -63,13 +70,20 @@ def parse_rss_source(source: dict) -> int:
             title = entry.get("title", "").strip()
             published = entry.get("published", "")
 
+            # Фильтр по дате: пропускаем старше 30 дней
+            if hasattr(entry, "published_parsed") and entry.published_parsed:
+                pub_dt = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                if pub_dt < cutoff:
+                    continue
+
             # Получаем summary из RSS
             summary = ""
             if "summary" in entry:
                 soup = BeautifulSoup(entry.summary, "lxml")
                 summary = soup.get_text(strip=True)[:500]
 
-            # Загружаем полный текст страницы
+            # Загружаем полный текст страницы (с задержкой чтобы не перегружать)
+            time.sleep(1)
             h1, description, plain_text = fetch_full_text(link)
 
             if not description:

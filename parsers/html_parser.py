@@ -1,4 +1,6 @@
 import logging
+import time
+
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
@@ -29,7 +31,7 @@ def parse_html_source(source: dict) -> int:
             logger.warning("No items found for %s with selector '%s'", name, selector)
             return 0
 
-        for item in items[:30]:
+        for item in items[:20]:
             # Ищем ссылку внутри элемента
             a_tag = item.find("a", href=True) if item.name != "a" else item
             if not a_tag or not a_tag.get("href"):
@@ -47,6 +49,7 @@ def parse_html_source(source: dict) -> int:
             if news_exists(link):
                 continue
 
+            time.sleep(1)
             h1, description, plain_text = _fetch_article(link)
 
             news_id = insert_news(
