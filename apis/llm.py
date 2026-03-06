@@ -65,9 +65,10 @@ def _call_llm(prompt: str) -> dict | None:
             response_format={"type": "json_object"},
         )
         text = response.choices[0].message.content
+        logger.info("LLM response: %s", text[:200])
         return json.loads(text)
     except Exception as e:
-        logger.error("LLM error: %s", e)
+        logger.error("LLM error: %s", e, exc_info=True)
         return None
 
 

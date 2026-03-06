@@ -395,22 +395,35 @@ async function login() {
 
     def _test_llm(self, body):
         try:
-            from apis.llm import _call_llm
+            import config
+            from openai import OpenAI
+            import json as _json
             prompt = body.get("prompt", "Ответь JSON: {\"test\": \"ok\"}")
-            result = _call_llm(prompt)
-            self._json({"status": "ok", "result": result})
+            client = OpenAI(api_key=config.OPENAI_API_KEY)
+            response = client.chat.completions.create(
+                model=config.LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                response_format={"type": "json_object"},
+            )
+            text = response.choices[0].message.content
+            self._json({"status": "ok", "model": config.LLM_MODEL, "raw": text, "result": _json.loads(text)})
         except Exception as e:
-            self._json({"status": "error", "message": str(e)})
+            self._json({"status": "error", "message": str(e), "type": type(e).__name__})
 
     def _test_keyso(self, body):
         try:
-            from apis.keyso import get_keyword_info, get_similar_keywords
+            import config
+            import requests as _req
             keyword = body.get("keyword", "gta 6")
-            info = get_keyword_info(keyword)
-            similar = get_similar_keywords(keyword, limit=5)
-            self._json({"status": "ok", "info": info, "similar": similar})
+            # Raw request for debugging
+            url = f"{config.KEYSO_BASE_URL}/report/simple/keyword_dashboard"
+            params = {"token": config.KEYSO_API_KEY, "base": config.KEYSO_REGION, "keyword": keyword}
+            resp = _req.get(url, params=params, timeout=15)
+            raw = resp.json()
+            self._json({"status": "ok", "http_code": resp.status_code, "raw_response": raw})
         except Exception as e:
-            self._json({"status": "error", "message": str(e)})
+            self._json({"status": "error", "message": str(e), "type": type(e).__name__})
 
     def _reparse_source(self, body):
         name = body.get("name")
