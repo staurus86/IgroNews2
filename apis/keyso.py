@@ -9,7 +9,7 @@ HEADERS = {"Content-Type": "application/json"}
 
 def _make_request(endpoint: str, params: dict) -> dict | None:
     """Выполняет запрос к Keys.so API."""
-    params["token"] = config.KEYSO_API_KEY
+    params["auth-token"] = config.KEYSO_API_KEY
     if "base" not in params:
         params["base"] = config.KEYSO_REGION
     try:
@@ -61,7 +61,7 @@ def check_keywords_bulk(keywords: list[str]) -> dict:
         # Создаём задачу
         resp = requests.post(
             f"{config.KEYSO_BASE_URL}/tools/keywords_by_list",
-            params={"token": config.KEYSO_API_KEY},
+            params={"auth-token": config.KEYSO_API_KEY},
             json={"list": keywords, "base": config.KEYSO_REGION},
             timeout=15,
         )

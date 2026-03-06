@@ -94,6 +94,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/test_llm": lambda: self._test_llm(body),
             "/api/test_keyso": lambda: self._test_keyso(body),
             "/api/reparse": lambda: self._reparse_source(body),
+            "/api/test_sheets": lambda: self._test_sheets(body),
             "/api/users/add": lambda: self._add_user(body),
             "/api/users/delete": lambda: self._delete_user(body),
         }
@@ -418,10 +419,26 @@ async function login() {
             keyword = body.get("keyword", "gta 6")
             # Raw request for debugging
             url = f"{config.KEYSO_BASE_URL}/report/simple/keyword_dashboard"
-            params = {"token": config.KEYSO_API_KEY, "base": config.KEYSO_REGION, "keyword": keyword}
+            params = {"auth-token": config.KEYSO_API_KEY, "base": config.KEYSO_REGION, "keyword": keyword}
             resp = _req.get(url, params=params, timeout=15)
             raw = resp.json()
             self._json({"status": "ok", "http_code": resp.status_code, "raw_response": raw})
+        except Exception as e:
+            self._json({"status": "error", "message": str(e), "type": type(e).__name__})
+
+    def _test_sheets(self, body):
+        try:
+            import config
+            from storage.sheets import _get_client
+            client = _get_client()
+            if not client:
+                self._json({"status": "error", "message": "Google client init failed. Check GOOGLE_SERVICE_ACCOUNT_JSON"})
+                return
+            sheet = client.open_by_key(config.GOOGLE_SHEETS_ID)
+            worksheets = [ws.title for ws in sheet.worksheets()]
+            tab = sheet.worksheet(config.SHEETS_TAB)
+            rows = len(tab.get_all_values())
+            self._json({"status": "ok", "sheets_id": config.GOOGLE_SHEETS_ID, "tabs": worksheets, "active_tab": config.SHEETS_TAB, "rows": rows})
         except Exception as e:
             self._json({"status": "error", "message": str(e), "type": type(e).__name__})
 
@@ -657,6 +674,11 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <button class="btn btn-primary" onclick="testKeyso()">Check</button>
         <pre id="test-keyso-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
       </div>
+    </div>
+    <div class="card" style="margin-top:15px">
+      <h2>Test Google Sheets</h2>
+      <button class="btn btn-primary" onclick="testSheets()">Test Connection</button>
+      <pre id="test-sheets-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
     </div>
   </div>
 
@@ -996,6 +1018,12 @@ async function deleteUser(username) {
   await api('/api/users/delete', {username});
   toast('User deleted');
   loadUsers();
+}
+
+async function testSheets() {
+  document.getElementById('test-sheets-result').textContent = 'Loading...';
+  const r = await api('/api/test_sheets', {});
+  document.getElementById('test-sheets-result').textContent = JSON.stringify(r, null, 2);
 }
 
 // Init
