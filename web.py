@@ -262,6 +262,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         html = """<!DOCTYPE html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>IgroNews Login</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23192734'/><text x='50' y='38' text-anchor='middle' font-size='28' font-family='sans-serif' font-weight='bold' fill='%231da1f2'>IGR</text><text x='50' y='70' text-anchor='middle' font-size='20' font-family='sans-serif' fill='%2317bf63'>NEWS</text><circle cx='82' cy='20' r='8' fill='%23e0245e'/></svg>">
 <style>
 * { margin:0;padding:0;box-sizing:border-box; }
 body { font-family:-apple-system,sans-serif; background:#0f1923; color:#e1e8ed; display:flex; justify-content:center; align-items:center; height:100vh; }
@@ -274,6 +275,14 @@ body { font-family:-apple-system,sans-serif; background:#0f1923; color:#e1e8ed; 
 .error { color:#e0245e; font-size:0.85em; margin-bottom:10px; display:none; }
 </style></head><body>
 <div class="login">
+  <div style="text-align:center;margin-bottom:10px">
+    <svg width="48" height="48" viewBox="0 0 100 100">
+      <rect width="100" height="100" rx="20" fill="#1da1f2"/>
+      <text x="50" y="40" text-anchor="middle" font-size="30" font-family="sans-serif" font-weight="bold" fill="#fff">IGR</text>
+      <text x="50" y="72" text-anchor="middle" font-size="22" font-family="sans-serif" fill="#fff" opacity="0.8">NEWS</text>
+      <circle cx="85" cy="18" r="9" fill="#e0245e"/>
+    </svg>
+  </div>
   <h2>IgroNews</h2>
   <div class="error" id="err">Invalid credentials</div>
   <input id="username" placeholder="Username" autofocus>
@@ -2072,13 +2081,14 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>IgroNews Admin</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23192734'/><text x='50' y='38' text-anchor='middle' font-size='28' font-family='sans-serif' font-weight='bold' fill='%231da1f2'>IGR</text><text x='50' y='70' text-anchor='middle' font-size='20' font-family='sans-serif' fill='%2317bf63'>NEWS</text><circle cx='82' cy='20' r='8' fill='%23e0245e'/></svg>">
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#0f1923; color:#e1e8ed; font-size:15px; }
 .container { max-width:1600px; margin:0 auto; padding:15px; }
 h1 { color:#1da1f2; font-size:1.5em; }
 h2 { color:#1da1f2; font-size:1.1em; margin-bottom:10px; }
-header { background:linear-gradient(135deg,#192734 0%,#1a3a4a 100%); padding:12px 20px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid #22303c; box-shadow:0 2px 8px rgba(0,0,0,0.3); }
+header { background:linear-gradient(135deg,#192734 0%,#1a3a4a 100%); padding:10px 20px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid #22303c; box-shadow:0 2px 8px rgba(0,0,0,0.3); }
 
 /* Tabs */
 .tabs { display:flex; gap:0; background:#192734; border-radius:8px; margin:15px 0; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,0.2); }
@@ -2112,6 +2122,7 @@ header { background:linear-gradient(135deg,#192734 0%,#1a3a4a 100%); padding:12p
 .btn-secondary { background:#38444d; color:#e1e8ed; }
 .btn-secondary:hover { background:#4a5568; }
 .btn-sm { padding:4px 10px; font-size:0.8em; }
+.btn-icon { padding:4px 8px; font-size:0.9em; min-width:28px; text-align:center; }
 @keyframes spin { to { transform:rotate(360deg); } }
 .btn-group { display:flex; gap:8px; margin-bottom:15px; flex-wrap:wrap; align-items:center; }
 .btn-warning { background:#ffad1f; color:#000; }
@@ -2217,7 +2228,15 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 <body>
 
 <header>
-  <h1>IgroNews Admin</h1>
+  <div style="display:flex;align-items:center;gap:12px">
+    <svg width="36" height="36" viewBox="0 0 100 100" style="flex-shrink:0">
+      <rect width="100" height="100" rx="20" fill="#1da1f2"/>
+      <text x="50" y="40" text-anchor="middle" font-size="30" font-family="sans-serif" font-weight="bold" fill="#fff">IGR</text>
+      <text x="50" y="72" text-anchor="middle" font-size="22" font-family="sans-serif" fill="#fff" opacity="0.8">NEWS</text>
+      <circle cx="85" cy="18" r="9" fill="#e0245e"/>
+    </svg>
+    <h1>IgroNews <span style="font-weight:300;font-size:0.7em;color:#8899a6">Admin</span></h1>
+  </div>
   <span style="color:#8899a6;font-size:0.85em" id="clock"></span>
 </header>
 
@@ -2289,12 +2308,12 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <!-- Action buttons -->
     <div class="btn-group">
       <button class="btn btn-primary" onclick="sendToReview()">Проверить</button>
-      <button class="btn btn-success" onclick="runProcess()">$ Обогатить одобренные</button>
+      <button class="btn btn-success" onclick="runProcess()">&#9654; Обогатить одобренные</button>
       <button class="btn btn-warning" onclick="loadDashboardGroups()">Найти группы</button>
       <button class="btn btn-secondary" onclick="selectAll()">Выбрать все</button>
       <button class="btn btn-secondary" onclick="deselectAll()">Снять выбор</button>
       <button class="btn btn-secondary" onclick="selectGroup()">Выбрать группу</button>
-      <button class="btn btn-success btn-sm" onclick="exportSelectedToSheetsDash()" title="Экспорт выбранных в Google Sheets">В Sheets</button>
+      <button class="btn btn-success" onclick="exportSelectedToSheetsDash()" title="Экспорт выбранных в Google Sheets">&#9776; В Sheets</button>
       <span id="selected-count" style="color:#1da1f2;font-size:0.9em;font-weight:500;margin-left:6px"></span>
     </div>
     <div id="groups-summary" style="display:none;margin-bottom:12px"></div>
@@ -2498,16 +2517,16 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
               <option value="английский">EN</option>
             </select>
             <button class="btn btn-primary" onclick="rewriteNews()" id="rewrite-btn" disabled style="white-space:nowrap">
-              $ &#9998; Переписать
+              &#9998; Переписать
             </button>
             <button class="btn btn-warning" onclick="mergeSelected()" id="merge-btn" disabled style="white-space:nowrap">
-              $ &#128279; Объединить
+              &#128279; Объединить
             </button>
             <button class="btn btn-secondary" onclick="analyzeEditorNews()" id="analyze-btn" disabled style="white-space:nowrap">
-              &#128202; Анализ
+              &#9654; Анализ
             </button>
             <button class="btn btn-success" onclick="batchRewrite()" id="batch-rewrite-btn" disabled style="white-space:nowrap">
-              $ &#9889; Батч
+              &#9889; Батч
             </button>
             <span id="rewrite-loading" style="color:#8899a6;font-size:0.85em"></span>
           </div>
@@ -2619,7 +2638,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           <option value="published">Опубликованные</option>
         </select>
         <button class="btn btn-sm btn-primary" onclick="downloadSelectedDocx()" id="art-bulk-docx-btn" disabled>DOCX выбранные</button>
-        <button class="btn btn-sm" style="background:#e0245e;color:#fff" onclick="deleteSelectedArticles()" id="art-bulk-del-btn" disabled>Удалить выбранные</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteSelectedArticles()" id="art-bulk-del-btn" disabled>Удалить выбранные</button>
         <span id="art-selected-count" style="color:#1da1f2;font-size:0.82em;font-weight:500"></span>
         <span id="art-count" style="color:#8899a6;font-size:0.82em"></span>
       </div>
@@ -2652,7 +2671,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
               <button class="btn btn-sm btn-success" onclick="saveCurrentArticle()">Сохранить</button>
               <button class="btn btn-sm btn-primary" onclick="downloadArticleDocx()">DOCX</button>
               <button class="btn btn-sm btn-secondary" onclick="copyArticleText()">Копировать</button>
-              <button class="btn btn-sm" style="background:#e0245e;color:#fff" onclick="deleteCurrentArticle()">Удалить</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteCurrentArticle()">Удалить</button>
             </div>
           </div>
 
@@ -2690,18 +2709,18 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           <div style="margin-top:8px;padding:12px;background:#22303c;border-radius:8px">
             <div style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">AI-действия</div>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
-              <button class="art-improve-btn" onclick="improveArticle('improve')">$ &#9998; Улучшить стиль</button>
-              <button class="art-improve-btn" onclick="improveArticle('expand')">$ &#128200; Расширить</button>
-              <button class="art-improve-btn" onclick="improveArticle('shorten')">$ &#9986; Сократить</button>
-              <button class="art-improve-btn" onclick="improveArticle('fix_grammar')">$ &#128221; Грамматика</button>
-              <button class="art-improve-btn" onclick="improveArticle('add_seo')">$ &#128269; Добавить SEO</button>
-              <button class="art-improve-btn" onclick="improveArticle('make_engaging')">$ &#128293; Вовлекающий</button>
+              <button class="art-improve-btn" onclick="improveArticle('improve')">&#9998; Улучшить стиль</button>
+              <button class="art-improve-btn" onclick="improveArticle('expand')">&#128200; Расширить</button>
+              <button class="art-improve-btn" onclick="improveArticle('shorten')">&#9986; Сократить</button>
+              <button class="art-improve-btn" onclick="improveArticle('fix_grammar')">&#128221; Грамматика</button>
+              <button class="art-improve-btn" onclick="improveArticle('add_seo')">&#128269; Добавить SEO</button>
+              <button class="art-improve-btn" onclick="improveArticle('make_engaging')">&#128293; Вовлекающий</button>
               <span style="margin-left:8px;font-size:0.8em;color:#657786">|</span>
-              <button class="art-improve-btn" onclick="rewriteArticleInStyle('news')">$ Новость</button>
-              <button class="art-improve-btn" onclick="rewriteArticleInStyle('seo')">$ SEO</button>
-              <button class="art-improve-btn" onclick="rewriteArticleInStyle('clickbait')">$ Кликбейт</button>
-              <button class="art-improve-btn" onclick="rewriteArticleInStyle('social')">$ Соцсети</button>
-              <button class="art-improve-btn" onclick="rewriteArticleInStyle('short')">$ Кратко</button>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('news')">&#128240; Новость</button>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('seo')">&#128269; SEO</button>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('clickbait')">&#128293; Кликбейт</button>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('social')">&#128242; Соцсети</button>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('short')">&#9889; Кратко</button>
             </div>
             <div id="art-ai-loading" style="display:none;margin-top:8px;font-size:0.85em;color:#8899a6">
               <span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#1da1f2;border-radius:50%;animation:spin .8s linear infinite;display:inline-block;vertical-align:middle"></span>
@@ -2740,8 +2759,8 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           <option value="skipped">Пропущено</option>
         </select>
         <button class="btn btn-sm btn-secondary" onclick="loadQueue()">Обновить</button>
-        <button class="btn btn-sm" style="background:#e0245e;color:#fff" onclick="cancelAllQueue('')">Отменить все ожидающие</button>
-        <button class="btn btn-sm" style="background:#71767b;color:#fff" onclick="clearDoneQueue()">Очистить завершённые</button>
+        <button class="btn btn-sm btn-danger" onclick="cancelAllQueue('')">Отменить все ожидающие</button>
+        <button class="btn btn-sm btn-secondary" onclick="clearDoneQueue()">Очистить завершённые</button>
       </div>
     </div>
     <div style="display:flex;gap:16px;margin-bottom:12px" id="queue-stats"></div>
@@ -2754,7 +2773,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     </table>
     <div style="margin-top:8px;display:flex;gap:8px">
       <span id="queue-selected-count" style="color:#8899a6;font-size:0.85em;line-height:28px"></span>
-      <button class="btn btn-sm" style="background:#e0245e;color:#fff" onclick="cancelSelectedQueue()">Отменить выбранные</button>
+      <button class="btn btn-sm btn-danger" onclick="cancelSelectedQueue()">Отменить выбранные</button>
     </div>
   </div>
 
@@ -2764,8 +2783,8 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <h2>Аналитика</h2>
       <div style="display:flex;gap:8px">
         <button class="btn btn-sm btn-secondary" onclick="loadAnalytics()">Обновить</button>
-        <button class="btn btn-sm btn-primary" onclick="generateDigest('today')">$ Дайджест за день</button>
-        <button class="btn btn-sm btn-primary" onclick="generateDigest('week')">$ Дайджест за неделю</button>
+        <button class="btn btn-sm btn-primary" onclick="generateDigest('today')">&#128240; Дайджест за день</button>
+        <button class="btn btn-sm btn-primary" onclick="generateDigest('week')">&#128240; Дайджест за неделю</button>
       </div>
     </div>
 
@@ -2868,8 +2887,8 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <button class="btn btn-warning btn-sm" onclick="bulkStatusChange('approved')">Одобрить выбранные</button>
       <button class="btn btn-danger btn-sm" onclick="bulkStatusChange('rejected')">Отклонить выбранные</button>
       <button class="btn btn-danger btn-sm" onclick="deleteSelectedNews()" style="margin-left:4px">Удалить выбранные</button>
-      <button class="btn btn-primary btn-sm" onclick="analyzeSelectedNews()">$ Анализировать выбранные</button>
-      <button class="btn btn-success btn-sm" onclick="exportSelectedToSheets()">В Sheets</button>
+      <button class="btn btn-primary btn-sm" onclick="analyzeSelectedNews()">&#9654; Анализировать выбранные</button>
+      <button class="btn btn-success btn-sm" onclick="exportSelectedToSheets()">&#9776; В Sheets</button>
       <span id="news-selected-count" style="color:#1da1f2;font-size:0.85em;margin-left:8px"></span>
       <span id="news-count" style="color:#8899a6;font-size:0.85em;margin-left:auto"></span>
     </div>
@@ -2882,11 +2901,11 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <th class="sortable" data-sort="status" onclick="sortNewsTab('status')">Статус <span class="sort-arrow">&#9650;</span></th>
         <th>Биграммы</th>
         <th>Keys.so</th>
+        <th>Похожие</th>
         <th>Trends</th>
         <th>LLM</th>
         <th class="sortable" data-sort="score" onclick="sortNewsTab('score')">Скор <span class="sort-arrow">&#9650;</span></th>
-        <th>Анализ</th>
-        <th>Лист</th>
+        <th>Дата</th>
         <th>Действия</th>
       </tr></thead>
       <tbody id="news-table"></tbody>
@@ -2944,13 +2963,13 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <div class="card">
         <h2>Тест LLM</h2>
         <div class="form-group"><label>Промпт</label><textarea id="test-llm-prompt" rows="4">Ты аналитик. Ответь JSON: {"test": "ok", "model": "your_model"}</textarea></div>
-        <button class="btn btn-primary" onclick="testLLM()">$ Отправить</button>
+        <button class="btn btn-primary" onclick="testLLM()">&#9654; Отправить</button>
         <pre id="test-llm-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
       </div>
       <div class="card">
         <h2>Тест Keys.so</h2>
         <div class="form-group"><label>Ключевое слово</label><input id="test-keyso-kw" value="gta 6"></div>
-        <button class="btn btn-primary" onclick="testKeyso()">$ Проверить</button>
+        <button class="btn btn-primary" onclick="testKeyso()">&#9654; Проверить</button>
         <pre id="test-keyso-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
       </div>
     </div>
@@ -3024,7 +3043,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <div class="card">
         <h2>Быстрые действия</h2>
         <div style="display:flex;flex-direction:column;gap:8px">
-          <button class="btn btn-primary" onclick="runProcess()">$ Обогатить одобренные</button>
+          <button class="btn btn-primary" onclick="runProcess()">&#9654; Обогатить одобренные</button>
           <button class="btn btn-warning" onclick="reparseAll()">Парсить все источники</button>
           <button class="btn btn-secondary" onclick="setupHeaders()">Создать заголовки Sheets</button>
         </div>
@@ -3355,8 +3374,8 @@ function renderDashboardRows(news) {
       <td><span class="badge badge-${n.status}" style="cursor:pointer" onclick="filterByStatus('${n.status}')">${statusLabel}</span></td>
       <td>${n.llm_trend_forecast||'-'}</td>
       <td style="white-space:nowrap">
-        <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')">Анализ</button>
-        <button class="btn btn-sm btn-success" onclick="exportOne('${n.id}')">Sheets</button>
+        <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')" title="Анализ">&#9654;</button>
+        <button class="btn btn-sm btn-success" onclick="exportOne('${n.id}')" title="В Google Sheets">&#9776;</button>
       </td>
     </tr>`;
   }).join('');
@@ -3903,15 +3922,15 @@ function renderNewsFiltered() {
       <td>${fmtDate(n.published_at)}</td>
       <td><span class="badge badge-${n.status}">${statusLabel}</span></td>
       <td title="${esc(bigrams)}" style="max-width:160px;font-size:0.82em">${bigrams.slice(0,50)||'-'}</td>
-      <td style="font-size:0.82em" title="Частота: ${keysoFreq}, Похожих: ${keysoSimilar}">${keysoFreq}${keysoSimilar?' <span style="color:#8899a6">(${keysoSimilar})</span>':''}</td>
+      <td style="font-size:0.82em">${keysoFreq}</td>
+      <td style="font-size:0.82em;color:#8899a6">${keysoSimilar||'-'}</td>
       <td style="font-size:0.82em">${trendsLabel}</td>
       <td style="font-size:0.82em">${esc(n.llm_recommendation||'-')}</td>
       <td>${n.llm_trend_forecast||'-'}</td>
       <td style="font-size:0.82em;color:${analyzed!=='-'?'#17bf63':'#8899a6'}">${analyzed}</td>
-      <td>${n.sheets_row||'-'}</td>
       <td style="white-space:nowrap">
-        <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')" title="$ Анализ API">$ Анализ</button>
-        <button class="btn btn-sm btn-success" onclick="exportOne('${n.id}')">Sheets</button>
+        <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')" title="Анализ API">&#9654;</button>
+        <button class="btn btn-sm btn-success" onclick="exportOne('${n.id}')" title="В Google Sheets">&#9776;</button>
       </td>
     </tr>`;
   }).join('');
@@ -3933,7 +3952,7 @@ function toggleAllNews(el) {
 async function analyzeSelectedNews() {
   const ids = getNewsSelectedIds();
   if (!ids.length) { toast('Сначала выберите новости', true); return; }
-  if (!confirm(`$ Анализировать ${ids.length} новостей? Это расходует API (Keys.so, Trends, LLM).`)) return;
+  if (!confirm(`Анализировать ${ids.length} новостей? Это расходует API (Keys.so, Trends, LLM).`)) return;
   toast(`Запуск анализа ${ids.length} новостей...`);
   let ok = 0, fail = 0;
   for (const id of ids) {
@@ -4874,7 +4893,7 @@ function renderQueueTable() {
       <td><span style="color:${statColors[t.status]||'#8899a6'}">${statusIcons[t.status]||''} ${statLabels[t.status]||t.status}</span></td>
       <td style="max-width:200px;font-size:0.82em;color:#8899a6"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">${resultText}</div></td>
       <td style="font-size:0.82em;color:#8899a6;white-space:nowrap">${timeAgo}</td>
-      <td>${canCancel ? `<button class="btn btn-sm" style="background:#e0245e;color:#fff;padding:2px 8px;font-size:0.78em" onclick="cancelQueueTask('${t.id}')">Отменить</button>` : ''}</td>
+      <td>${canCancel ? `<button class="btn btn-sm btn-danger" onclick="cancelQueueTask('${t.id}')">Отменить</button>` : ''}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="8" style="text-align:center;color:#8899a6;padding:20px">Очередь пуста</td></tr>';
   updateQueueSelectedCount();
