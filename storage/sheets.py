@@ -81,8 +81,8 @@ def write_news_row(news: dict, analysis: dict) -> int | None:
             news.get("plain_text", "")[:1000],                  # O: Plain Text
         ]
 
-        sheet.append_row(row, value_input_option="USER_ENTERED")
-        row_num = len(sheet.get_all_values())
+        sheet.append_row(row, value_input_option="USER_ENTERED", table_range="A1")
+        row_num = len(sheet.col_values(1))
         logger.info("Written to Sheets row %d: %s", row_num, news.get("title", "")[:50])
         return row_num
 
@@ -91,25 +91,28 @@ def write_news_row(news: dict, analysis: dict) -> int | None:
         return None
 
 
+HEADERS = [
+    "Дата парсинга", "Источник (URL)", "Title", "H1", "Description",
+    "Топ биграммы", "Частота (Keys.so)", "Google Trends RU",
+    "Google Trends US", "Рекомендация LLM", "Прогноз трендовости",
+    "Похожие запросы Keys.so", "Объединить с", "Статус", "Plain Text",
+]
+
+
 def setup_headers():
-    """Создаёт заголовки в таблице, если она пустая."""
+    """Создаёт заголовки в первой строке, если их нет."""
     client = _get_client()
     if not client:
         return
 
     try:
         sheet = client.open_by_key(config.GOOGLE_SHEETS_ID).worksheet(config.SHEETS_TAB)
-        existing = sheet.get_all_values()
-        if existing:
-            return
+        first_row = sheet.row_values(1)
+        if first_row and first_row[0] == HEADERS[0]:
+            return  # headers already exist
 
-        headers = [
-            "Дата парсинга", "Источник (URL)", "Title", "H1", "Description",
-            "Топ биграммы", "Частота (Keys.so)", "Google Trends RU",
-            "Google Trends US", "Рекомендация LLM", "Прогноз трендовости",
-            "Похожие запросы Keys.so", "Объединить с", "Статус", "Plain Text",
-        ]
-        sheet.append_row(headers)
+        # Insert headers as row 1
+        sheet.insert_row(HEADERS, index=1, value_input_option="USER_ENTERED")
         logger.info("Sheet headers created")
     except Exception as e:
         logger.error("Failed to setup sheet headers: %s", e)
