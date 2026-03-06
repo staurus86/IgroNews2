@@ -10,7 +10,7 @@ from checks.momentum import get_momentum
 from checks.ner import extract_entities
 from checks.headline_score import headline_score
 from checks.source_weight import get_source_weight
-from storage.database import get_connection, _is_postgres, update_news_status
+from storage.database import get_connection, _is_postgres, update_news_status, save_check_results
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +79,23 @@ def run_review_pipeline(news_list: list[dict]) -> dict:
         for member in group["members"]:
             member["dedup_status"] = group["status"]
 
-    # Update statuses in DB
+    # Update statuses and save check results in DB
     for r in results:
         if r.get("is_duplicate"):
             update_news_status(r["id"], "duplicate")
         else:
             update_news_status(r["id"], "in_review")
+        try:
+            save_check_results(
+                r["id"], r["checks"],
+                sentiment=r.get("sentiment"),
+                tags=r.get("tags"),
+                momentum=r.get("momentum"),
+                headline=r.get("headline"),
+                total_score=r.get("total_score", 0),
+            )
+        except Exception as e:
+            logger.warning("Failed to save check results for %s: %s", r["id"], e)
 
     return {"results": results, "groups": groups}
 

@@ -102,75 +102,79 @@ def init_db():
         )
     """
 
+    news_sql = """
+        CREATE TABLE IF NOT EXISTS news (
+            id TEXT PRIMARY KEY,
+            source TEXT,
+            url TEXT,
+            title TEXT,
+            h1 TEXT,
+            description TEXT,
+            plain_text TEXT,
+            published_at TEXT,
+            parsed_at TEXT,
+            status TEXT DEFAULT 'new'
+        )
+    """
+    analysis_sql = """
+        CREATE TABLE IF NOT EXISTS news_analysis (
+            news_id TEXT PRIMARY KEY REFERENCES news(id),
+            bigrams TEXT,
+            trigrams TEXT,
+            trends_data TEXT,
+            keyso_data TEXT,
+            llm_recommendation TEXT,
+            llm_trend_forecast TEXT,
+            llm_merged_with TEXT,
+            sheets_row INTEGER,
+            processed_at TEXT
+        )
+    """
+
     if _is_postgres():
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS news (
-                id TEXT PRIMARY KEY,
-                source TEXT,
-                url TEXT,
-                title TEXT,
-                h1 TEXT,
-                description TEXT,
-                plain_text TEXT,
-                published_at TEXT,
-                parsed_at TEXT,
-                status TEXT DEFAULT 'new'
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS news_analysis (
-                news_id TEXT PRIMARY KEY REFERENCES news(id),
-                bigrams TEXT,
-                trigrams TEXT,
-                trends_data TEXT,
-                keyso_data TEXT,
-                llm_recommendation TEXT,
-                llm_trend_forecast TEXT,
-                llm_merged_with TEXT,
-                sheets_row INTEGER,
-                processed_at TEXT
-            )
-        """)
+        cur.execute(news_sql)
+        cur.execute(analysis_sql)
         cur.execute(articles_sql)
         cur.execute(task_queue_sql)
         cur.execute(feedback_sql)
         cur.execute(prompt_versions_sql)
     else:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS news (
-                id TEXT PRIMARY KEY,
-                source TEXT,
-                url TEXT,
-                title TEXT,
-                h1 TEXT,
-                description TEXT,
-                plain_text TEXT,
-                published_at TEXT,
-                parsed_at TEXT,
-                status TEXT DEFAULT 'new'
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS news_analysis (
-                news_id TEXT PRIMARY KEY REFERENCES news(id),
-                bigrams TEXT,
-                trigrams TEXT,
-                trends_data TEXT,
-                keyso_data TEXT,
-                llm_recommendation TEXT,
-                llm_trend_forecast TEXT,
-                llm_merged_with TEXT,
-                sheets_row INTEGER,
-                processed_at TEXT
-            )
-        """)
+        cur.execute(news_sql)
+        cur.execute(analysis_sql)
         cur.execute(articles_sql)
         cur.execute(task_queue_sql)
         cur.execute(feedback_sql)
         cur.execute(prompt_versions_sql)
         conn.commit()
 
+    # Add check_data columns if missing (stores viral, sentiment, freshness, tags as JSON)
+    _add_column_if_missing(cur, "news_analysis", "viral_score", "INTEGER DEFAULT 0")
+    _add_column_if_missing(cur, "news_analysis", "viral_level", "TEXT DEFAULT ''")
+    _add_column_if_missing(cur, "news_analysis", "viral_data", "TEXT DEFAULT '{}'")
+    _add_column_if_missing(cur, "news_analysis", "sentiment_label", "TEXT DEFAULT ''")
+    _add_column_if_missing(cur, "news_analysis", "sentiment_score", "REAL DEFAULT 0")
+    _add_column_if_missing(cur, "news_analysis", "freshness_status", "TEXT DEFAULT ''")
+    _add_column_if_missing(cur, "news_analysis", "freshness_hours", "REAL DEFAULT -1")
+    _add_column_if_missing(cur, "news_analysis", "tags_data", "TEXT DEFAULT '[]'")
+    _add_column_if_missing(cur, "news_analysis", "momentum_score", "INTEGER DEFAULT 0")
+    _add_column_if_missing(cur, "news_analysis", "headline_score", "INTEGER DEFAULT 0")
+    _add_column_if_missing(cur, "news_analysis", "total_score", "INTEGER DEFAULT 0")
+
+    if not _is_postgres():
+        conn.commit()
+
     logger.info("Database initialized")
+
+
+def _add_column_if_missing(cur, table, column, col_type):
+    """Безопасно добавляет столбец если его нет."""
+    try:
+        if _is_postgres():
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}")
+        else:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+    except Exception:
+        pass  # Column already exists
 
 
 def news_exists(url: str) -> bool:
@@ -274,3 +278,64 @@ def save_analysis(news_id: str, **kwargs):
              llm_recommendation, llm_trend_forecast, llm_merged_with, sheets_row, now)
         )
         conn.commit()
+
+
+def save_check_results(news_id: str, checks: dict, sentiment: dict = None,
+                       tags: list = None, momentum: dict = None,
+                       headline: dict = None, total_score: int = 0):
+    """Сохраняет результаты проверок (viral, sentiment, freshness и др.) в news_analysis."""
+    import json
+    conn = get_connection()
+    cur = conn.cursor()
+    ph = "%s" if _is_postgres() else "?"
+
+    viral = checks.get("viral", {})
+    freshness = checks.get("freshness", {})
+
+    vals = {
+        "viral_score": viral.get("score", 0),
+        "viral_level": viral.get("level", ""),
+        "viral_data": json.dumps(viral.get("triggers", []), ensure_ascii=False),
+        "sentiment_label": (sentiment or {}).get("label", ""),
+        "sentiment_score": (sentiment or {}).get("score", 0),
+        "freshness_status": freshness.get("status", ""),
+        "freshness_hours": freshness.get("age_hours", -1),
+        "tags_data": json.dumps([{"id": t["id"], "label": t["label"]} for t in (tags or [])[:5]], ensure_ascii=False),
+        "momentum_score": (momentum or {}).get("score", 0),
+        "headline_score": (headline or {}).get("score", 0),
+        "total_score": total_score,
+    }
+
+    # Ensure row exists in news_analysis
+    if _is_postgres():
+        cur.execute(f"INSERT INTO news_analysis (news_id) VALUES ({ph}) ON CONFLICT DO NOTHING", (news_id,))
+        set_clause = ", ".join(f"{k} = {ph}" for k in vals)
+        cur.execute(f"UPDATE news_analysis SET {set_clause} WHERE news_id = {ph}",
+                    list(vals.values()) + [news_id])
+    else:
+        cur.execute(f"INSERT OR IGNORE INTO news_analysis (news_id) VALUES ({ph})", (news_id,))
+        set_clause = ", ".join(f"{k} = {ph}" for k in vals)
+        cur.execute(f"UPDATE news_analysis SET {set_clause} WHERE news_id = {ph}",
+                    list(vals.values()) + [news_id])
+        conn.commit()
+
+
+def cleanup_old_plaintext(days: int = 14):
+    """Очищает plain_text для новостей старше N дней (экономия памяти)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    ph = "%s" if _is_postgres() else "?"
+    cur.execute(f"""
+        UPDATE news SET plain_text = ''
+        WHERE parsed_at < {ph} AND plain_text != '' AND status IN ('processed', 'ready', 'rejected', 'duplicate')
+    """, (cutoff,))
+    if _is_postgres():
+        count = cur.rowcount
+    else:
+        count = cur.rowcount
+        conn.commit()
+    if count > 0:
+        logger.info("Cleaned plain_text for %d old news items", count)
+    return count

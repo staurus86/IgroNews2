@@ -80,6 +80,17 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        # Static files that don't require auth
+        if path == "/robots.txt":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"User-agent: *\nDisallow: /\n")
+            return
+        if path == "/favicon.ico":
+            self.send_response(204)
+            self.end_headers()
+            return
         if path == "/login":
             self._serve_login()
             return
@@ -367,7 +378,11 @@ async function login() {
             SELECT n.id, n.source, n.title, n.url, n.h1, n.description,
                    n.published_at, n.parsed_at, n.status,
                    a.bigrams, a.trigrams, a.trends_data, a.keyso_data,
-                   a.llm_recommendation, a.llm_trend_forecast, a.sheets_row, a.processed_at
+                   a.llm_recommendation, a.llm_trend_forecast, a.sheets_row, a.processed_at,
+                   a.viral_score, a.viral_level, a.viral_data,
+                   a.sentiment_label, a.sentiment_score,
+                   a.freshness_status, a.freshness_hours,
+                   a.tags_data, a.momentum_score, a.headline_score, a.total_score
             FROM news n
             LEFT JOIN news_analysis a ON n.id = a.news_id
             {where}
@@ -2597,15 +2612,15 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <!-- Dashboard Filters -->
     <div class="dash-filters">
       <span class="filter-label">Поиск:</span>
-      <input type="search" id="dash-search" placeholder="По заголовку..." oninput="applyDashFilters()" autocomplete="off" name="dash-search-nologin">
+      <input type="search" id="dash-search" placeholder="По заголовку..." oninput="debounceDashSearch()" autocomplete="off" name="dash-search-nologin">
       <span class="filter-sep"></span>
       <span class="filter-label">Источник:</span>
-      <select id="dash-source" onchange="applyDashFilters()">
+      <select id="dash-source" onchange="loadNews()">
         <option value="">Все</option>
       </select>
       <span class="filter-sep"></span>
       <span class="filter-label">Статус:</span>
-      <select id="dash-status" onchange="applyDashFilters()">
+      <select id="dash-status" onchange="loadNews()">
         <option value="">Все</option>
         <option value="new">Новые</option>
         <option value="in_review">На проверке</option>
@@ -2616,7 +2631,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       </select>
       <span class="filter-sep"></span>
       <span class="filter-label">Тег:</span>
-      <select id="dash-tag" onchange="applyDashFilters()">
+      <select id="dash-tag" onchange="loadNews()">
         <option value="">Все</option>
         <option value="release">Release</option>
         <option value="update">Update/Patch</option>
@@ -2630,9 +2645,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       </select>
       <span class="filter-sep"></span>
       <span class="filter-label">С:</span>
-      <input type="date" id="dash-date-from" onchange="applyDashFilters()">
+      <input type="date" id="dash-date-from" onchange="loadNews()">
       <span class="filter-label">По:</span>
-      <input type="date" id="dash-date-to" onchange="applyDashFilters()">
+      <input type="date" id="dash-date-to" onchange="loadNews()">
       <span class="filter-sep"></span>
       <button class="btn btn-sm btn-secondary" onclick="setDashDateRange('today')">Сегодня</button>
       <button class="btn btn-sm btn-secondary" onclick="setDashDateRange('week')">Неделя</button>
@@ -2654,9 +2669,17 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     </div>
     <div id="groups-summary" style="display:none;margin-bottom:12px"></div>
 
-    <div class="table-info">
+    <div class="table-info" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <span id="dash-table-count"></span>
       <span id="dash-showing"></span>
+      <span class="filter-sep"></span>
+      <span class="filter-label">На стр:</span>
+      <select id="dash-page-size" onchange="changeDashPageSize()" style="padding:2px 6px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px;font-size:0.85em">
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+        <option value="150">150</option>
+        <option value="200">200</option>
+      </select>
     </div>
     <table id="dash-table">
       <thead><tr>
@@ -2673,6 +2696,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       </tr></thead>
       <tbody id="dash-news"></tbody>
     </table>
+    <div id="dash-pagination"></div>
     <div id="dash-empty" class="empty-state" style="display:none">
       <div class="empty-icon">&#128270;</div>
       <div>Нет новостей по заданным фильтрам</div>
@@ -3609,7 +3633,7 @@ async function loadStats() {
 function filterByStatus(status) {
   document.getElementById('dash-status').value = status;
   loadStats();
-  loadNews().then(() => applyDashFilters());
+  loadNews();
 }
 
 // Dashboard groups data
@@ -3685,45 +3709,99 @@ function selectGroup() {
 // renderTags and renderGroup replaced by renderTagsClickable and renderGroupClickable
 
 // News
-let _allNews = []; // full news array for client-side filtering
+let _allNews = []; // news for current dashboard page
+let _allNewsFull = []; // used for source filter population
 
 let _newsTotal = 0;
 let _newsOffset = 0;
 let _newsPageSize = 100;
 
-async function loadNews() {
+// Dashboard pagination
+let _dashOffset = 0;
+let _dashPageSize = 50;
+let _dashTotal = 0;
+
+async function loadNews(keepOffset) {
   // Build URL with current dashboard filters for server-side filtering
   const dashStatus = document.getElementById('dash-status')?.value || '';
   const dashSource = document.getElementById('dash-source')?.value || '';
   const dashDateFrom = document.getElementById('dash-date-from')?.value || '';
   const dashDateTo = document.getElementById('dash-date-to')?.value || '';
-  let url = `/api/news?limit=500`;
+  const search = (document.getElementById('dash-search')?.value || '').trim();
+  const tag = document.getElementById('dash-tag')?.value || '';
+
+  if (!keepOffset) _dashOffset = 0;
+  _dashPageSize = parseInt(document.getElementById('dash-page-size')?.value) || 50;
+
+  let url = `/api/news?limit=${_dashPageSize}&offset=${_dashOffset}`;
   if (dashStatus) url += `&status=${dashStatus}`;
   if (dashSource) url += `&source=${encodeURIComponent(dashSource)}`;
   if (dashDateFrom) url += `&date_from=${dashDateFrom}`;
   if (dashDateTo) url += `&date_to=${dashDateTo}`;
 
   const resp = await api(url);
-  const news = resp.news || resp;  // backward compat
+  const news = resp.news || resp;
   _allNews = news;
-  _newsTotal = resp.total || news.length;
+  _dashTotal = resp.total || news.length;
 
-  // Populate source filters (only on first load with no filters)
-  if (!dashStatus && !dashSource) {
-    const sources = [...new Set(news.map(n => n.source))].sort();
-    const dashSrc = document.getElementById('dash-source');
-    if (dashSrc && dashSrc.options.length <= 1) {
-      sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; dashSrc.appendChild(o); });
-    }
-    const srcFilter = document.getElementById('filter-source');
+  // Populate source filters (only once, with a no-filter request)
+  const dashSrc = document.getElementById('dash-source');
+  const srcFilter = document.getElementById('filter-source');
+  if (dashSrc && dashSrc.options.length <= 1) {
+    const srcResp = await api('/api/news?limit=1000&offset=0');
+    const allSrc = [...new Set((srcResp.news || srcResp).map(n => n.source))].sort();
+    allSrc.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; dashSrc.appendChild(o); });
     if (srcFilter && srcFilter.options.length <= 1) {
-      sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; srcFilter.appendChild(o); });
+      allSrc.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; srcFilter.appendChild(o); });
     }
   }
 
-  applyDashFilters();
+  // Client-side filter only for search and tag (not sent to server)
+  let filtered = news;
+  if (search) filtered = filtered.filter(n => (n.title||'').toLowerCase().includes(search.toLowerCase()) || (n.description||'').toLowerCase().includes(search.toLowerCase()));
+  if (tag) filtered = filtered.filter(n => {
+    const tags = _dashTags[n.id] || [];
+    return tags.some(t => t.id === tag);
+  });
+
+  renderDashboard(filtered);
+  renderDashPagination();
   renderNewsTab(news);
   initEditorSourceFilter();
+}
+
+function changeDashPageSize() {
+  _dashOffset = 0;
+  loadNews();
+}
+
+function loadDashPage(offset) {
+  _dashOffset = Math.max(0, offset);
+  loadNews(true);
+}
+
+function renderDashPagination() {
+  const el = document.getElementById('dash-pagination');
+  if (!el) return;
+  const totalPages = Math.ceil(_dashTotal / _dashPageSize);
+  const currentPage = Math.floor(_dashOffset / _dashPageSize) + 1;
+  if (totalPages <= 1) { el.innerHTML = ''; return; }
+  let html = '<div style="display:flex;gap:4px;align-items:center;margin-top:10px;justify-content:center">';
+  if (currentPage > 1) html += `<button class="btn btn-sm btn-secondary" onclick="loadDashPage(0)">&#9664;&#9664;</button>`;
+  if (currentPage > 1) html += `<button class="btn btn-sm btn-secondary" onclick="loadDashPage(${_dashOffset - _dashPageSize})">&#9664; Назад</button>`;
+  // Page numbers (show up to 7 pages around current)
+  const startPage = Math.max(1, currentPage - 3);
+  const endPage = Math.min(totalPages, currentPage + 3);
+  for (let p = startPage; p <= endPage; p++) {
+    const offset = (p - 1) * _dashPageSize;
+    if (p === currentPage) html += `<button class="btn btn-sm btn-primary" disabled>${p}</button>`;
+    else html += `<button class="btn btn-sm btn-secondary" onclick="loadDashPage(${offset})">${p}</button>`;
+  }
+  if (currentPage < totalPages) html += `<button class="btn btn-sm btn-secondary" onclick="loadDashPage(${_dashOffset + _dashPageSize})">Далее &#9654;</button>`;
+  if (currentPage < totalPages) html += `<button class="btn btn-sm btn-secondary" onclick="loadDashPage(${(_dashTotal - 1) - ((_dashTotal - 1) % _dashPageSize)})">&#9654;&#9654;</button>`;
+  html += `<span style="color:#8899a6;font-size:0.85em;margin:0 8px">Стр. ${currentPage} из ${totalPages} (${_dashTotal})</span>`;
+  html += '</div>';
+  el.innerHTML = html;
 }
 
 async function loadNewsPage(offset) {
@@ -3762,43 +3840,26 @@ function renderNewsPagination() {
 }
 
 function applyDashFilters() {
-  const search = (document.getElementById('dash-search')?.value || '').toLowerCase();
+  // Server-side filters (status, source, date) are handled by loadNews
+  // Just reload from server with new filters, reset to page 1
+  const search = document.getElementById('dash-search')?.value || '';
   const source = document.getElementById('dash-source')?.value || '';
   const status = document.getElementById('dash-status')?.value || '';
   const tag = document.getElementById('dash-tag')?.value || '';
   const dateFrom = document.getElementById('dash-date-from')?.value || '';
   const dateTo = document.getElementById('dash-date-to')?.value || '';
-
-  let filtered = _allNews;
-
-  if (search) filtered = filtered.filter(n => (n.title||'').toLowerCase().includes(search) || (n.description||'').toLowerCase().includes(search));
-  if (source) filtered = filtered.filter(n => n.source === source);
-  if (status) filtered = filtered.filter(n => n.status === status);
-  if (tag) filtered = filtered.filter(n => {
-    const tags = _dashTags[n.id] || [];
-    return tags.some(t => t.id === tag);
-  });
-  if (dateFrom) filtered = filtered.filter(n => {
-    const d = (n.published_at || n.parsed_at || '').slice(0,10);
-    return d >= dateFrom;
-  });
-  if (dateTo) filtered = filtered.filter(n => {
-    const d = (n.published_at || n.parsed_at || '').slice(0,10);
-    return d <= dateTo;
-  });
-
-  renderDashboard(filtered);
+  loadNews();
   renderActiveFilters(search, source, status, tag, dateFrom, dateTo);
 }
 
 function renderActiveFilters(search, source, status, tag, dateFrom, dateTo) {
   const chips = [];
-  if (search) chips.push({label: 'Поиск: ' + search, clear: () => { document.getElementById('dash-search').value = ''; applyDashFilters(); }});
-  if (source) chips.push({label: 'Источник: ' + source, clear: () => { document.getElementById('dash-source').value = ''; applyDashFilters(); }});
-  if (status) chips.push({label: 'Статус: ' + status, clear: () => { document.getElementById('dash-status').value = ''; applyDashFilters(); loadStats(); }});
-  if (tag) chips.push({label: 'Тег: ' + tag, clear: () => { document.getElementById('dash-tag').value = ''; applyDashFilters(); }});
-  if (dateFrom) chips.push({label: 'С: ' + dateFrom, clear: () => { document.getElementById('dash-date-from').value = ''; applyDashFilters(); }});
-  if (dateTo) chips.push({label: 'По: ' + dateTo, clear: () => { document.getElementById('dash-date-to').value = ''; applyDashFilters(); }});
+  if (search) chips.push({label: 'Поиск: ' + search, clear: () => { document.getElementById('dash-search').value = ''; loadNews(); }});
+  if (source) chips.push({label: 'Источник: ' + source, clear: () => { document.getElementById('dash-source').value = ''; loadNews(); }});
+  if (status) chips.push({label: 'Статус: ' + status, clear: () => { document.getElementById('dash-status').value = ''; loadStats(); loadNews(); }});
+  if (tag) chips.push({label: 'Тег: ' + tag, clear: () => { document.getElementById('dash-tag').value = ''; loadNews(); }});
+  if (dateFrom) chips.push({label: 'С: ' + dateFrom, clear: () => { document.getElementById('dash-date-from').value = ''; loadNews(); }});
+  if (dateTo) chips.push({label: 'По: ' + dateTo, clear: () => { document.getElementById('dash-date-to').value = ''; loadNews(); }});
 
   const container = document.getElementById('active-filters');
   container.innerHTML = '';
@@ -3818,13 +3879,13 @@ function resetDashFilters() {
   document.getElementById('dash-tag').value = '';
   document.getElementById('dash-date-from').value = '';
   document.getElementById('dash-date-to').value = '';
-  applyDashFilters();
   loadStats();
+  loadNews();
 }
 
 function filterByTag(tagId) {
   document.getElementById('dash-tag').value = tagId;
-  applyDashFilters();
+  loadNews();
 }
 
 function filterBySource(source) {
@@ -3902,15 +3963,15 @@ function renderDashboard(news) {
     return;
   }
   emptyEl.style.display = 'none';
-  infoEl.textContent = `${news.length} новостей`;
-  showEl.textContent = news.length > 200 ? '(показано 200)' : '';
+  infoEl.textContent = `${news.length} из ${_dashTotal}`;
+  showEl.textContent = '';
 
   const sorted = sortNews(news, _sortField, _sortDir);
   renderDashboardRows(sorted);
 }
 
 function renderDashboardRows(news) {
-  const shown = news.slice(0, 200);
+  const shown = news;
   document.getElementById('dash-news').innerHTML = shown.map(n => {
     const gid = _dashIdToGroup[n.id];
     const rowStyle = gid ? `border-left:3px solid ${GROUP_COLORS[(gid-1)%GROUP_COLORS.length]}` : '';
@@ -5530,7 +5591,7 @@ function setNewsDateRange(range) {
 function setDashDateRange(range) {
   const fromEl = document.getElementById('dash-date-from');
   const toEl = document.getElementById('dash-date-to');
-  if (!range) { fromEl.value = ''; toEl.value = ''; applyDashFilters(); return; }
+  if (!range) { fromEl.value = ''; toEl.value = ''; loadNews(); return; }
   const now = new Date();
   const fmt = d => d.toISOString().slice(0,10);
   toEl.value = fmt(now);
@@ -5538,7 +5599,7 @@ function setDashDateRange(range) {
   else if (range === 'yesterday') { const y = new Date(now); y.setDate(y.getDate()-1); fromEl.value = fmt(y); toEl.value = fmt(y); }
   else if (range === 'week') { const w = new Date(now); w.setDate(w.getDate()-7); fromEl.value = fmt(w); }
   else if (range === 'month') { const m = new Date(now); m.setMonth(m.getMonth()-1); fromEl.value = fmt(m); }
-  applyDashFilters();
+  loadNews();
 }
 
 // Logs
@@ -5620,6 +5681,12 @@ async function aiRecommend(newsId) {
 
 // Init
 function loadAll() { loadStats(); loadNews(); }
+
+let _dashSearchTimer = null;
+function debounceDashSearch() {
+  clearTimeout(_dashSearchTimer);
+  _dashSearchTimer = setTimeout(() => loadNews(), 300);
+}
 
 // ===== VIRAL TAB =====
 let _viralData = [];

@@ -10,7 +10,7 @@ from nlp.tfidf import extract_keywords
 from apis.keyso import get_keyword_info, get_similar_keywords
 from apis.google_trends import get_trends_for_keyword
 from apis.llm import forecast_trend, suggest_keyso_queries
-from storage.database import get_unprocessed_news, update_news_status, save_analysis
+from storage.database import get_unprocessed_news, update_news_status, save_analysis, cleanup_old_plaintext
 from storage.sheets import write_news_row
 
 logger = logging.getLogger(__name__)
@@ -135,6 +135,9 @@ def start_scheduler():
 
     # Обработка новостей каждые 10 минут
     scheduler.add_job(process_news, "interval", minutes=10, id="process_news")
+
+    # Очистка старого plain_text раз в сутки (экономия памяти БД)
+    scheduler.add_job(cleanup_old_plaintext, "interval", hours=24, id="cleanup_plaintext")
 
     # Первый запуск сразу
     for mins in intervals:
