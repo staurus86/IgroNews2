@@ -2159,6 +2159,7 @@ th.sortable:hover { color:#1da1f2; }
 th.sortable .sort-arrow { margin-left:3px; font-size:0.75em; opacity:0.4; }
 th.sortable.sort-active .sort-arrow { opacity:1; color:#1da1f2; }
 td { padding:8px 12px; border-bottom:1px solid #22303c; max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+td.td-tip { overflow:visible; position:relative; }
 td.td-title { white-space:normal; overflow:hidden; max-width:420px; }
 td.td-title > a, td.td-title > span { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; line-height:1.4; }
 tr { transition:background .15s; }
@@ -2233,7 +2234,8 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 /* Copyable tooltip */
 .tip-wrap { position:relative; display:inline-block; cursor:pointer; }
 .tip-wrap .tip-count { color:#8899a6; border-bottom:1px dashed #38444d; }
-.tip-wrap .tip-box { display:none; position:absolute; z-index:50; left:0; top:100%; margin-top:4px; background:#22303c; border:1px solid #38444d; border-radius:8px; padding:8px 0; min-width:220px; max-width:320px; max-height:260px; overflow-y:auto; box-shadow:0 8px 24px rgba(0,0,0,0.5); font-size:0.82em; }
+.tip-wrap .tip-box { display:none; position:absolute; z-index:50; left:0; top:100%; padding-top:4px; font-size:0.82em; }
+.tip-wrap .tip-box-inner { background:#22303c; border:1px solid #38444d; border-radius:8px; padding:8px 0; min-width:220px; max-width:320px; max-height:260px; overflow-y:auto; box-shadow:0 8px 24px rgba(0,0,0,0.5); }
 .tip-wrap:hover .tip-box { display:block; }
 .tip-box .tip-row { display:flex; justify-content:space-between; align-items:center; padding:4px 10px; transition:background .1s; }
 .tip-box .tip-row:hover { background:#192734; }
@@ -3448,7 +3450,7 @@ function renderSimilarTooltip(count, items) {
     return `<div class="tip-row"><span class="tip-word">${esc(word)}</span>${ws ? `<span class="tip-ws">${ws}</span>` : ''}<button class="tip-copy" onclick="event.stopPropagation();navigator.clipboard.writeText('${esc(word).replace(/'/g,"\\'")}');this.textContent='✓';setTimeout(()=>this.textContent='⎘',800)" title="Копировать">⎘</button></div>`;
   }).join('');
   const allWords = items.map(it => typeof it === 'string' ? it : (it.word || '')).join('\\n');
-  return `<div class="tip-wrap"><span class="tip-count">${count}</span><div class="tip-box"><div class="tip-header"><span>Похожие запросы</span><button class="tip-copy-all" onclick="event.stopPropagation();navigator.clipboard.writeText('${allWords.replace(/'/g,"\\'")}');this.textContent='Скопировано!';setTimeout(()=>this.textContent='Копировать все',1000)">Копировать все</button></div>${rows}</div></div>`;
+  return `<div class="tip-wrap"><span class="tip-count">${count}</span><div class="tip-box"><div class="tip-box-inner"><div class="tip-header"><span>Похожие запросы</span><button class="tip-copy-all" onclick="event.stopPropagation();navigator.clipboard.writeText('${allWords.replace(/'/g,"\\'")}');this.textContent='Скопировано!';setTimeout(()=>this.textContent='Копировать все',1000)">Копировать все</button></div>${rows}</div></div></div>`;
 }
 
 // Selection
@@ -3973,7 +3975,7 @@ function renderNewsFiltered() {
       <td><span class="badge badge-${n.status}">${statusLabel}</span></td>
       <td title="${esc(bigrams)}" style="max-width:160px;font-size:0.82em">${bigrams.slice(0,50)||'-'}</td>
       <td style="font-size:0.82em">${keysoFreq}</td>
-      <td style="font-size:0.82em">${keysoSimilar ? renderSimilarTooltip(keysoSimilar, keysoSimilarItems) : '-'}</td>
+      <td class="td-tip" style="font-size:0.82em">${keysoSimilar ? renderSimilarTooltip(keysoSimilar, keysoSimilarItems) : '-'}</td>
       <td style="font-size:0.82em">${trendsLabel}</td>
       <td style="font-size:0.82em">${esc(n.llm_recommendation||'-')}</td>
       <td>${n.llm_trend_forecast||'-'}</td>
