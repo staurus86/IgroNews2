@@ -100,6 +100,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/quick_tags": lambda: self._quick_tags(body),
             "/api/review": lambda: self._run_review(body),
             "/api/approve": lambda: self._approve_news(body),
+            "/api/reject": lambda: self._reject_news(body),
             "/api/users/add": lambda: self._add_user(body),
             "/api/users/delete": lambda: self._delete_user(body),
         }
@@ -620,6 +621,18 @@ async function login() {
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
 
+    def _reject_news(self, body):
+        """Отклоняет новость."""
+        news_id = body.get("news_id")
+        if not news_id:
+            self._json({"status": "error", "message": "news_id required"})
+            return
+        try:
+            update_news_status(news_id, "rejected")
+            self._json({"status": "ok"})
+        except Exception as e:
+            self._json({"status": "error", "message": str(e)})
+
     def _test_sheets(self, body):
         try:
             import config
@@ -779,6 +792,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 <div class="container">
   <div class="tabs">
     <div class="tab active" data-tab="dashboard">Дашборд</div>
+    <div class="tab" data-tab="review">Проверка <span id="review-badge" class="badge badge-new" style="display:none">0</span></div>
     <div class="tab" data-tab="news">Новости</div>
     <div class="tab" data-tab="sources">Источники</div>
     <div class="tab" data-tab="prompts">Промпты</div>
@@ -808,18 +822,40 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <tbody id="dash-news"></tbody>
     </table>
 
-    <!-- Review Results -->
-    <div id="review-results" style="display:none;margin-top:20px">
-      <h2>Результаты проверки</h2>
-      <div id="review-groups"></div>
-      <table style="margin-top:10px">
-        <thead><tr><th><input type="checkbox" id="approve-all" onchange="toggleApproveAll(this)"></th><th>Заголовок</th><th>Источник</th><th>Дедуп</th><th>Качество</th><th>Релев.</th><th>Свежесть</th><th>Вирал.</th><th>Тональн.</th><th>Момент</th><th>Теги</th><th>Итог</th><th>Ок</th></tr></thead>
+  </div>
+
+  <!-- REVIEW -->
+  <div class="panel" id="panel-review">
+    <div id="review-empty" style="padding:30px;text-align:center;color:#8899a6">
+      Выберите новости на Дашборде и нажмите «Отправить на проверку»
+    </div>
+    <div id="review-content" style="display:none">
+      <div class="btn-group">
+        <button class="btn btn-success" onclick="approveSelected()">Одобрить выбранные</button>
+        <button class="btn btn-danger" onclick="rejectSelected()">Отклонить выбранные</button>
+        <button class="btn btn-secondary" onclick="toggleApproveAllPassed()">Выбрать прошедшие</button>
+        <span id="review-count" style="color:#8899a6;font-size:0.9em;margin-left:10px"></span>
+      </div>
+      <div id="review-groups" style="margin-bottom:12px"></div>
+      <table>
+        <thead><tr>
+          <th><input type="checkbox" id="approve-all" onchange="toggleApproveAll(this)"></th>
+          <th>Заголовок</th>
+          <th>Источник</th>
+          <th>Дедуп</th>
+          <th>Качество</th>
+          <th>Релев.</th>
+          <th>Свежесть</th>
+          <th>Вирал.</th>
+          <th>Тональн.</th>
+          <th>Момент</th>
+          <th>Теги</th>
+          <th>Итог</th>
+          <th>Ок</th>
+          <th>Действия</th>
+        </tr></thead>
         <tbody id="review-table"></tbody>
       </table>
-      <div class="btn-group" style="margin-top:10px">
-        <button class="btn btn-success" onclick="approveSelected()">Одобрить выбранные</button>
-        <button class="btn btn-secondary" onclick="hideReview()">Закрыть</button>
-      </div>
     </div>
   </div>
 
@@ -1183,6 +1219,14 @@ function toggleAll(el) { document.querySelectorAll('.news-check').forEach(c => c
 
 // Review
 let _reviewResults = [];
+
+function switchToTab(tabName) {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
+  document.querySelector(`.tab[data-tab="${tabName}"]`).classList.add('active');
+  document.getElementById('panel-' + tabName).classList.add('active');
+}
+
 async function sendToReview() {
   const ids = getSelectedIds();
   if (!ids.length) { toast('Сначала выберите новости', true); return; }
@@ -1193,13 +1237,13 @@ async function sendToReview() {
 
   // Show groups
   const groupsHtml = (r.groups||[]).map(g => {
-    const icon = g.status === 'trending' ? '⚡' : g.status === 'popular' ? '🔥' : '🟢';
-    const titles = g.members.map(m => m.title).join(', ');
-    return `<div class="card" style="margin-bottom:8px;padding:10px"><b>${icon} ${g.status.toUpperCase()}</b> (${g.members.length}): ${esc(titles.slice(0,120))}</div>`;
+    const icon = g.status === 'trending' ? '&#9889;' : g.status === 'popular' ? '&#128293;' : '&#128994;';
+    const titles = g.members.map(m => esc(m.title)).join('<br>');
+    return `<div class="card" style="margin-bottom:8px;padding:10px"><b>${icon} ${g.status.toUpperCase()}</b> (${g.members.length} шт):<div style="font-size:0.85em;color:#8899a6;margin-top:4px">${titles}</div></div>`;
   }).join('');
   document.getElementById('review-groups').innerHTML = groupsHtml;
 
-  // Show results table
+  // Render results table with action buttons
   document.getElementById('review-table').innerHTML = _reviewResults.map(r => {
     const q = r.checks.quality, rel = r.checks.relevance, f = r.checks.freshness, v = r.checks.viral;
     const sent = r.sentiment || {};
@@ -1207,40 +1251,89 @@ async function sendToReview() {
     const tags = (r.tags||[]).map(t=>t.label).join(', ') || '-';
     const sentColor = sent.label==='positive'?'#17bf63':sent.label==='negative'?'#e0245e':'#8899a6';
     const momLevel = mom.level||'none';
-    const passIcon = r.overall_pass ? '✅' : '❌';
-    const dup = r.is_duplicate ? '🔴 DUP' : (r.dedup_status||'unique');
-    return `<tr>
+    const passIcon = r.overall_pass ? '&#9989;' : '&#10060;';
+    const dup = r.is_duplicate ? '&#128308; DUP' : (r.dedup_status||'unique');
+    return `<tr id="review-row-${r.id}">
       <td><input type="checkbox" class="approve-check" data-id="${r.id}" ${r.overall_pass && !r.is_duplicate ? 'checked' : ''}></td>
-      <td><a href="${r.url}" target="_blank">${esc((r.title||'').slice(0,60))}</a></td>
+      <td><a href="${r.url}" target="_blank" title="${esc(r.title||'')}">${esc((r.title||'').slice(0,55))}</a></td>
       <td>${r.source}</td>
       <td>${dup}</td>
-      <td>${q.score} ${q.pass?'✅':'❌'}</td>
-      <td>${rel.score} ${rel.pass?'✅':'❌'}</td>
+      <td>${q.score} ${q.pass?'&#9989;':'&#10060;'}</td>
+      <td>${rel.score} ${rel.pass?'&#9989;':'&#10060;'}</td>
       <td>${f.score} ${f.status||''}</td>
       <td>${v.score} ${v.level||''}</td>
       <td style="color:${sentColor}">${sent.score||0} ${sent.label||''}</td>
-      <td>${mom.score||0} ${momLevel} (${mom.sources_1h||0}/${mom.sources_6h||0}/${mom.sources_24h||0})</td>
-      <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(tags)}">${tags}</td>
+      <td>${mom.score||0} ${momLevel}</td>
+      <td style="max-width:100px;overflow:hidden;text-overflow:ellipsis" title="${esc(tags)}">${tags}</td>
       <td><b>${r.total_score}</b></td>
       <td>${passIcon}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-success" onclick="approveOne('${r.id}')">&#10004;</button>
+        <button class="btn btn-sm btn-danger" onclick="rejectOne('${r.id}')">&#10008;</button>
+      </td>
     </tr>`;
   }).join('');
 
-  document.getElementById('review-results').style.display = 'block';
+  // Update badge and switch to review tab
+  const badge = document.getElementById('review-badge');
+  badge.textContent = _reviewResults.length;
+  badge.style.display = 'inline';
+  document.getElementById('review-empty').style.display = 'none';
+  document.getElementById('review-content').style.display = 'block';
+  document.getElementById('review-count').textContent = _reviewResults.length + ' новостей';
+
+  switchToTab('review');
   toast('Проверено: ' + _reviewResults.length + ' новостей');
   loadAll();
 }
 
 function toggleApproveAll(el) { document.querySelectorAll('.approve-check').forEach(c => c.checked = el.checked); }
-function hideReview() { document.getElementById('review-results').style.display = 'none'; }
+
+function toggleApproveAllPassed() {
+  document.querySelectorAll('.approve-check').forEach(c => {
+    const r = _reviewResults.find(x => x.id === c.dataset.id);
+    c.checked = r && r.overall_pass && !r.is_duplicate;
+  });
+}
+
+async function approveOne(id) {
+  const r = await api('/api/approve', {news_ids: [id]});
+  if (r.status === 'ok') {
+    toast('Одобрено');
+    const row = document.getElementById('review-row-' + id);
+    if (row) row.style.opacity = '0.4';
+  } else toast(r.message, true);
+}
+
+async function rejectOne(id) {
+  const r = await api('/api/reject', {news_id: id});
+  if (r.status === 'ok') {
+    toast('Отклонено');
+    const row = document.getElementById('review-row-' + id);
+    if (row) row.style.opacity = '0.4';
+  } else toast(r.message, true);
+}
 
 async function approveSelected() {
   const ids = [...document.querySelectorAll('.approve-check:checked')].map(c => c.dataset.id);
   if (!ids.length) { toast('Сначала выберите новости', true); return; }
   const r = await api('/api/approve', {news_ids: ids});
-  if (r.status === 'ok') toast('Одобрено: ' + r.approved + ' новостей');
+  if (r.status === 'ok') {
+    toast('Одобрено: ' + r.approved + ' новостей');
+    ids.forEach(id => { const row = document.getElementById('review-row-' + id); if (row) row.style.opacity = '0.4'; });
+  }
   else toast(r.message, true);
-  hideReview();
+  loadAll();
+}
+
+async function rejectSelected() {
+  const ids = [...document.querySelectorAll('.approve-check:checked')].map(c => c.dataset.id);
+  if (!ids.length) { toast('Сначала выберите новости', true); return; }
+  for (const id of ids) {
+    await api('/api/reject', {news_id: id});
+    const row = document.getElementById('review-row-' + id); if (row) row.style.opacity = '0.4';
+  }
+  toast('Отклонено: ' + ids.length + ' новостей');
   loadAll();
 }
 
