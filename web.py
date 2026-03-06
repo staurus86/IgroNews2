@@ -1081,6 +1081,7 @@ header { background:linear-gradient(135deg,#192734 0%,#1a3a4a 100%); padding:12p
 .btn-secondary { background:#38444d; color:#e1e8ed; }
 .btn-secondary:hover { background:#4a5568; }
 .btn-sm { padding:4px 10px; font-size:0.8em; }
+@keyframes spin { to { transform:rotate(360deg); } }
 .btn-group { display:flex; gap:8px; margin-bottom:15px; flex-wrap:wrap; align-items:center; }
 .btn-warning { background:#ffad1f; color:#000; }
 .btn-warning:hover { background:#e69d1c; }
@@ -1358,61 +1359,164 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 
   <!-- EDITOR -->
   <div class="panel" id="panel-editor">
-    <div class="grid-2">
-      <div class="card">
-        <h2>Выбор новости</h2>
-        <div class="dash-filters" style="background:transparent;padding:0;margin-bottom:10px">
-          <input type="search" id="editor-search" placeholder="Поиск по заголовку..." oninput="filterEditorNews()" autocomplete="off" name="editor-search-nologin" style="flex:1">
-          <select id="editor-source-filter" onchange="filterEditorNews()" style="width:auto">
-            <option value="">Все источники</option>
+    <style>
+      .editor-layout { display:grid; grid-template-columns:340px 1fr; gap:15px; }
+      .editor-list-card { background:#192734; border-radius:10px; padding:15px; min-height:600px; display:flex; flex-direction:column; }
+      .editor-main { display:flex; flex-direction:column; gap:15px; }
+      .editor-toolbar { background:#192734; border-radius:10px; padding:15px; }
+      .editor-preview-card { background:#192734; border-radius:10px; padding:15px; flex:1; }
+      .editor-result-card { background:#192734; border-radius:10px; padding:15px; }
+      .editor-news-item { padding:10px 12px; border-bottom:1px solid #22303c; cursor:pointer; display:flex; gap:10px; align-items:start; transition:background .15s; }
+      .editor-news-item:hover { background:#22303c; }
+      .editor-news-item.selected { background:rgba(29,161,242,0.1); border-left:3px solid #1da1f2; }
+      .editor-news-item.merge { background:rgba(255,173,31,0.1); border-left:3px solid #ffad1f; }
+      .editor-news-item.selected.merge { border-left:3px solid #1da1f2; box-shadow:inset -3px 0 0 #ffad1f; }
+      .style-option { display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:8px; cursor:pointer; border:2px solid #22303c; transition:all .15s; }
+      .style-option:hover { border-color:#38444d; }
+      .style-option.active { border-color:#1da1f2; background:rgba(29,161,242,0.08); }
+      .style-icon { font-size:1.3em; width:32px; text-align:center; }
+      .style-label { font-size:0.85em; color:#e1e8ed; font-weight:500; }
+      .style-desc { font-size:0.75em; color:#8899a6; }
+      .merge-counter { display:inline-flex; align-items:center; gap:6px; padding:4px 12px; background:#22303c; border-radius:20px; font-size:0.85em; color:#ffad1f; }
+      .rw-field { margin-bottom:10px; padding:10px 14px; background:#22303c; border-radius:8px; position:relative; }
+      .rw-field:hover .rw-copy-btn { opacity:1; }
+      .rw-field-label { font-size:0.75em; color:#8899a6; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; }
+      .rw-field-value { color:#e1e8ed; font-size:0.9em; line-height:1.5; }
+      .rw-copy-btn { position:absolute; top:8px; right:8px; opacity:0; transition:opacity .15s; background:#1da1f2; border:none; color:#fff; padding:3px 8px; border-radius:4px; font-size:0.75em; cursor:pointer; }
+      .rw-copy-btn:hover { background:#1a91da; }
+      @media(max-width:900px) { .editor-layout { grid-template-columns:1fr; } .editor-list-card { min-height:300px; } }
+    </style>
+
+    <div class="editor-layout">
+      <!-- LEFT: news list -->
+      <div class="editor-list-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <h2 style="margin:0;font-size:1em">Новости</h2>
+          <div class="merge-counter" id="merge-counter" style="display:none">
+            <span id="merge-count-text">0 для слияния</span>
+            <button onclick="clearMergeSelection()" style="background:none;border:none;color:#ffad1f;cursor:pointer;font-size:1em;padding:0" title="Очистить выбор">&#10005;</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:10px">
+          <input type="search" id="editor-search" placeholder="Поиск..." oninput="filterEditorNews()" autocomplete="off" name="editor-search-nologin" style="flex:1;padding:6px 10px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
+          <select id="editor-source-filter" onchange="filterEditorNews()" style="padding:6px 8px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
+            <option value="">Все</option>
+          </select>
+          <select id="editor-status-filter" onchange="filterEditorNews()" style="padding:6px 8px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
+            <option value="">Статус</option>
+            <option value="new">Новые</option>
+            <option value="approved">Одобренные</option>
+            <option value="rejected">Отклонённые</option>
           </select>
         </div>
-        <div id="editor-news-list" style="max-height:500px;overflow-y:auto;font-size:0.85em"></div>
+        <div id="editor-news-list" style="flex:1;overflow-y:auto;font-size:0.85em;margin:0 -15px;padding:0 15px"></div>
+        <div id="editor-list-count" style="text-align:center;color:#8899a6;font-size:0.75em;margin-top:8px;padding-top:8px;border-top:1px solid #22303c"></div>
       </div>
-      <div class="card">
-        <h2>Предпросмотр</h2>
-        <div id="editor-preview" style="color:#8899a6;font-size:0.9em">Выберите новость слева</div>
-      </div>
-    </div>
-    <div class="card" style="margin-top:15px">
-      <h2>Переписать через LLM</h2>
-      <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
-        <span class="filter-label">Стиль:</span>
-        <select id="rewrite-style">
-          <option value="news">Информационный</option>
-          <option value="seo">SEO-оптимизированный</option>
-          <option value="review">Обзорный</option>
-          <option value="clickbait">Кликбейтный</option>
-          <option value="short">Короткий</option>
-          <option value="social">Для соцсетей</option>
-        </select>
-        <span class="filter-label">Язык:</span>
-        <select id="rewrite-lang">
-          <option value="русский">Русский</option>
-          <option value="английский">English</option>
-        </select>
-        <button class="btn btn-primary" onclick="rewriteNews()" id="rewrite-btn" disabled>Переписать</button>
-        <button class="btn btn-warning" onclick="mergeSelected()" id="merge-btn" disabled>Объединить выбранные</button>
-        <span id="rewrite-loading" style="color:#8899a6;font-size:0.85em"></span>
-      </div>
-      <div id="rewrite-result" style="display:none">
-        <div class="grid-2">
-          <div>
-            <h2 style="margin-bottom:8px">Результат</h2>
-            <div style="margin-bottom:8px"><b>Заголовок:</b> <span id="rw-title" style="color:#1da1f2"></span></div>
-            <div style="margin-bottom:8px"><b>SEO Title:</b> <span id="rw-seo-title" style="color:#17bf63"></span></div>
-            <div style="margin-bottom:8px"><b>SEO Desc:</b> <span id="rw-seo-desc" style="color:#8899a6;font-size:0.9em"></span></div>
-            <div style="margin-bottom:8px"><b>Теги:</b> <span id="rw-tags"></span></div>
-            <div id="rw-text" style="white-space:pre-wrap;color:#e1e8ed;font-size:0.9em;line-height:1.6;margin-top:10px;padding:12px;background:#22303c;border-radius:8px;max-height:400px;overflow-y:auto"></div>
-          </div>
-          <div>
-            <h2 style="margin-bottom:8px">Оригинал</h2>
-            <div id="rw-original" style="white-space:pre-wrap;color:#8899a6;font-size:0.85em;line-height:1.5;padding:12px;background:#22303c;border-radius:8px;max-height:500px;overflow-y:auto"></div>
+
+      <!-- RIGHT: toolbar + preview + result -->
+      <div class="editor-main">
+        <!-- Toolbar -->
+        <div class="editor-toolbar">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <div style="display:flex;gap:6px;flex-wrap:wrap;flex:1" id="style-buttons">
+              <button class="style-option active" data-style="news" onclick="selectStyle(this)" title="Факты, без эмоций, кратко">
+                <span class="style-icon">&#128240;</span>
+                <div><div class="style-label">Новость</div></div>
+              </button>
+              <button class="style-option" data-style="seo" onclick="selectStyle(this)" title="Ключевые слова, структура, подзаголовки">
+                <span class="style-icon">&#128269;</span>
+                <div><div class="style-label">SEO</div></div>
+              </button>
+              <button class="style-option" data-style="review" onclick="selectStyle(this)" title="С мнением автора, подробный анализ">
+                <span class="style-icon">&#128221;</span>
+                <div><div class="style-label">Обзор</div></div>
+              </button>
+              <button class="style-option" data-style="clickbait" onclick="selectStyle(this)" title="Яркий заголовок, интрига, эмоции">
+                <span class="style-icon">&#128293;</span>
+                <div><div class="style-label">Кликбейт</div></div>
+              </button>
+              <button class="style-option" data-style="short" onclick="selectStyle(this)" title="2-3 предложения, только суть">
+                <span class="style-icon">&#9889;</span>
+                <div><div class="style-label">Кратко</div></div>
+              </button>
+              <button class="style-option" data-style="social" onclick="selectStyle(this)" title="Неформальный, с эмодзи, короткий">
+                <span class="style-icon">&#128242;</span>
+                <div><div class="style-label">Соцсети</div></div>
+              </button>
+            </div>
+            <select id="rewrite-lang" style="padding:6px 10px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
+              <option value="русский">RU</option>
+              <option value="английский">EN</option>
+            </select>
+            <button class="btn btn-primary" onclick="rewriteNews()" id="rewrite-btn" disabled style="white-space:nowrap">
+              &#9998; Переписать
+            </button>
+            <button class="btn btn-warning" onclick="mergeSelected()" id="merge-btn" disabled style="white-space:nowrap">
+              &#128279; Объединить
+            </button>
+            <span id="rewrite-loading" style="color:#8899a6;font-size:0.85em"></span>
           </div>
         </div>
-        <div style="margin-top:12px;display:flex;gap:8px">
-          <button class="btn btn-success" onclick="copyRewrite()">Копировать текст</button>
-          <button class="btn btn-secondary" onclick="copyRewriteJson()">Копировать JSON</button>
+
+        <!-- Preview -->
+        <div class="editor-preview-card">
+          <div id="editor-preview" style="color:#8899a6;font-size:0.9em">
+            <div style="text-align:center;padding:60px 20px">
+              <div style="font-size:2em;margin-bottom:10px;opacity:0.3">&#128196;</div>
+              <div>Выберите новость из списка слева</div>
+              <div style="font-size:0.85em;margin-top:6px">Используйте чекбоксы для выбора нескольких новостей на объединение</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Result -->
+        <div class="editor-result-card" id="rewrite-result" style="display:none">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <h2 style="margin:0;font-size:1em" id="rw-result-header">Результат</h2>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-sm btn-success" onclick="copyRewrite()" title="Скопировать заголовок + текст">&#128203; Текст</button>
+              <button class="btn btn-sm btn-secondary" onclick="copyRewriteSeo()" title="Скопировать SEO-поля">SEO</button>
+              <button class="btn btn-sm btn-secondary" onclick="copyRewriteJson()" title="Скопировать весь JSON">{} JSON</button>
+              <button class="btn btn-sm btn-secondary" onclick="copyRewriteHtml()" title="Скопировать как HTML">&lt;/&gt; HTML</button>
+            </div>
+          </div>
+
+          <div class="rw-field">
+            <div class="rw-field-label">Заголовок</div>
+            <div class="rw-field-value" id="rw-title" style="color:#1da1f2;font-size:1.05em;font-weight:500"></div>
+            <button class="rw-copy-btn" onclick="copyField('rw-title')">Копировать</button>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div class="rw-field">
+              <div class="rw-field-label">SEO Title (до 60 симв.)</div>
+              <div class="rw-field-value" id="rw-seo-title" style="color:#17bf63"></div>
+              <button class="rw-copy-btn" onclick="copyField('rw-seo-title')">Копировать</button>
+            </div>
+            <div class="rw-field">
+              <div class="rw-field-label">Meta Description (до 160 симв.)</div>
+              <div class="rw-field-value" id="rw-seo-desc" style="color:#8899a6"></div>
+              <button class="rw-copy-btn" onclick="copyField('rw-seo-desc')">Копировать</button>
+            </div>
+          </div>
+
+          <div class="rw-field" id="rw-tags-wrap">
+            <div class="rw-field-label">Теги</div>
+            <div class="rw-field-value" id="rw-tags"></div>
+            <button class="rw-copy-btn" onclick="copyField('rw-tags')">Копировать</button>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
+            <div>
+              <div style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Переписанный текст</div>
+              <div id="rw-text" style="white-space:pre-wrap;color:#e1e8ed;font-size:0.88em;line-height:1.6;padding:14px;background:#22303c;border-radius:8px;max-height:400px;overflow-y:auto;position:relative">
+              </div>
+            </div>
+            <div>
+              <div style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Оригинал</div>
+              <div id="rw-original" style="white-space:pre-wrap;color:#8899a6;font-size:0.83em;line-height:1.5;padding:14px;background:#22303c;border-radius:8px;max-height:400px;overflow-y:auto"></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -2584,27 +2688,64 @@ async function setupHeaders() {
 let _editorNewsId = null;
 let _editorMergeIds = new Set();
 let _lastRewrite = null;
+let _editorSelectedStyle = 'news';
+
+function selectStyle(btn) {
+  document.querySelectorAll('.style-option').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  _editorSelectedStyle = btn.dataset.style;
+}
+
+function updateMergeCounter() {
+  const cnt = _editorMergeIds.size;
+  const el = document.getElementById('merge-counter');
+  const txt = document.getElementById('merge-count-text');
+  if (cnt > 0) {
+    el.style.display = 'inline-flex';
+    txt.textContent = cnt + ' для слияния';
+  } else {
+    el.style.display = 'none';
+  }
+  document.getElementById('merge-btn').disabled = cnt < 2;
+}
+
+function clearMergeSelection() {
+  _editorMergeIds.clear();
+  updateMergeCounter();
+  filterEditorNews();
+}
 
 function filterEditorNews() {
   const search = (document.getElementById('editor-search')?.value || '').toLowerCase();
   const source = document.getElementById('editor-source-filter')?.value || '';
+  const status = document.getElementById('editor-status-filter')?.value || '';
   let filtered = _allNews;
   if (search) filtered = filtered.filter(n => (n.title||'').toLowerCase().includes(search));
   if (source) filtered = filtered.filter(n => n.source === source);
-  renderEditorList(filtered.slice(0, 50));
+  if (status) filtered = filtered.filter(n => n.status === status);
+  const shown = filtered.slice(0, 60);
+  renderEditorList(shown);
+  const countEl = document.getElementById('editor-list-count');
+  if (countEl) countEl.textContent = shown.length + ' из ' + filtered.length + ' новостей';
 }
 
 function renderEditorList(news) {
   const el = document.getElementById('editor-news-list');
-  if (!news.length) { el.innerHTML = '<div style="color:#8899a6;padding:20px;text-align:center">Нет новостей</div>'; return; }
+  if (!news.length) { el.innerHTML = '<div style="color:#8899a6;padding:40px 20px;text-align:center">Нет новостей</div>'; return; }
   el.innerHTML = news.map(n => {
     const isSelected = _editorNewsId === n.id;
     const isMerge = _editorMergeIds.has(n.id);
-    return `<div style="padding:8px;border-bottom:1px solid #22303c;cursor:pointer;display:flex;gap:8px;align-items:start;${isSelected?'background:#1da1f215;border-left:3px solid #1da1f2':''}${isMerge?'background:#ffad1f15;border-left:3px solid #ffad1f':''}" onclick="selectEditorNews('${n.id}')">
-      <input type="checkbox" class="merge-check" data-id="${n.id}" ${isMerge?'checked':''} onclick="event.stopPropagation();toggleMerge('${n.id}',this.checked)" style="margin-top:3px">
+    const cls = 'editor-news-item' + (isSelected ? ' selected' : '') + (isMerge ? ' merge' : '');
+    const dateStr = fmtDate(n.published_at || n.parsed_at);
+    return `<div class="${cls}" onclick="selectEditorNews('${n.id}')">
+      <input type="checkbox" ${isMerge?'checked':''} onclick="event.stopPropagation();toggleMerge('${n.id}',this.checked)" style="margin-top:2px;cursor:pointer">
       <div style="flex:1;min-width:0">
-        <div style="font-size:0.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(n.title||'')}">${esc(n.title||'')}</div>
-        <div style="font-size:0.75em;color:#8899a6">${n.source} | ${fmtDate(n.published_at||n.parsed_at)} | <span class="badge badge-${n.status}">${STATUS_LABELS[n.status]||n.status}</span></div>
+        <div style="font-size:0.88em;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden" title="${esc(n.title||'')}">${esc(n.title||'')}</div>
+        <div style="font-size:0.72em;color:#8899a6;margin-top:3px;display:flex;align-items:center;gap:6px">
+          <span style="font-weight:500;color:#657786">${n.source}</span>
+          <span>${dateStr}</span>
+          <span class="badge badge-${n.status}" style="font-size:0.9em">${STATUS_LABELS[n.status]||n.status}</span>
+        </div>
       </div>
     </div>`;
   }).join('');
@@ -2612,7 +2753,7 @@ function renderEditorList(news) {
 
 function toggleMerge(id, checked) {
   if (checked) _editorMergeIds.add(id); else _editorMergeIds.delete(id);
-  document.getElementById('merge-btn').disabled = _editorMergeIds.size < 2;
+  updateMergeCounter();
   filterEditorNews();
 }
 
@@ -2620,77 +2761,131 @@ async function selectEditorNews(id) {
   _editorNewsId = id;
   document.getElementById('rewrite-btn').disabled = false;
   filterEditorNews();
-  // Load detail
+  const preview = document.getElementById('editor-preview');
+  preview.innerHTML = '<div style="text-align:center;padding:30px;color:#8899a6">Загрузка...</div>';
   const r = await api('/api/news/detail', {news_id: id});
   if (r.status !== 'ok') { toast(r.message, true); return; }
   const n = r.news;
   const a = r.analysis;
-  let html = `<div style="margin-bottom:8px"><b style="color:#1da1f2;font-size:1.1em">${esc(n.title||'')}</b></div>`;
-  html += `<div style="margin-bottom:6px;font-size:0.85em;color:#8899a6">Источник: ${n.source} | <a href="${n.url}" target="_blank">Открыть</a> | ${fmtDate(n.published_at)}</div>`;
-  if (n.h1 && n.h1 !== n.title) html += `<div style="margin-bottom:6px"><b>H1:</b> ${esc(n.h1)}</div>`;
-  if (n.description) html += `<div style="margin-bottom:6px"><b>Description:</b> ${esc(n.description).slice(0,300)}</div>`;
-  html += `<div style="margin-top:10px;padding:10px;background:#22303c;border-radius:8px;font-size:0.85em;max-height:300px;overflow-y:auto;white-space:pre-wrap;line-height:1.5">${esc(n.plain_text||'Текст не загружен')}</div>`;
+  let html = '';
+  html += `<div style="margin-bottom:10px">`;
+  html += `<div style="color:#1da1f2;font-size:1.1em;font-weight:600;line-height:1.3;margin-bottom:6px">${esc(n.title||'')}</div>`;
+  html += `<div style="display:flex;gap:10px;align-items:center;font-size:0.82em;color:#8899a6;flex-wrap:wrap">`;
+  html += `<span style="font-weight:500;color:#657786">${n.source}</span>`;
+  html += `<span>${fmtDate(n.published_at)}</span>`;
+  html += `<a href="${n.url}" target="_blank" style="color:#1da1f2">Открыть оригинал &#8599;</a>`;
+  html += `</div></div>`;
+
+  if (n.h1 && n.h1 !== n.title) {
+    html += `<div style="margin-bottom:8px;padding:6px 10px;background:#22303c;border-radius:6px;font-size:0.85em"><span style="color:#8899a6">H1:</span> ${esc(n.h1)}</div>`;
+  }
+  if (n.description) {
+    html += `<div style="margin-bottom:8px;padding:6px 10px;background:#22303c;border-radius:6px;font-size:0.85em"><span style="color:#8899a6">Desc:</span> ${esc(n.description).slice(0,300)}</div>`;
+  }
+
   if (a) {
-    html += `<div style="margin-top:10px;font-size:0.85em">`;
-    if (a.llm_recommendation) html += `<div><b>LLM:</b> ${esc(a.llm_recommendation)} (скор: ${a.llm_trend_forecast||'-'})</div>`;
-    if (a.bigrams) { try { const bg = JSON.parse(a.bigrams); html += `<div><b>Биграммы:</b> ${bg.map(b=>b[0]).join(', ')}</div>`; } catch(e){} }
+    html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;font-size:0.82em">`;
+    if (a.llm_trend_forecast) html += `<span style="padding:3px 8px;background:#22303c;border-radius:12px">Score: <b style="color:#ffad1f">${a.llm_trend_forecast}</b></span>`;
+    if (a.llm_recommendation) html += `<span style="padding:3px 8px;background:#22303c;border-radius:12px">${esc(a.llm_recommendation)}</span>`;
+    if (a.bigrams) { try { const bg = JSON.parse(a.bigrams); if (bg.length) html += `<span style="padding:3px 8px;background:#22303c;border-radius:12px;color:#8899a6">${bg.slice(0,5).map(b=>b[0]).join(', ')}</span>`; } catch(e){} }
     html += `</div>`;
   }
-  document.getElementById('editor-preview').innerHTML = html;
+
+  const textLen = (n.plain_text||'').length;
+  html += `<div style="font-size:0.75em;color:#8899a6;margin-bottom:4px">Текст (${textLen} симв.)</div>`;
+  html += `<div style="padding:12px;background:#22303c;border-radius:8px;font-size:0.85em;max-height:350px;overflow-y:auto;white-space:pre-wrap;line-height:1.55;color:#d9d9d9">${esc(n.plain_text||'Текст не загружен')}</div>`;
+
+  preview.innerHTML = html;
 }
 
 async function rewriteNews() {
   if (!_editorNewsId) { toast('Выберите новость', true); return; }
-  const style = document.getElementById('rewrite-style').value;
   const lang = document.getElementById('rewrite-lang').value;
-  document.getElementById('rewrite-loading').textContent = 'Переписываем...';
+  const loadEl = document.getElementById('rewrite-loading');
+  loadEl.innerHTML = '<span style="display:inline-flex;align-items:center;gap:6px"><span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#1da1f2;border-radius:50%;animation:spin .8s linear infinite;display:inline-block"></span> Переписываем...</span>';
   document.getElementById('rewrite-btn').disabled = true;
-  const r = await api('/api/rewrite', {news_id: _editorNewsId, style, language: lang});
-  document.getElementById('rewrite-loading').textContent = '';
+  const r = await api('/api/rewrite', {news_id: _editorNewsId, style: _editorSelectedStyle, language: lang});
+  loadEl.textContent = '';
   document.getElementById('rewrite-btn').disabled = false;
   if (r.status !== 'ok') { toast(r.message, true); return; }
   _lastRewrite = r.result;
+  document.getElementById('rw-result-header').textContent = 'Результат — ' + _editorSelectedStyle;
   document.getElementById('rw-title').textContent = r.result.title || '';
   document.getElementById('rw-seo-title').textContent = r.result.seo_title || '';
   document.getElementById('rw-seo-desc').textContent = r.result.seo_description || '';
-  document.getElementById('rw-tags').innerHTML = (r.result.tags||[]).map(t => `<span class="tag tag-release">${esc(t)}</span>`).join(' ');
+  document.getElementById('rw-tags').innerHTML = (r.result.tags||[]).map(t => `<span class="tag tag-release" style="cursor:pointer" onclick="copyField(null,'${esc(t)}')">${esc(t)}</span>`).join(' ');
   document.getElementById('rw-text').textContent = r.result.text || '';
-  document.getElementById('rw-original').textContent = r.original_title + '\n\n' + (document.querySelector('#editor-preview pre, #editor-preview div[style*="pre-wrap"]')?.textContent || '');
+  document.getElementById('rw-original').textContent = r.original_title + '\n\n' + (document.querySelector('#editor-preview div[style*="pre-wrap"]')?.textContent || '');
   document.getElementById('rewrite-result').style.display = 'block';
+  document.getElementById('rewrite-result').scrollIntoView({behavior:'smooth', block:'start'});
   toast('Переписано!');
 }
 
 async function mergeSelected() {
   if (_editorMergeIds.size < 2) { toast('Выберите минимум 2 новости', true); return; }
-  document.getElementById('rewrite-loading').textContent = 'Объединяем...';
+  const loadEl = document.getElementById('rewrite-loading');
+  loadEl.innerHTML = '<span style="display:inline-flex;align-items:center;gap:6px"><span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#ffad1f;border-radius:50%;animation:spin .8s linear infinite;display:inline-block"></span> Объединяем ' + _editorMergeIds.size + ' новостей...</span>';
   document.getElementById('merge-btn').disabled = true;
   const r = await api('/api/merge', {news_ids: [..._editorMergeIds]});
-  document.getElementById('rewrite-loading').textContent = '';
-  document.getElementById('merge-btn').disabled = false;
+  loadEl.textContent = '';
+  document.getElementById('merge-btn').disabled = _editorMergeIds.size < 2;
   if (r.status !== 'ok') { toast(r.message, true); return; }
   _lastRewrite = r.result;
+  document.getElementById('rw-result-header').textContent = 'Объединённая новость';
   document.getElementById('rw-title').textContent = r.result.merged_title || '';
-  document.getElementById('rw-seo-title').textContent = '';
+  document.getElementById('rw-seo-title').textContent = 'Лучший источник: ' + (r.result.best_source||'');
   document.getElementById('rw-seo-desc').textContent = 'Источники: ' + (r.sources||[]).join(', ');
-  document.getElementById('rw-tags').innerHTML = '';
-  document.getElementById('rw-text').textContent = r.result.merged_text || '';
   const facts = r.result.unique_facts || [];
-  document.getElementById('rw-original').textContent = 'Уникальные факты:\n' + facts.map((f,i) => (i+1)+'. '+f).join('\n') + '\n\nЛучший источник: ' + (r.result.best_source||'');
+  document.getElementById('rw-tags').innerHTML = facts.map(f => `<span class="tag tag-release">${esc(f)}</span>`).join(' ');
+  document.getElementById('rw-tags-wrap').querySelector('.rw-field-label').textContent = 'Уникальные факты';
+  document.getElementById('rw-text').textContent = r.result.merged_text || '';
+  document.getElementById('rw-original').textContent = 'Источники объединения:\n' + (r.sources||[]).map((s,i) => (i+1)+'. '+s).join('\n');
   document.getElementById('rewrite-result').style.display = 'block';
+  document.getElementById('rewrite-result').scrollIntoView({behavior:'smooth', block:'start'});
   toast('Объединено!');
+}
+
+function copyField(elId, directText) {
+  const text = directText || document.getElementById(elId)?.textContent || '';
+  if (!text) return;
+  navigator.clipboard.writeText(text);
+  toast('Скопировано!');
 }
 
 function copyRewrite() {
   if (!_lastRewrite) return;
   const text = (_lastRewrite.title || _lastRewrite.merged_title || '') + '\n\n' + (_lastRewrite.text || _lastRewrite.merged_text || '');
   navigator.clipboard.writeText(text);
-  toast('Скопировано!');
+  toast('Текст скопирован!');
+}
+
+function copyRewriteSeo() {
+  if (!_lastRewrite) return;
+  const parts = [];
+  if (_lastRewrite.seo_title) parts.push('Title: ' + _lastRewrite.seo_title);
+  if (_lastRewrite.seo_description) parts.push('Description: ' + _lastRewrite.seo_description);
+  if (_lastRewrite.tags?.length) parts.push('Tags: ' + _lastRewrite.tags.join(', '));
+  navigator.clipboard.writeText(parts.join('\n'));
+  toast('SEO скопировано!');
 }
 
 function copyRewriteJson() {
   if (!_lastRewrite) return;
   navigator.clipboard.writeText(JSON.stringify(_lastRewrite, null, 2));
   toast('JSON скопирован!');
+}
+
+function copyRewriteHtml() {
+  if (!_lastRewrite) return;
+  const title = _lastRewrite.title || _lastRewrite.merged_title || '';
+  const text = _lastRewrite.text || _lastRewrite.merged_text || '';
+  const paragraphs = text.split('\n').filter(p => p.trim()).map(p => '<p>' + p.trim() + '</p>').join('\n');
+  let html = '<h1>' + title + '</h1>\n' + paragraphs;
+  if (_lastRewrite.tags?.length) {
+    html += '\n<div class="tags">' + _lastRewrite.tags.map(t => '<span class="tag">' + t + '</span>').join(' ') + '</div>';
+  }
+  navigator.clipboard.writeText(html);
+  toast('HTML скопирован!');
 }
 
 function initEditorSourceFilter() {
