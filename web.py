@@ -1347,9 +1347,12 @@ async function login() {
             self._json({"status": "error", "message": "name and content required"})
             return
         # Get next version
-        cur.execute(f"SELECT MAX(version) FROM prompt_versions WHERE prompt_name = {ph}", (name,))
+        cur.execute(f"SELECT MAX(version) as mv FROM prompt_versions WHERE prompt_name = {ph}", (name,))
         row = cur.fetchone()
-        max_v = (row[0] if row and row[0] else 0) if _is_postgres() else (row["MAX(version)"] if row else 0)
+        if _is_postgres():
+            max_v = row[0] if row and row[0] else 0
+        else:
+            max_v = row["mv"] if row and row["mv"] else 0
         if max_v is None:
             max_v = 0
         version = max_v + 1
@@ -1403,7 +1406,7 @@ async function login() {
             news_list = [dict(row) for row in cur.fetchall()]
 
         if not news_list:
-            self._json({"status": "ok", "digest": "Нет одобренных новостей за выбранный период."})
+            self._json({"status": "ok", "digest": {"title": "Нет данных", "summary": "Нет одобренных новостей за выбранный период.", "top_news": [], "trends": []}, "news_count": 0})
             return
 
         from apis.llm import _call_llm
