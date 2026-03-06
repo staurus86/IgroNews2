@@ -1275,7 +1275,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <div class="card">
         <h2>Активные источники</h2>
         <table>
-          <thead><tr><th>Имя</th><th>Тип</th><th>URL</th><th>Интервал</th><th>Селектор</th><th>Действия</th></tr></thead>
+          <thead><tr><th style="width:30px"></th><th>Имя</th><th>Тип</th><th>Статей</th><th>Последний</th><th>URL</th><th>Интервал</th><th>Действия</th></tr></thead>
           <tbody id="sources-table"></tbody>
         </table>
       </div>
@@ -1980,22 +1980,34 @@ async function exportOne(id) {
 
 // Sources
 let _sources = [];
+let _healthData = [];
 async function loadSources() {
-  _sources = await api('/api/sources');
-  document.getElementById('sources-table').innerHTML = _sources.map(s =>
-    `<tr>
-      <td>${s.name}</td>
-      <td>${s.type}</td>
-      <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis" title="${esc(s.url)}">${esc(s.url)}</td>
-      <td>${s.interval}min</td>
-      <td>${s.selector||'-'}</td>
+  const [sources, health] = await Promise.all([api('/api/sources'), api('/api/health')]);
+  _sources = sources;
+  _healthData = health;
+  const hMap = {};
+  health.forEach(h => { hMap[h.source] = h; });
+  document.getElementById('sources-table').innerHTML = _sources.map(s => {
+    const h = hMap[s.name] || {};
+    const icon = h.status==='healthy'?'&#9989;':h.status==='low'?'&#128993;':h.status==='warning'?'&#9888;&#65039;':h.status==='dead'?'&#10060;':'&#9898;';
+    const cnt = h.count_24h ?? '-';
+    const lastP = h.last_parsed ? fmtDate(h.last_parsed) : '-';
+    const minAgo = h.minutes_ago >= 0 ? h.minutes_ago + ' мин' : '';
+    return `<tr>
+      <td>${icon}</td>
+      <td><b>${s.name}</b></td>
+      <td><span class="badge" style="background:#22303c;color:#8899a6">${s.type}</span></td>
+      <td>${cnt}</td>
+      <td style="font-size:0.8em;color:#8899a6">${lastP}${minAgo ? '<br>'+minAgo+' назад' : ''}</td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${esc(s.url)}">${esc(s.url)}</td>
+      <td>${s.interval} мин</td>
       <td style="white-space:nowrap">
-        <button class="btn btn-sm btn-secondary" onclick="openEditModal('${esc(s.name)}')">Ред.</button>
         <button class="btn btn-sm btn-primary" onclick="reparseSource('${esc(s.name)}')">Парсить</button>
-        <button class="btn btn-sm btn-danger" onclick="deleteSource('${esc(s.name)}')">Удалить</button>
+        <button class="btn btn-sm btn-secondary" onclick="openEditModal('${esc(s.name)}')">Ред.</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteSource('${esc(s.name)}')">&#10005;</button>
       </td>
-    </tr>`
-  ).join('');
+    </tr>`;
+  }).join('');
 }
 
 function openEditModal(name) {
