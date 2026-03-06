@@ -114,6 +114,45 @@ def merge_news(news_list: list[dict]) -> dict | None:
     return _call_llm(prompt)
 
 
+PROMPT_REWRITE = """
+Ты — профессиональный игровой журналист. Перепиши новость в указанном стиле.
+
+Оригинальный заголовок: {title}
+Оригинальный текст: {text}
+Стиль: {style}
+Язык: {language}
+
+Верни JSON:
+{{
+  "title": "новый заголовок",
+  "text": "переписанный текст (3-5 абзацев)",
+  "seo_title": "SEO-оптимизированный title (до 60 символов)",
+  "seo_description": "meta description (до 160 символов)",
+  "tags": ["тег1", "тег2", "тег3"]
+}}
+"""
+
+REWRITE_STYLES = {
+    "news": "Информационный — факты, без эмоций, кратко",
+    "review": "Обзорный — с мнением автора, подробный анализ",
+    "clickbait": "Кликбейтный — яркий заголовок, интрига, эмоции",
+    "seo": "SEO-оптимизированный — ключевые слова, структура, подзаголовки",
+    "short": "Короткий — 2-3 предложения, только суть",
+    "social": "Для соцсетей — неформальный, с эмодзи, короткий",
+}
+
+
+def rewrite_news(title: str, text: str, style: str = "news", language: str = "русский") -> dict | None:
+    style_desc = REWRITE_STYLES.get(style, style)
+    prompt = PROMPT_REWRITE.format(
+        title=title,
+        text=text[:3000],
+        style=style_desc,
+        language=language,
+    )
+    return _call_llm(prompt)
+
+
 def suggest_keyso_queries(title: str, bigrams: list, region: str = "RU") -> list[str]:
     prompt = PROMPT_KEYSO_QUERIES.format(
         title=title,

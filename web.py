@@ -144,6 +144,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/test_parse": lambda: self._test_parse(body),
             "/api/setup_headers": lambda: self._setup_headers(body),
             "/api/reparse_all": lambda: self._reparse_all(body),
+            "/api/rewrite": lambda: self._rewrite_news(body),
+            "/api/merge": lambda: self._merge_news(body),
+            "/api/news/detail": lambda: self._news_detail(body),
         }
         handler = routes.get(path)
         if handler:
@@ -887,6 +890,90 @@ async function login() {
         info["newest"] = str(row[1]) if row[1] else "-"
         return info
 
+    def _rewrite_news(self, body):
+        news_id = body.get("news_id")
+        style = body.get("style", "news")
+        language = body.get("language", "русский")
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"SELECT title, plain_text, description FROM news WHERE id = {ph}", (news_id,))
+            row = cur.fetchone()
+            if not row:
+                self._json({"status": "error", "message": "News not found"})
+                return
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                news = dict(zip(columns, row))
+            else:
+                news = dict(row)
+            title = news.get("title", "")
+            text = news.get("plain_text", "") or news.get("description", "")
+            from apis.llm import rewrite_news
+            result = rewrite_news(title, text, style, language)
+            if result:
+                self._json({"status": "ok", "result": result, "original_title": title})
+            else:
+                self._json({"status": "error", "message": "LLM returned no result"})
+        except Exception as e:
+            self._json({"status": "error", "message": str(e)})
+
+    def _merge_news(self, body):
+        news_ids = body.get("news_ids", [])
+        if len(news_ids) < 2:
+            self._json({"status": "error", "message": "Need at least 2 news to merge"})
+            return
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            ph = "%s" if _is_postgres() else "?"
+            placeholders = ",".join([ph] * len(news_ids))
+            cur.execute(f"SELECT id, source, title, plain_text FROM news WHERE id IN ({placeholders})", news_ids)
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                news_list = [dict(row) for row in cur.fetchall()]
+            from apis.llm import merge_news
+            result = merge_news(news_list)
+            if result:
+                self._json({"status": "ok", "result": result, "sources": [n["source"] for n in news_list]})
+            else:
+                self._json({"status": "error", "message": "LLM returned no result"})
+        except Exception as e:
+            self._json({"status": "error", "message": str(e)})
+
+    def _news_detail(self, body):
+        news_id = body.get("news_id")
+        if not news_id:
+            self._json({"status": "error", "message": "news_id required"})
+            return
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
+        row = cur.fetchone()
+        if not row:
+            self._json({"status": "error", "message": "Not found"})
+            return
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            news = dict(zip(columns, row))
+        else:
+            news = dict(row)
+        # Get analysis too
+        cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (news_id,))
+        arow = cur.fetchone()
+        analysis = None
+        if arow:
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                analysis = dict(zip(columns, arow))
+            else:
+                analysis = dict(arow)
+        self._json({"status": "ok", "news": news, "analysis": analysis})
+
     # --- Dashboard HTML ---
     def _serve_dashboard(self):
         html = DASHBOARD_HTML
@@ -1060,6 +1147,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div class="tab" data-tab="sources">Источники</div>
     <div class="tab" data-tab="prompts">Промпты</div>
     <div class="tab" data-tab="tools">Инструменты</div>
+    <div class="tab" data-tab="editor">Редактор</div>
     <div class="tab" data-tab="health">Здоровье</div>
     <div class="tab" data-tab="settings">Настройки</div>
     <div class="tab" data-tab="users">Пользователи</div>
@@ -1216,6 +1304,68 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div id="review-empty" class="empty-state" style="display:none">
       <div class="empty-icon">&#128203;</div>
       <div>Нажмите «Проверить» чтобы загрузить и оценить новости</div>
+    </div>
+  </div>
+
+  <!-- EDITOR -->
+  <div class="panel" id="panel-editor">
+    <div class="grid-2">
+      <div class="card">
+        <h2>Выбор новости</h2>
+        <div class="dash-filters" style="background:transparent;padding:0;margin-bottom:10px">
+          <input type="search" id="editor-search" placeholder="Поиск по заголовку..." oninput="filterEditorNews()" autocomplete="off" name="editor-search-nologin" style="flex:1">
+          <select id="editor-source-filter" onchange="filterEditorNews()" style="width:auto">
+            <option value="">Все источники</option>
+          </select>
+        </div>
+        <div id="editor-news-list" style="max-height:500px;overflow-y:auto;font-size:0.85em"></div>
+      </div>
+      <div class="card">
+        <h2>Предпросмотр</h2>
+        <div id="editor-preview" style="color:#8899a6;font-size:0.9em">Выберите новость слева</div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:15px">
+      <h2>Переписать через LLM</h2>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+        <span class="filter-label">Стиль:</span>
+        <select id="rewrite-style">
+          <option value="news">Информационный</option>
+          <option value="seo">SEO-оптимизированный</option>
+          <option value="review">Обзорный</option>
+          <option value="clickbait">Кликбейтный</option>
+          <option value="short">Короткий</option>
+          <option value="social">Для соцсетей</option>
+        </select>
+        <span class="filter-label">Язык:</span>
+        <select id="rewrite-lang">
+          <option value="русский">Русский</option>
+          <option value="английский">English</option>
+        </select>
+        <button class="btn btn-primary" onclick="rewriteNews()" id="rewrite-btn" disabled>Переписать</button>
+        <button class="btn btn-warning" onclick="mergeSelected()" id="merge-btn" disabled>Объединить выбранные</button>
+        <span id="rewrite-loading" style="color:#8899a6;font-size:0.85em"></span>
+      </div>
+      <div id="rewrite-result" style="display:none">
+        <div class="grid-2">
+          <div>
+            <h2 style="margin-bottom:8px">Результат</h2>
+            <div style="margin-bottom:8px"><b>Заголовок:</b> <span id="rw-title" style="color:#1da1f2"></span></div>
+            <div style="margin-bottom:8px"><b>SEO Title:</b> <span id="rw-seo-title" style="color:#17bf63"></span></div>
+            <div style="margin-bottom:8px"><b>SEO Desc:</b> <span id="rw-seo-desc" style="color:#8899a6;font-size:0.9em"></span></div>
+            <div style="margin-bottom:8px"><b>Теги:</b> <span id="rw-tags"></span></div>
+            <div id="rw-text" style="white-space:pre-wrap;color:#e1e8ed;font-size:0.9em;line-height:1.6;margin-top:10px;padding:12px;background:#22303c;border-radius:8px;max-height:400px;overflow-y:auto"></div>
+          </div>
+          <div>
+            <h2 style="margin-bottom:8px">Оригинал</h2>
+            <div id="rw-original" style="white-space:pre-wrap;color:#8899a6;font-size:0.85em;line-height:1.5;padding:12px;background:#22303c;border-radius:8px;max-height:500px;overflow-y:auto"></div>
+          </div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px">
+          <button class="btn btn-success" onclick="copyRewrite()">Копировать текст</button>
+          <button class="btn btn-secondary" onclick="copyRewriteJson()">Копировать JSON</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1579,6 +1729,7 @@ async function loadNews() {
 
   applyDashFilters();
   renderNewsTab(news);
+  initEditorSourceFilter();
 }
 
 function applyDashFilters() {
@@ -2357,6 +2508,128 @@ async function setupHeaders() {
   const r = await api('/api/setup_headers', {});
   if (r.status === 'ok') toast('Заголовки Sheets созданы');
   else toast(r.message, true);
+}
+
+// Editor
+let _editorNewsId = null;
+let _editorMergeIds = new Set();
+let _lastRewrite = null;
+
+function filterEditorNews() {
+  const search = (document.getElementById('editor-search')?.value || '').toLowerCase();
+  const source = document.getElementById('editor-source-filter')?.value || '';
+  let filtered = _allNews;
+  if (search) filtered = filtered.filter(n => (n.title||'').toLowerCase().includes(search));
+  if (source) filtered = filtered.filter(n => n.source === source);
+  renderEditorList(filtered.slice(0, 50));
+}
+
+function renderEditorList(news) {
+  const el = document.getElementById('editor-news-list');
+  if (!news.length) { el.innerHTML = '<div style="color:#8899a6;padding:20px;text-align:center">Нет новостей</div>'; return; }
+  el.innerHTML = news.map(n => {
+    const isSelected = _editorNewsId === n.id;
+    const isMerge = _editorMergeIds.has(n.id);
+    return `<div style="padding:8px;border-bottom:1px solid #22303c;cursor:pointer;display:flex;gap:8px;align-items:start;${isSelected?'background:#1da1f215;border-left:3px solid #1da1f2':''}${isMerge?'background:#ffad1f15;border-left:3px solid #ffad1f':''}" onclick="selectEditorNews('${n.id}')">
+      <input type="checkbox" class="merge-check" data-id="${n.id}" ${isMerge?'checked':''} onclick="event.stopPropagation();toggleMerge('${n.id}',this.checked)" style="margin-top:3px">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:0.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(n.title||'')}">${esc(n.title||'')}</div>
+        <div style="font-size:0.75em;color:#8899a6">${n.source} | ${fmtDate(n.published_at||n.parsed_at)} | <span class="badge badge-${n.status}">${STATUS_LABELS[n.status]||n.status}</span></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleMerge(id, checked) {
+  if (checked) _editorMergeIds.add(id); else _editorMergeIds.delete(id);
+  document.getElementById('merge-btn').disabled = _editorMergeIds.size < 2;
+  filterEditorNews();
+}
+
+async function selectEditorNews(id) {
+  _editorNewsId = id;
+  document.getElementById('rewrite-btn').disabled = false;
+  filterEditorNews();
+  // Load detail
+  const r = await api('/api/news/detail', {news_id: id});
+  if (r.status !== 'ok') { toast(r.message, true); return; }
+  const n = r.news;
+  const a = r.analysis;
+  let html = `<div style="margin-bottom:8px"><b style="color:#1da1f2;font-size:1.1em">${esc(n.title||'')}</b></div>`;
+  html += `<div style="margin-bottom:6px;font-size:0.85em;color:#8899a6">Источник: ${n.source} | <a href="${n.url}" target="_blank">Открыть</a> | ${fmtDate(n.published_at)}</div>`;
+  if (n.h1 && n.h1 !== n.title) html += `<div style="margin-bottom:6px"><b>H1:</b> ${esc(n.h1)}</div>`;
+  if (n.description) html += `<div style="margin-bottom:6px"><b>Description:</b> ${esc(n.description).slice(0,300)}</div>`;
+  html += `<div style="margin-top:10px;padding:10px;background:#22303c;border-radius:8px;font-size:0.85em;max-height:300px;overflow-y:auto;white-space:pre-wrap;line-height:1.5">${esc(n.plain_text||'Текст не загружен')}</div>`;
+  if (a) {
+    html += `<div style="margin-top:10px;font-size:0.85em">`;
+    if (a.llm_recommendation) html += `<div><b>LLM:</b> ${esc(a.llm_recommendation)} (скор: ${a.llm_trend_forecast||'-'})</div>`;
+    if (a.bigrams) { try { const bg = JSON.parse(a.bigrams); html += `<div><b>Биграммы:</b> ${bg.map(b=>b[0]).join(', ')}</div>`; } catch(e){} }
+    html += `</div>`;
+  }
+  document.getElementById('editor-preview').innerHTML = html;
+}
+
+async function rewriteNews() {
+  if (!_editorNewsId) { toast('Выберите новость', true); return; }
+  const style = document.getElementById('rewrite-style').value;
+  const lang = document.getElementById('rewrite-lang').value;
+  document.getElementById('rewrite-loading').textContent = 'Переписываем...';
+  document.getElementById('rewrite-btn').disabled = true;
+  const r = await api('/api/rewrite', {news_id: _editorNewsId, style, language: lang});
+  document.getElementById('rewrite-loading').textContent = '';
+  document.getElementById('rewrite-btn').disabled = false;
+  if (r.status !== 'ok') { toast(r.message, true); return; }
+  _lastRewrite = r.result;
+  document.getElementById('rw-title').textContent = r.result.title || '';
+  document.getElementById('rw-seo-title').textContent = r.result.seo_title || '';
+  document.getElementById('rw-seo-desc').textContent = r.result.seo_description || '';
+  document.getElementById('rw-tags').innerHTML = (r.result.tags||[]).map(t => `<span class="tag tag-release">${esc(t)}</span>`).join(' ');
+  document.getElementById('rw-text').textContent = r.result.text || '';
+  document.getElementById('rw-original').textContent = r.original_title + '\n\n' + (document.querySelector('#editor-preview pre, #editor-preview div[style*="pre-wrap"]')?.textContent || '');
+  document.getElementById('rewrite-result').style.display = 'block';
+  toast('Переписано!');
+}
+
+async function mergeSelected() {
+  if (_editorMergeIds.size < 2) { toast('Выберите минимум 2 новости', true); return; }
+  document.getElementById('rewrite-loading').textContent = 'Объединяем...';
+  document.getElementById('merge-btn').disabled = true;
+  const r = await api('/api/merge', {news_ids: [..._editorMergeIds]});
+  document.getElementById('rewrite-loading').textContent = '';
+  document.getElementById('merge-btn').disabled = false;
+  if (r.status !== 'ok') { toast(r.message, true); return; }
+  _lastRewrite = r.result;
+  document.getElementById('rw-title').textContent = r.result.merged_title || '';
+  document.getElementById('rw-seo-title').textContent = '';
+  document.getElementById('rw-seo-desc').textContent = 'Источники: ' + (r.sources||[]).join(', ');
+  document.getElementById('rw-tags').innerHTML = '';
+  document.getElementById('rw-text').textContent = r.result.merged_text || '';
+  const facts = r.result.unique_facts || [];
+  document.getElementById('rw-original').textContent = 'Уникальные факты:\n' + facts.map((f,i) => (i+1)+'. '+f).join('\n') + '\n\nЛучший источник: ' + (r.result.best_source||'');
+  document.getElementById('rewrite-result').style.display = 'block';
+  toast('Объединено!');
+}
+
+function copyRewrite() {
+  if (!_lastRewrite) return;
+  const text = (_lastRewrite.title || _lastRewrite.merged_title || '') + '\n\n' + (_lastRewrite.text || _lastRewrite.merged_text || '');
+  navigator.clipboard.writeText(text);
+  toast('Скопировано!');
+}
+
+function copyRewriteJson() {
+  if (!_lastRewrite) return;
+  navigator.clipboard.writeText(JSON.stringify(_lastRewrite, null, 2));
+  toast('JSON скопирован!');
+}
+
+function initEditorSourceFilter() {
+  const sources = [...new Set(_allNews.map(n => n.source))].sort();
+  const sel = document.getElementById('editor-source-filter');
+  if (sel && sel.options.length <= 1) {
+    sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o); });
+  }
+  filterEditorNews();
 }
 
 // Init
