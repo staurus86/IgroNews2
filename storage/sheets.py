@@ -55,6 +55,14 @@ def write_news_row(news: dict, analysis: dict) -> int | None:
     try:
         sheet = client.open_by_key(config.GOOGLE_SHEETS_ID).worksheet(config.SHEETS_TAB)
 
+        # Дедупликация: проверяем, есть ли уже этот URL в таблице (колонка B)
+        news_url = news.get("url", "")
+        if news_url:
+            existing_urls = sheet.col_values(2)  # колонка B = URL
+            if news_url in existing_urls:
+                logger.info("Skipped duplicate in Sheets: %s", news_url[:80])
+                return -1  # уже есть, пропускаем
+
         bigrams_str = ", ".join(
             b[0] if isinstance(b, list) else b
             for b in json.loads(analysis.get("bigrams", "[]"))

@@ -902,6 +902,7 @@ async function login() {
             cur = conn.cursor()
             ph = "%s" if _is_postgres() else "?"
             exported = 0
+            skipped = 0
             errors = 0
             for nid in news_ids:
                 try:
@@ -926,12 +927,14 @@ async function login() {
                         analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
                                    "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
                     sheet_row = write_news_row(news, analysis)
-                    if sheet_row:
+                    if sheet_row and sheet_row > 0:
                         exported += 1
+                    elif sheet_row == -1:
+                        skipped += 1
                 except Exception as e:
                     logger.warning("Bulk export error for %s: %s", nid, e)
                     errors += 1
-            self._json({"status": "ok", "exported": exported, "errors": errors})
+            self._json({"status": "ok", "exported": exported, "skipped": skipped, "errors": errors})
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
 
@@ -2497,7 +2500,7 @@ async function exportSelectedToSheets() {
   if (!confirm('Экспортировать ' + ids.length + ' новостей в Google Sheets?')) return;
   toast('Экспорт в Sheets...');
   const r = await api('/api/export_sheets_bulk', {news_ids: ids});
-  if (r.status === 'ok') toast('Экспортировано: ' + r.exported + (r.errors ? ', ошибок: ' + r.errors : ''));
+  if (r.status === 'ok') toast('Экспортировано: ' + r.exported + (r.skipped ? ', дубликатов: ' + r.skipped : '') + (r.errors ? ', ошибок: ' + r.errors : ''));
   else toast(r.message, true);
 }
 
@@ -2507,7 +2510,7 @@ async function exportSelectedToSheetsDash() {
   if (!confirm('Экспортировать ' + ids.length + ' новостей в Google Sheets?')) return;
   toast('Экспорт в Sheets...');
   const r = await api('/api/export_sheets_bulk', {news_ids: ids});
-  if (r.status === 'ok') toast('Экспортировано: ' + r.exported + (r.errors ? ', ошибок: ' + r.errors : ''));
+  if (r.status === 'ok') toast('Экспортировано: ' + r.exported + (r.skipped ? ', дубликатов: ' + r.skipped : '') + (r.errors ? ', ошибок: ' + r.errors : ''));
   else toast(r.message, true);
 }
 
