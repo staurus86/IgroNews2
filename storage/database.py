@@ -61,6 +61,20 @@ def init_db():
         )
     """
 
+    task_queue_sql = """
+        CREATE TABLE IF NOT EXISTS task_queue (
+            id TEXT PRIMARY KEY,
+            task_type TEXT,
+            news_id TEXT,
+            news_title TEXT,
+            style TEXT,
+            status TEXT DEFAULT 'pending',
+            result TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """
+
     if _is_postgres():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS news (
@@ -91,6 +105,7 @@ def init_db():
             )
         """)
         cur.execute(articles_sql)
+        cur.execute(task_queue_sql)
     else:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS news (
@@ -121,6 +136,7 @@ def init_db():
             )
         """)
         cur.execute(articles_sql)
+        cur.execute(task_queue_sql)
         conn.commit()
 
     logger.info("Database initialized")

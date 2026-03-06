@@ -101,18 +101,9 @@ def _do_process(news: dict) -> dict:
     }
     save_analysis(news_id, **analysis_data)
 
-    # 6. Sheets
-    analysis_for_sheets = {
-        "bigrams": json.dumps(bigrams, ensure_ascii=False),
-        "trends_data": json.dumps(trends, ensure_ascii=False),
-        "keyso_data": json.dumps({"freq": keyso_info.get("ws", 0), "similar": [s["word"] for s in similar]}, ensure_ascii=False),
-        "llm_recommendation": recommendation,
-        "llm_trend_forecast": trend_score,
-        "llm_merged_with": "",
-    }
-    row = write_news_row(news, analysis_for_sheets)
-    if row:
-        save_analysis(news_id, sheets_row=row, **analysis_data)
+    # 6. Sheets — отключено, экспорт только вручную через кнопку "В Sheets"
+    # analysis_for_sheets = { ... }
+    # row = write_news_row(news, analysis_for_sheets)
 
     update_news_status(news_id, "processed")
     logger.info("Processed: %s", title[:60])

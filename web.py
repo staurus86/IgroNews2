@@ -102,6 +102,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/sources_stats": lambda: self._json(self._get_sources_stats()),
             "/api/db_info": lambda: self._json(self._get_db_info()),
             "/api/articles": lambda: self._json(self._get_articles()),
+            "/api/queue": lambda: self._json(self._get_queue()),
         }
 
         # DOCX download (GET with query param)
@@ -180,6 +181,11 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/articles/rewrite": lambda: self._rewrite_article(body),
             "/api/articles/improve": lambda: self._improve_article(body),
             "/api/articles/detail": lambda: self._article_detail(body),
+            "/api/queue/cancel": lambda: self._cancel_queue_task(body),
+            "/api/queue/cancel_all": lambda: self._cancel_all_queue(body),
+            "/api/queue/clear_done": lambda: self._clear_done_queue(body),
+            "/api/queue/rewrite": lambda: self._queue_batch_rewrite(body),
+            "/api/queue/sheets": lambda: self._queue_sheets_export(body),
         }
         handler = routes.get(path)
         if handler:
@@ -1183,6 +1189,241 @@ async function login() {
         self._json({"status": "ok", "total": len(news_ids), "success": ok_count,
                      "failed": len(news_ids) - ok_count, "results": results})
 
+    # ---- Queue methods ----
+
+    def _get_queue(self):
+        conn = get_connection()
+        cur = conn.cursor()
+        q = "SELECT * FROM task_queue ORDER BY created_at DESC LIMIT 200"
+        cur.execute(q)
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            rows = [dict(row) for row in cur.fetchall()]
+        return {"status": "ok", "tasks": rows}
+
+    def _cancel_queue_task(self, body):
+        task_id = body.get("task_id")
+        if not task_id:
+            self._json({"status": "error", "message": "task_id required"})
+            return
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+        cur.execute(f"UPDATE task_queue SET status = 'cancelled', updated_at = {ph} WHERE id = {ph} AND status = 'pending'", (now, task_id))
+        if not _is_postgres():
+            conn.commit()
+        self._json({"status": "ok"})
+
+    def _cancel_all_queue(self, body):
+        task_type = body.get("task_type", "")
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+        if task_type:
+            cur.execute(f"UPDATE task_queue SET status = 'cancelled', updated_at = {ph} WHERE status = 'pending' AND task_type = {ph}", (now, task_type))
+        else:
+            cur.execute(f"UPDATE task_queue SET status = 'cancelled', updated_at = {ph} WHERE status = 'pending'", (now,))
+        if not _is_postgres():
+            conn.commit()
+        self._json({"status": "ok"})
+
+    def _clear_done_queue(self, body):
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM task_queue WHERE status IN ('done', 'cancelled', 'skipped', 'error')")
+        if not _is_postgres():
+            conn.commit()
+        self._json({"status": "ok"})
+
+    def _queue_batch_rewrite(self, body):
+        """Ставит новости в очередь на переписку и запускает обработку в фоне."""
+        news_ids = body.get("news_ids", [])
+        style = body.get("style", "news")
+        language = body.get("language", "русский")
+        if not news_ids:
+            self._json({"status": "error", "message": "news_ids required"})
+            return
+
+        import uuid
+        from datetime import datetime, timezone
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        now = datetime.now(timezone.utc).isoformat()
+        created = []
+
+        for nid in news_ids:
+            cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
+            row = cur.fetchone()
+            title = ""
+            if row:
+                title = row[0] if _is_postgres() else row["title"]
+            tid = str(uuid.uuid4())[:12]
+            cur.execute(f"""INSERT INTO task_queue (id, task_type, news_id, news_title, style, status, created_at, updated_at)
+                VALUES ({','.join([ph]*8)})""",
+                (tid, "rewrite", nid, title[:200], style, "pending", now, now))
+            created.append(tid)
+
+        if not _is_postgres():
+            conn.commit()
+
+        # Process in background thread
+        def _process_rewrite_queue():
+            import json as _json
+            from apis.llm import rewrite_news
+            conn2 = get_connection()
+            cur2 = conn2.cursor()
+            for tid in created:
+                cur2.execute(f"SELECT * FROM task_queue WHERE id = {ph}", (tid,))
+                if _is_postgres():
+                    cols = [d[0] for d in cur2.description]
+                    task = dict(zip(cols, cur2.fetchone()))
+                else:
+                    task = dict(cur2.fetchone())
+                if task["status"] != "pending":
+                    continue
+                nid = task["news_id"]
+                _now = datetime.now(timezone.utc).isoformat()
+                cur2.execute(f"UPDATE task_queue SET status = 'processing', updated_at = {ph} WHERE id = {ph}", (_now, tid))
+                if not _is_postgres():
+                    conn2.commit()
+                try:
+                    cur2.execute(f"SELECT id, title, plain_text, description, url, source FROM news WHERE id = {ph}", (nid,))
+                    row = cur2.fetchone()
+                    if not row:
+                        raise Exception("news not found")
+                    if _is_postgres():
+                        cols = [d[0] for d in cur2.description]
+                        news = dict(zip(cols, row))
+                    else:
+                        news = dict(row)
+                    ntitle = news.get("title", "")
+                    ntext = news.get("plain_text", "") or news.get("description", "")
+                    result = rewrite_news(ntitle, ntext, style, language)
+                    if not result:
+                        raise Exception("LLM failed")
+                    aid = str(uuid.uuid4())[:12]
+                    tags = _json.dumps(result.get("tags", []), ensure_ascii=False)
+                    cur2.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
+                        style, language, original_title, original_text, source_url, status, created_at, updated_at)
+                        VALUES ({','.join([ph]*15)})""",
+                        (aid, nid, result.get("title", ""), result.get("text", ""),
+                         result.get("seo_title", ""), result.get("seo_description", ""), tags,
+                         style, language, ntitle, ntext[:5000],
+                         news.get("url", ""), "draft", _now, _now))
+                    _now2 = datetime.now(timezone.utc).isoformat()
+                    res_data = _json.dumps({"article_id": aid, "title": result.get("title", "")}, ensure_ascii=False)
+                    cur2.execute(f"UPDATE task_queue SET status = 'done', result = {ph}, updated_at = {ph} WHERE id = {ph}", (res_data, _now2, tid))
+                    if not _is_postgres():
+                        conn2.commit()
+                except Exception as e:
+                    logger.warning("Queue rewrite error %s: %s", tid, e)
+                    _now2 = datetime.now(timezone.utc).isoformat()
+                    cur2.execute(f"UPDATE task_queue SET status = 'error', result = {ph}, updated_at = {ph} WHERE id = {ph}", (str(e), _now2, tid))
+                    if not _is_postgres():
+                        conn2.commit()
+
+        t = threading.Thread(target=_process_rewrite_queue, daemon=True)
+        t.start()
+        self._json({"status": "ok", "queued": len(created), "task_ids": created})
+
+    def _queue_sheets_export(self, body):
+        """Ставит новости в очередь на экспорт в Sheets и запускает обработку в фоне."""
+        news_ids = body.get("news_ids", [])
+        if not news_ids:
+            self._json({"status": "error", "message": "news_ids required"})
+            return
+
+        import uuid
+        from datetime import datetime, timezone
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        now = datetime.now(timezone.utc).isoformat()
+        created = []
+
+        for nid in news_ids:
+            cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
+            row = cur.fetchone()
+            title = ""
+            if row:
+                title = row[0] if _is_postgres() else row["title"]
+            tid = str(uuid.uuid4())[:12]
+            cur.execute(f"""INSERT INTO task_queue (id, task_type, news_id, news_title, style, status, created_at, updated_at)
+                VALUES ({','.join([ph]*8)})""",
+                (tid, "sheets", nid, title[:200], "", "pending", now, now))
+            created.append(tid)
+
+        if not _is_postgres():
+            conn.commit()
+
+        # Process in background
+        def _process_sheets_queue():
+            import json as _json
+            from storage.sheets import write_news_row
+            conn2 = get_connection()
+            cur2 = conn2.cursor()
+            for tid in created:
+                cur2.execute(f"SELECT * FROM task_queue WHERE id = {ph}", (tid,))
+                if _is_postgres():
+                    cols = [d[0] for d in cur2.description]
+                    task = dict(zip(cols, cur2.fetchone()))
+                else:
+                    task = dict(cur2.fetchone())
+                if task["status"] != "pending":
+                    continue
+                nid = task["news_id"]
+                _now = datetime.now(timezone.utc).isoformat()
+                cur2.execute(f"UPDATE task_queue SET status = 'processing', updated_at = {ph} WHERE id = {ph}", (_now, tid))
+                if not _is_postgres():
+                    conn2.commit()
+                try:
+                    cur2.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
+                    row = cur2.fetchone()
+                    if not row:
+                        raise Exception("news not found")
+                    if _is_postgres():
+                        cols = [d[0] for d in cur2.description]
+                        news = dict(zip(cols, row))
+                    else:
+                        news = dict(row)
+                    cur2.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (nid,))
+                    arow = cur2.fetchone()
+                    if arow:
+                        if _is_postgres():
+                            cols = [d[0] for d in cur2.description]
+                            analysis = dict(zip(cols, arow))
+                        else:
+                            analysis = dict(arow)
+                    else:
+                        analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
+                                   "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
+                    sheet_row = write_news_row(news, analysis)
+                    _now2 = datetime.now(timezone.utc).isoformat()
+                    if sheet_row and sheet_row > 0:
+                        res_data = _json.dumps({"row": sheet_row}, ensure_ascii=False)
+                        cur2.execute(f"UPDATE task_queue SET status = 'done', result = {ph}, updated_at = {ph} WHERE id = {ph}", (res_data, _now2, tid))
+                    elif sheet_row == -1:
+                        cur2.execute(f"UPDATE task_queue SET status = 'skipped', result = 'duplicate', updated_at = {ph} WHERE id = {ph}", (_now2, tid))
+                    else:
+                        cur2.execute(f"UPDATE task_queue SET status = 'error', result = 'no row', updated_at = {ph} WHERE id = {ph}", (_now2, tid))
+                    if not _is_postgres():
+                        conn2.commit()
+                except Exception as e:
+                    logger.warning("Queue sheets error %s: %s", tid, e)
+                    _now2 = datetime.now(timezone.utc).isoformat()
+                    cur2.execute(f"UPDATE task_queue SET status = 'error', result = {ph}, updated_at = {ph} WHERE id = {ph}", (str(e), _now2, tid))
+                    if not _is_postgres():
+                        conn2.commit()
+
+        t = threading.Thread(target=_process_sheets_queue, daemon=True)
+        t.start()
+        self._json({"status": "ok", "queued": len(created), "task_ids": created})
+
     def _serve_docx_bulk(self, article_ids):
         """Генерирует ZIP с несколькими DOCX файлами."""
         import io
@@ -1567,8 +1808,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <title>IgroNews Admin</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#0f1923; color:#e1e8ed; }
-.container { max-width:1400px; margin:0 auto; padding:15px; }
+body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#0f1923; color:#e1e8ed; font-size:15px; }
+.container { max-width:1600px; margin:0 auto; padding:15px; }
 h1 { color:#1da1f2; font-size:1.5em; }
 h2 { color:#1da1f2; font-size:1.1em; margin-bottom:10px; }
 header { background:linear-gradient(135deg,#192734 0%,#1a3a4a 100%); padding:12px 20px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid #22303c; box-shadow:0 2px 8px rgba(0,0,0,0.3); }
@@ -1611,13 +1852,15 @@ header { background:linear-gradient(135deg,#192734 0%,#1a3a4a 100%); padding:12p
 .btn-warning:hover { background:#e69d1c; }
 
 /* Table */
-table { width:100%; border-collapse:collapse; background:#192734; border-radius:10px; overflow:hidden; font-size:0.85em; }
-th { background:#22303c; text-align:left; padding:10px 12px; color:#8899a6; font-size:0.8em; white-space:nowrap; position:sticky; top:0; z-index:2; user-select:none; }
+table { width:100%; border-collapse:collapse; background:#192734; border-radius:10px; overflow:hidden; font-size:0.88em; }
+th { background:#22303c; text-align:left; padding:10px 12px; color:#8899a6; font-size:0.82em; white-space:nowrap; position:sticky; top:0; z-index:2; user-select:none; }
 th.sortable { cursor:pointer; transition:color .2s; }
 th.sortable:hover { color:#1da1f2; }
 th.sortable .sort-arrow { margin-left:3px; font-size:0.75em; opacity:0.4; }
 th.sortable.sort-active .sort-arrow { opacity:1; color:#1da1f2; }
-td { padding:8px 12px; border-bottom:1px solid #22303c; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+td { padding:8px 12px; border-bottom:1px solid #22303c; max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+td.td-title { white-space:normal; overflow:hidden; max-width:420px; }
+td.td-title > a, td.td-title > span { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; line-height:1.4; }
 tr { transition:background .15s; }
 tr:hover { background:#22303c; }
 tr.highlighted { background:#1da1f215; }
@@ -1722,6 +1965,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div class="tab" data-tab="tools">Инструменты</div>
     <div class="tab" data-tab="editor">Редактор</div>
     <div class="tab" data-tab="articles">Статьи <span id="articles-badge" class="badge badge-new" style="display:none">0</span></div>
+    <div class="tab" data-tab="queue">Очередь <span id="queue-badge" class="badge badge-new" style="display:none">0</span></div>
     <div class="tab" data-tab="health">Здоровье</div>
     <div class="tab" data-tab="settings">Настройки</div>
     <div class="tab" data-tab="users">Пользователи</div>
@@ -2203,6 +2447,44 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           </details>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- QUEUE -->
+  <div class="panel" id="panel-queue">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <h2>Очередь задач</h2>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="queue-filter-type" onchange="renderQueueTable()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+          <option value="">Все типы</option>
+          <option value="rewrite">Переписка</option>
+          <option value="sheets">Sheets</option>
+        </select>
+        <select id="queue-filter-status" onchange="renderQueueTable()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+          <option value="">Все статусы</option>
+          <option value="pending">Ожидает</option>
+          <option value="processing">Обработка</option>
+          <option value="done">Готово</option>
+          <option value="error">Ошибка</option>
+          <option value="cancelled">Отменено</option>
+          <option value="skipped">Пропущено</option>
+        </select>
+        <button class="btn btn-sm btn-secondary" onclick="loadQueue()">Обновить</button>
+        <button class="btn btn-sm" style="background:#e0245e;color:#fff" onclick="cancelAllQueue('')">Отменить все ожидающие</button>
+        <button class="btn btn-sm" style="background:#71767b;color:#fff" onclick="clearDoneQueue()">Очистить завершённые</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:16px;margin-bottom:12px" id="queue-stats"></div>
+    <table>
+      <thead><tr>
+        <th style="width:40px"><input type="checkbox" onchange="toggleAllQueue(this)" style="width:16px;height:16px"></th>
+        <th>Тип</th><th>Новость</th><th>Стиль</th><th>Статус</th><th>Результат</th><th>Создано</th><th>Действия</th>
+      </tr></thead>
+      <tbody id="queue-table"></tbody>
+    </table>
+    <div style="margin-top:8px;display:flex;gap:8px">
+      <span id="queue-selected-count" style="color:#8899a6;font-size:0.85em;line-height:28px"></span>
+      <button class="btn btn-sm" style="background:#e0245e;color:#fff" onclick="cancelSelectedQueue()">Отменить выбранные</button>
     </div>
   </div>
 
@@ -2727,7 +3009,7 @@ function renderDashboardRows(news) {
     return `<tr style="${rowStyle}">
       <td><input type="checkbox" class="news-check" data-id="${n.id}" onchange="updateSelectedCount()"></td>
       <td><span style="cursor:pointer" onclick="filterBySource('${esc(n.source)}')" title="Фильтр по источнику">${n.source}</span></td>
-      <td><a href="${n.url}" target="_blank" title="${esc(n.description||'')}">${esc(n.title||'')}</a></td>
+      <td class="td-title"><a href="${n.url}" target="_blank" title="${esc(n.description||'')}">${esc(n.title||'')}</a></td>
       <td>${renderTagsClickable(n.id)}</td>
       <td>${renderGroupClickable(n.id)}</td>
       <td>${fmtDate(n.published_at)}</td>
@@ -2892,7 +3174,7 @@ function renderReviewRows(results) {
     const statusBadge = r.status ? `<span class="badge badge-${r.status}" style="margin-left:4px">${STATUS_LABELS[r.status]||r.status}</span>` : '';
     return `<tr id="review-row-${r.id}">
       <td><input type="checkbox" class="approve-check" data-id="${r.id}" ${r.overall_pass && !r.is_duplicate ? 'checked' : ''}></td>
-      <td><a href="${r.url}" target="_blank" title="${esc(r.title||'')}">${esc((r.title||'').slice(0,50))}</a>${statusBadge}</td>
+      <td class="td-title"><a href="${r.url}" target="_blank" title="${esc(r.title||'')}">${esc(r.title||'')}</a>${statusBadge}</td>
       <td>${r.source}</td>
       <td>${dup}</td>
       <td style="color:${q.pass?'#17bf63':'#e0245e'}">${q.score}</td>
@@ -2978,8 +3260,8 @@ async function processOne(id) {
 }
 
 async function exportOne(id) {
-  const r = await api('/api/export_sheets', {news_id: id});
-  if (r.status === 'ok') toast('Экспортировано в строку ' + r.row);
+  const r = await api('/api/queue/sheets', {news_ids: [id]});
+  if (r.status === 'ok') { toast('Добавлено в очередь Sheets'); loadQueue(); }
   else toast(r.message, true);
 }
 
@@ -3256,7 +3538,7 @@ function renderNewsFiltered() {
     return `<tr>
       <td><input type="checkbox" class="news-tab-check" data-id="${n.id}" onchange="updateNewsSelectedCount()"></td>
       <td>${n.source}</td>
-      <td><a href="${n.url}" target="_blank" title="${esc(n.description||'')}">${esc(n.title||'')}</a></td>
+      <td class="td-title"><a href="${n.url}" target="_blank" title="${esc(n.description||'')}">${esc(n.title||'')}</a></td>
       <td>${fmtDate(n.published_at)}</td>
       <td><span class="badge badge-${n.status}">${statusLabel}</span></td>
       <td title="${esc(bigrams)}">${bigrams.slice(0,40)}</td>
@@ -3287,20 +3569,18 @@ function toggleAllNews(el) {
 async function exportSelectedToSheets() {
   const ids = getNewsSelectedIds();
   if (!ids.length) { toast('Сначала выберите новости', true); return; }
-  if (!confirm('Экспортировать ' + ids.length + ' новостей в Google Sheets?')) return;
-  toast('Экспорт в Sheets...');
-  const r = await api('/api/export_sheets_bulk', {news_ids: ids});
-  if (r.status === 'ok') toast('Экспортировано: ' + r.exported + (r.skipped ? ', дубликатов: ' + r.skipped : '') + (r.errors ? ', ошибок: ' + r.errors : ''));
+  if (!confirm('Экспортировать ' + ids.length + ' новостей в Google Sheets через очередь?')) return;
+  const r = await api('/api/queue/sheets', {news_ids: ids});
+  if (r.status === 'ok') { toast(`${r.queued} задач добавлено в очередь Sheets`); loadQueue(); }
   else toast(r.message, true);
 }
 
 async function exportSelectedToSheetsDash() {
   const ids = getSelectedIds();
   if (!ids.length) { toast('Сначала выберите новости', true); return; }
-  if (!confirm('Экспортировать ' + ids.length + ' новостей в Google Sheets?')) return;
-  toast('Экспорт в Sheets...');
-  const r = await api('/api/export_sheets_bulk', {news_ids: ids});
-  if (r.status === 'ok') toast('Экспортировано: ' + r.exported + (r.skipped ? ', дубликатов: ' + r.skipped : '') + (r.errors ? ', ошибок: ' + r.errors : ''));
+  if (!confirm('Экспортировать ' + ids.length + ' новостей в Google Sheets через очередь?')) return;
+  const r = await api('/api/queue/sheets', {news_ids: ids});
+  if (r.status === 'ok') { toast(`${r.queued} задач добавлено в очередь Sheets`); loadQueue(); }
   else toast(r.message, true);
 }
 
@@ -3963,14 +4243,14 @@ async function batchRewrite() {
   if (!confirm(`$ Батч-переписать ${cnt} новостей в стиле "${style}"?\nЭто ${cnt} вызовов LLM API.`)) return;
 
   const loadEl = document.getElementById('rewrite-loading');
-  loadEl.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px"><span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#17bf63;border-radius:50%;animation:spin .8s linear infinite;display:inline-block"></span> Батч: 0/${cnt}...</span>`;
+  loadEl.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px"><span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#17bf63;border-radius:50%;animation:spin .8s linear infinite;display:inline-block"></span> Добавляю в очередь...</span>`;
 
-  const r = await api('/api/batch_rewrite', {news_ids: [..._editorMergeIds], style, language: lang});
+  const r = await api('/api/queue/rewrite', {news_ids: [..._editorMergeIds], style, language: lang});
   loadEl.textContent = '';
 
   if (r.status === 'ok') {
-    toast(`Готово: ${r.success} переписано, ${r.failed} ошибок`);
-    loadArticles();
+    toast(`${r.queued} задач добавлено в очередь. Откройте вкладку "Очередь" для отслеживания.`);
+    loadQueue();
     clearMergeSelection();
   } else {
     toast(r.message, true);
@@ -4029,6 +4309,110 @@ async function saveRewriteAsArticle() {
   } else toast(r.message, true);
 }
 
+// ---- Queue ----
+let _queueTasks = [];
+
+async function loadQueue() {
+  const r = await api('/api/queue');
+  if (r.status === 'ok') {
+    _queueTasks = r.tasks || [];
+    renderQueueTable();
+    updateQueueBadge();
+  }
+}
+
+function updateQueueBadge() {
+  const pending = _queueTasks.filter(t => t.status === 'pending' || t.status === 'processing').length;
+  const badge = document.getElementById('queue-badge');
+  if (pending > 0) { badge.textContent = pending; badge.style.display = 'inline'; }
+  else { badge.style.display = 'none'; }
+}
+
+function renderQueueTable() {
+  const typeF = document.getElementById('queue-filter-type').value;
+  const statusF = document.getElementById('queue-filter-status').value;
+  let tasks = _queueTasks;
+  if (typeF) tasks = tasks.filter(t => t.task_type === typeF);
+  if (statusF) tasks = tasks.filter(t => t.status === statusF);
+
+  // Stats
+  const stats = {};
+  _queueTasks.forEach(t => { stats[t.status] = (stats[t.status] || 0) + 1; });
+  const statLabels = {pending:'Ожидает',processing:'Обработка',done:'Готово',error:'Ошибка',cancelled:'Отменено',skipped:'Пропущено'};
+  const statColors = {pending:'#f5a623',processing:'#1da1f2',done:'#17bf63',error:'#e0245e',cancelled:'#71767b',skipped:'#8899a6'};
+  document.getElementById('queue-stats').innerHTML = Object.entries(stats).map(([k,v]) =>
+    `<span style="padding:4px 10px;background:${statColors[k]||'#38444d'}22;border:1px solid ${statColors[k]||'#38444d'};border-radius:12px;font-size:0.82em;color:${statColors[k]||'#8899a6'}">${statLabels[k]||k}: ${v}</span>`
+  ).join('');
+
+  const typeLabels = {rewrite:'Переписка', sheets:'Sheets'};
+  const typeIcons = {rewrite:'&#9998;', sheets:'&#128196;'};
+  const statusIcons = {pending:'&#9203;',processing:'&#9881;',done:'&#9989;',error:'&#10060;',cancelled:'&#128683;',skipped:'&#8594;'};
+
+  document.getElementById('queue-table').innerHTML = tasks.map(t => {
+    const canCancel = t.status === 'pending';
+    const timeAgo = t.created_at ? new Date(t.created_at).toLocaleString('ru') : '';
+    let resultText = '';
+    if (t.result) {
+      try { const rr = JSON.parse(t.result); resultText = rr.title || rr.row || t.result; } catch(e) { resultText = t.result; }
+    }
+    if (resultText.length > 60) resultText = resultText.substring(0, 60) + '...';
+    return `<tr style="opacity:${t.status==='cancelled'?'0.5':'1'}">
+      <td><input type="checkbox" class="queue-check" value="${t.id}" style="width:16px;height:16px" ${canCancel?'':'disabled'}></td>
+      <td>${typeIcons[t.task_type]||''} ${typeLabels[t.task_type]||t.task_type}</td>
+      <td style="max-width:300px"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px" title="${(t.news_title||'').replace(/"/g,'&quot;')}">${t.news_title||t.news_id}</div></td>
+      <td>${t.style||'—'}</td>
+      <td><span style="color:${statColors[t.status]||'#8899a6'}">${statusIcons[t.status]||''} ${statLabels[t.status]||t.status}</span></td>
+      <td style="max-width:200px;font-size:0.82em;color:#8899a6"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">${resultText}</div></td>
+      <td style="font-size:0.82em;color:#8899a6;white-space:nowrap">${timeAgo}</td>
+      <td>${canCancel ? `<button class="btn btn-sm" style="background:#e0245e;color:#fff;padding:2px 8px;font-size:0.78em" onclick="cancelQueueTask('${t.id}')">Отменить</button>` : ''}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="8" style="text-align:center;color:#8899a6;padding:20px">Очередь пуста</td></tr>';
+  updateQueueSelectedCount();
+}
+
+async function cancelQueueTask(id) {
+  const r = await api('/api/queue/cancel', {task_id: id});
+  if (r.status === 'ok') { toast('Задача отменена'); loadQueue(); }
+  else toast(r.message, true);
+}
+
+async function cancelAllQueue(type) {
+  if (!confirm('Отменить все ожидающие задачи' + (type ? ` (${type})` : '') + '?')) return;
+  const r = await api('/api/queue/cancel_all', {task_type: type});
+  if (r.status === 'ok') { toast('Все ожидающие отменены'); loadQueue(); }
+  else toast(r.message, true);
+}
+
+async function cancelSelectedQueue() {
+  const checks = document.querySelectorAll('.queue-check:checked');
+  if (!checks.length) { toast('Выберите задачи', true); return; }
+  for (const c of checks) {
+    await api('/api/queue/cancel', {task_id: c.value});
+  }
+  toast(`Отменено: ${checks.length}`);
+  loadQueue();
+}
+
+async function clearDoneQueue() {
+  if (!confirm('Удалить завершённые, отменённые и пропущенные из очереди?')) return;
+  // We use cancel_all with a trick — but we need a dedicated endpoint. For now just reload.
+  const r = await fetch('/api/queue/clear_done', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  const d = await r.json();
+  if (d.status === 'ok') { toast('Очищено'); loadQueue(); }
+  else toast(d.message||'Ошибка', true);
+}
+
+function toggleAllQueue(el) {
+  document.querySelectorAll('.queue-check:not(:disabled)').forEach(c => c.checked = el.checked);
+  updateQueueSelectedCount();
+}
+function updateQueueSelectedCount() {
+  const cnt = document.querySelectorAll('.queue-check:checked').length;
+  const el = document.getElementById('queue-selected-count');
+  if (el) el.textContent = cnt > 0 ? cnt + ' выбрано' : '';
+}
+document.addEventListener('change', e => { if (e.target.classList.contains('queue-check')) updateQueueSelectedCount(); });
+
 // Init
 function loadAll() { loadStats(); loadNews(); }
 loadAll();
@@ -4039,8 +4423,10 @@ loadUsers();
 loadHealth();
 loadDbInfo();
 loadArticles();
+loadQueue();
 setInterval(loadAll, 30000);
 setInterval(loadHealth, 60000);
+setInterval(loadQueue, 15000);
 </script>
 </body>
 </html>"""
