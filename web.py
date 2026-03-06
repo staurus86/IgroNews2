@@ -2234,7 +2234,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 /* Copyable tooltip */
 .tip-wrap { position:relative; display:inline-block; cursor:pointer; }
 .tip-wrap .tip-count { color:#8899a6; border-bottom:1px dashed #38444d; }
-.tip-wrap .tip-box { display:none; position:absolute; z-index:50; left:0; top:100%; padding-top:4px; font-size:0.82em; }
+.tip-wrap .tip-box { display:none; position:absolute; z-index:50; left:0; top:0; padding-top:28px; font-size:0.82em; }
 .tip-wrap .tip-box-inner { background:#22303c; border:1px solid #38444d; border-radius:8px; padding:8px 0; min-width:220px; max-width:320px; max-height:260px; overflow-y:auto; box-shadow:0 8px 24px rgba(0,0,0,0.5); }
 .tip-wrap:hover .tip-box { display:block; }
 .tip-box .tip-row { display:flex; justify-content:space-between; align-items:center; padding:4px 10px; transition:background .1s; }
