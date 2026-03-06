@@ -1,0 +1,246 @@
+🏗 Полная архитектура системы
+┌─────────────────────────────────────────────────────────┐
+│                    ИСТОЧНИКИ (RSS/HTML)                  │
+│  IGN · PCGamer · DTF · StopGame · Eurogamer · и др.     │
+└─────────────────────┬───────────────────────────────────┘
+                      │ каждые 5/10/15/30 мин
+                      ▼
+┌─────────────────────────────────────────────────────────┐
+│                   ПАРСЕР (Python)                        │
+│  Title · H1 · Description · Plain Text                  │
+└─────────────────────┬───────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────────┐
+│              NLP-ОБРАБОТКА (TF-IDF)                      │
+│  Биграммы + Триграммы → ТОП-10 на статью                │
+└──────┬──────────────┬──────────────────────────────────┘
+       │              │
+       ▼              ▼
+┌────────────┐  ┌─────────────┐
+│ Google     │  │  Keys.so    │
+│ Trends API │  │    API      │
+│ (регион)   │  │ (частота)   │
+└──────┬─────┘  └──────┬──────┘
+       │               │
+       └───────┬────────┘
+               ▼
+┌─────────────────────────────────────────────────────────┐
+│                   LLM (Claude API)                       │
+│  1. Похожие запросы из Keys.so (ТОП-10 по близости)     │
+│  2. Прогноз: попадёт ли новость в тренды?               │
+│  3. Объединение похожих новостей в одну                  │
+└─────────────────────┬───────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────────┐
+│              GOOGLE SHEETS (итоговая таблица)            │
+│  URL · Мета · Биграммы · Частота · Популярность · LLM   │
+└─────────────────────┬───────────────────────────────────┘
+                      │  редактор видит, оценивает
+                      ▼
+┌─────────────────────────────────────────────────────────┐
+│           ФИНАЛЬНЫЙ ШАГ: ОДОБРЕННЫЕ НОВОСТИ             │
+│  Статус "approved" → экспорт с полным текстом и метой   │
+└─────────────────────────────────────────────────────────┘
+
+📁 Структура проекта
+gaming-news-parser/
+│
+├── main.py                  # точка входа, запуск планировщика
+├── config.py                # все ключи, источники, настройки
+├── requirements.txt
+├── Dockerfile
+├── railway.toml
+│
+├── parsers/
+│   ├── rss_parser.py        # парсинг RSS-лент
+│   └── html_parser.py       # парсинг HTML если нет RSS
+│
+├── nlp/
+│   └── tfidf.py             # TF-IDF, биграммы, триграммы
+│
+├── apis/
+│   ├── google_trends.py     # Google Trends по регионам
+│   ├── keyso.py             # Keys.so API
+│   └── llm.py               # Claude API (анализ + промты)
+│
+├── storage/
+│   ├── database.py          # SQLite / PostgreSQL
+│   └── sheets.py            # запись в Google Sheets
+│
+└── scheduler.py             # APScheduler, тайминги
+
+🗄 Схема базы данных
+sql-- Сырые новости
+CREATE TABLE news (
+    id TEXT PRIMARY KEY,        -- md5(url)
+    source TEXT,
+    url TEXT,
+    title TEXT,
+    h1 TEXT,
+    description TEXT,
+    plain_text TEXT,
+    published_at TEXT,
+    parsed_at TEXT,
+    status TEXT DEFAULT 'new'   -- new / processed / approved / rejected
+);
+
+-- Результаты NLP + API
+CREATE TABLE news_analysis (
+    news_id TEXT PRIMARY KEY,
+    bigrams JSON,               -- [["gta 6", 0.87], ...]
+    trigrams JSON,
+    trends_data JSON,           -- {"RU": 85, "US": 42}
+    keyso_data JSON,            -- {"freq": 12000, "similar": [...]}
+    llm_recommendation TEXT,
+    llm_trend_forecast TEXT,
+    llm_merged_with JSON,       -- id похожих новостей
+    sheets_row INTEGER,
+    processed_at TEXT
+);
+
+⚙️ Конфигурация источников и таймингов
+python# config.py
+SOURCES = {
+    "5min": [
+        {"name": "IGN",      "rss": "https://feeds.ign.com/ign/all"},
+        {"name": "DTF",      "rss": "https://dtf.ru/rss"},
+    ],
+    "15min": [
+        {"name": "PCGamer",  "rss": "https://www.pcgamer.com/rss/"},
+        {"name": "StopGame", "rss": "https://stopgame.ru/rss/news.xml"},
+    ],
+    "30min": [
+        {"name": "Eurogamer","rss": "https://www.eurogamer.net/feed"},
+        {"name": "Polygon",  "rss": "https://www.polygon.com/rss/index.xml"},
+    ],
+}
+
+REGIONS = ["RU", "US", "GB", "DE"]   # Google Trends регионы
+
+LLM_MODEL = "claude-sonnet-4-20250514"
+
+SHEETS_ID = "ВАШ_SPREADSHEET_ID"
+SHEETS_TAB = "Новости"
+
+🧠 Промты для LLM
+python# apis/llm.py
+
+PROMPT_TREND_FORECAST = """
+Ты — аналитик игровых медиа. Оцени вероятность того, что эта новость 
+станет трендовой в ближайшие 24 часа.
+
+Новость: {title}
+Текст: {text}
+Топ биграммы: {bigrams}
+Частота в поиске: {keyso_freq}
+Google Trends сейчас: {trends}
+
+Ответь в JSON:
+{{
+  "trend_score": 0-100,
+  "reasoning": "почему",
+  "peak_window": "когда ожидать пик (часы)",
+  "recommendation": "публиковать немедленно / подождать / пропустить"
+}}
+"""
+
+PROMPT_MERGE_ANALYSIS = """
+Перед тобой список новостей из разных источников об одном событии.
+Объедини их в одну финальную новость.
+
+Новости:
+{news_list}
+
+Верни JSON:
+{{
+  "merged_title": "лучший заголовок",
+  "merged_text": "объединённый текст",
+  "unique_facts": ["факт 1", "факт 2"],
+  "best_source": "самый полный источник"
+}}
+"""
+
+PROMPT_KEYSO_QUERIES = """
+На основе биграмм и темы новости предложи 10 поисковых запросов 
+для проверки в Keys.so. Запросы должны быть близки к теме, 
+но охватывать смежные интенты (информационные, навигационные).
+
+Тема: {title}
+Биграммы: {bigrams}
+Регион: {region}
+
+Верни JSON: {{"queries": ["запрос 1", ...]}}
+"""
+
+📊 Структура Google Sheets
+КолонкаСодержимоеAДата парсингаBИсточник (URL)CTitleDH1EDescriptionFТоп биграммы (через запятую)GЧастота биграмм (Keys.so)HGoogle Trends RUIGoogle Trends USJРекомендация LLMKПрогноз трендовости (0–100)LПохожие запросы Keys.soMОбъединить с (ссылки)NСтатус (new / approved / rejected)OPlain Text (скрытая колонка)
+Редактор меняет статус в колонке N → система видит "approved" → выдаёт финальный пакет.
+
+🚀 Деплой на Railway
+railway.toml
+toml[build]
+builder = "DOCKERFILE"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+Dockerfile
+dockerfileFROM python:3.11-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY . .
+
+CMD ["python", "main.py"]
+```
+
+### Переменные окружения в Railway
+```
+ANTHROPIC_API_KEY=
+KEYSO_API_KEY=
+GOOGLE_SHEETS_ID=
+GOOGLE_SERVICE_ACCOUNT_JSON=   # base64 от JSON-файла сервис-аккаунта
+DATABASE_URL=                   # Railway даёт PostgreSQL автоматически
+```
+
+### Railway — план деплоя по шагам
+
+1. Создать проект на railway.app
+2. Подключить GitHub репозиторий
+3. Добавить PostgreSQL плагин (одна кнопка)
+4. Вставить все env-переменные
+5. Railway сам соберёт Docker и запустит `main.py`
+6. Логи смотреть прямо в Railway dashboard
+
+---
+
+## 📦 requirements.txt
+```
+feedparser==6.0.11
+beautifulsoup4==4.12.3
+requests==2.31.0
+httpx==0.27.0
+anthropic==0.25.0
+pytrends==4.9.2
+gspread==6.0.2
+google-auth==2.29.0
+apscheduler==3.10.4
+scikit-learn==1.4.2
+nltk==3.8.1
+psycopg2-binary==2.9.9
+python-dotenv==1.0.1
+
+✅ Очерёдность разработки
+
+Парсер RSS + БД — базовый сбор новостей
+TF-IDF биграммы — NLP-обработка текстов
+Keys.so API — частота запросов
+Google Trends — проверка трендовости по регионам
+LLM промты — три сценария анализа
+Google Sheets — запись и статусы
+Dockerfile + Railway — деплой
+Тест на реальных источниках — отладка и калибровка

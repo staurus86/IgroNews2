@@ -1,0 +1,35 @@
+#	Сайт	Тип	Специализация
+1	ign.com	🌍 Международный	Новости, рецензии, видео, вики
+2	gamespot.com	🌍 Международный	Новости, рецензии, превью
+3	pcgamer.com	🌍 Международный	ПК-игры, железо, индустрия
+4	eurogamer.net	🌍 Международный	Аналитика, мейнстрим, инди
+5	gamesradar.com	🌍 Международный	Новости, рецензии, гайды
+6	polygon.com	🌍 Международный	Лонгриды, культура, индустрия
+7	rockpapershotgun.com	🌍 Международный	ПК, инди, независимая позиция
+8	gamerant.com	🌍 Международный	Оперативные новости, все платформы
+9	metacritic.com	🌍 Агрегатор	Оценки, рейтинги, релизы
+10	dtf.ru	🇷🇺 Русскоязычный	Новости, сообщество, журналистика
+11	stopgame.ru	🇷🇺 Русскоязычный	Рецензии, новости, подкасты
+12	ixbt.games	🇷🇺 Русскоязычный	Аналитика, новости, железо
+13	cybersport.ru	🇷🇺 Русскоязычный	Киберспорт, турниры, мета
+14	playground.ru	🇷🇺 Русскоязычный	Новости, база игр, коды
+15	vgtimes.ru	🇷🇺 Русскоязычный	Оперативные новости, обзоры
+
+
+📡 RSS и хабы для парсинга				
+#	Сайт	Тип	URL для парсинга	Примечание
+1	ign.com	✅ RSS	https://feeds.ign.com/ign/all	Полный фид, все темы
+2	gamespot.com	✅ RSS	https://www.gamespot.com/feeds/mashup/	Все материалы
+3	pcgamer.com	✅ RSS	https://www.pcgamer.com/rss/	Весь сайт
+4	eurogamer.net	✅ RSS	https://www.eurogamer.net/?format=rss	Классический формат
+5	gamesradar.com	✅ RSS	https://www.gamesradar.com/feeds/tag/games	Только игровая секция
+6	polygon.com	✅ RSS	https://www.polygon.com/rss/index.xml	Весь сайт
+7	rockpapershotgun.com	✅ RSS	https://feeds.feedburner.com/RockPaperShotgun	Через FeedBurner
+8	gamerant.com	✅ RSS	https://gamerant.com/feed/	Весь сайт
+9	metacritic.com	⚠️ HTML	https://www.metacritic.com/news/	RSS не работает после редизайна — только парсинг страницы
+10	dtf.ru	⚠️ RSS (слабый)	https://dtf.ru/rss/all	RSS отдаёт мало материалов, лучше парсить HTML: https://dtf.ru/games
+11	stopgame.ru	✅ RSS	https://stopgame.ru/rss/news.xml	Только новости
+12	ixbt.games	⚠️ HTML	https://www.ixbt.com/live/games/	RSS не обнаружен — парсить хаб
+13	cybersport.ru	✅ RSS	https://cyber.sports.ru/docs/rss/	Страница с набором лент
+14	playground.ru	✅ RSS	https://www.playground.ru/about/rss/	Страница с лентами, новости: https://www.playground.ru/rss/news.xml
+15	vgtimes.ru	⚠️ HTML	https://vgtimes.ru/news/	RSS не обнаружен — парсить хаб
