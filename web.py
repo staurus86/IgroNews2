@@ -140,6 +140,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/users/delete": lambda: self._delete_user(body),
             "/api/users/change_password": lambda: self._change_password(body),
             "/api/news/bulk_status": lambda: self._bulk_status(body),
+            "/api/news/delete": lambda: self._delete_news(body),
             "/api/test_parse": lambda: self._test_parse(body),
             "/api/setup_headers": lambda: self._setup_headers(body),
             "/api/reparse_all": lambda: self._reparse_all(body),
@@ -798,6 +799,20 @@ async function login() {
             update_news_status(nid, new_status)
         self._json({"status": "ok", "updated": len(news_ids)})
 
+    def _delete_news(self, body):
+        news_ids = body.get("news_ids", [])
+        if not news_ids:
+            self._json({"status": "error", "message": "news_ids required"})
+            return
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        for nid in news_ids:
+            cur.execute(f"DELETE FROM news_analysis WHERE news_id = {ph}", (nid,))
+            cur.execute(f"DELETE FROM news WHERE id = {ph}", (nid,))
+        conn.commit()
+        self._json({"status": "ok", "deleted": len(news_ids)})
+
     def _test_parse(self, body):
         url = body.get("url", "")
         if not url:
@@ -1249,6 +1264,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <button class="btn btn-secondary btn-sm" onclick="loadNews()">Обновить</button>
       <button class="btn btn-warning btn-sm" onclick="bulkStatusChange('approved')">Одобрить выбранные</button>
       <button class="btn btn-danger btn-sm" onclick="bulkStatusChange('rejected')">Отклонить выбранные</button>
+      <button class="btn btn-danger btn-sm" onclick="deleteSelectedNews()" style="margin-left:4px">Удалить выбранные</button>
       <span id="news-selected-count" style="color:#1da1f2;font-size:0.85em;margin-left:8px"></span>
       <span id="news-count" style="color:#8899a6;font-size:0.85em;margin-left:auto"></span>
     </div>
@@ -2275,6 +2291,16 @@ function updateNewsSelectedCount() {
 function toggleAllNews(el) {
   document.querySelectorAll('.news-tab-check').forEach(c => c.checked = el.checked);
   updateNewsSelectedCount();
+}
+
+async function deleteSelectedNews() {
+  const ids = getNewsSelectedIds();
+  if (!ids.length) { toast('Сначала выберите новости', true); return; }
+  if (!confirm('Удалить ' + ids.length + ' новостей? Это необратимо!')) return;
+  const r = await api('/api/news/delete', {news_ids: ids});
+  if (r.status === 'ok') toast('Удалено: ' + r.deleted);
+  else toast(r.message, true);
+  loadAll();
 }
 
 async function bulkStatusChange(newStatus) {
