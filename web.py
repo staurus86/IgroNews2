@@ -65,6 +65,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/prompts": lambda: self._json(self._get_prompts()),
             "/api/settings": lambda: self._json(self._get_settings()),
             "/api/users": lambda: self._json(self._get_users()),
+            "/api/health": lambda: self._json(self._get_health()),
         }
         handler = routes.get(path)
         if handler:
@@ -211,6 +212,10 @@ async function login() {
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(html.encode())
+
+    def _get_health(self):
+        from checks.health import get_sources_health
+        return get_sources_health()
 
     # --- Data ---
     def _get_stats(self):
@@ -402,15 +407,25 @@ async function login() {
             from openai import OpenAI
             import json as _json
             prompt = body.get("prompt", "Ответь JSON: {\"test\": \"ok\"}")
-            client = OpenAI(api_key=config.OPENAI_API_KEY)
+            client = OpenAI(api_key=config.OPENAI_API_KEY, base_url=config.OPENAI_BASE_URL)
             response = client.chat.completions.create(
                 model=config.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                response_format={"type": "json_object"},
             )
             text = response.choices[0].message.content
-            self._json({"status": "ok", "model": config.LLM_MODEL, "raw": text, "result": _json.loads(text)})
+            # Try parse JSON
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                cleaned = "\n".join(cleaned.split("\n")[1:])
+                if cleaned.endswith("```"):
+                    cleaned = cleaned[:-3]
+                cleaned = cleaned.strip()
+            try:
+                parsed = _json.loads(cleaned)
+            except Exception:
+                parsed = None
+            self._json({"status": "ok", "model": config.LLM_MODEL, "base_url": config.OPENAI_BASE_URL, "raw": text, "result": parsed})
         except Exception as e:
             self._json({"status": "error", "message": str(e), "type": type(e).__name__})
 
@@ -615,6 +630,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div class="tab" data-tab="sources">Sources</div>
     <div class="tab" data-tab="prompts">Prompts</div>
     <div class="tab" data-tab="tools">Tools</div>
+    <div class="tab" data-tab="health">Health</div>
     <div class="tab" data-tab="settings">Settings</div>
     <div class="tab" data-tab="users">Users</div>
     <div style="margin-left:auto"><a href="/logout" class="btn btn-secondary btn-sm">Logout</a></div>
@@ -641,7 +657,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <h2>Review Results</h2>
       <div id="review-groups"></div>
       <table style="margin-top:10px">
-        <thead><tr><th><input type="checkbox" id="approve-all" onchange="toggleApproveAll(this)"></th><th>Title</th><th>Source</th><th>Dedup</th><th>Quality</th><th>Relevance</th><th>Freshness</th><th>Viral</th><th>Total</th><th>Pass</th></tr></thead>
+        <thead><tr><th><input type="checkbox" id="approve-all" onchange="toggleApproveAll(this)"></th><th>Title</th><th>Source</th><th>Dedup</th><th>Quality</th><th>Relev.</th><th>Fresh</th><th>Viral</th><th>Sentiment</th><th>Momentum</th><th>Tags</th><th>Total</th><th>Pass</th></tr></thead>
         <tbody id="review-table"></tbody>
       </table>
       <div class="btn-group" style="margin-top:10px">
@@ -649,6 +665,15 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <button class="btn btn-secondary" onclick="hideReview()">Close</button>
       </div>
     </div>
+  </div>
+
+  <!-- HEALTH -->
+  <div class="panel" id="panel-health">
+    <h2>Sources Health (24h)</h2>
+    <table>
+      <thead><tr><th>Status</th><th>Source</th><th>Articles (24h)</th><th>Last Parsed</th><th>Minutes Ago</th></tr></thead>
+      <tbody id="health-table"></tbody>
+    </table>
   </div>
 
   <!-- NEWS -->
@@ -939,17 +964,25 @@ async function sendToReview() {
   // Show results table
   document.getElementById('review-table').innerHTML = _reviewResults.map(r => {
     const q = r.checks.quality, rel = r.checks.relevance, f = r.checks.freshness, v = r.checks.viral;
+    const sent = r.sentiment || {};
+    const mom = r.momentum || {};
+    const tags = (r.tags||[]).map(t=>t.label).join(', ') || '-';
+    const sentColor = sent.label==='positive'?'#17bf63':sent.label==='negative'?'#e0245e':'#8899a6';
+    const momLevel = mom.level||'none';
     const passIcon = r.overall_pass ? '✅' : '❌';
     const dup = r.is_duplicate ? '🔴 DUP' : (r.dedup_status||'unique');
     return `<tr>
       <td><input type="checkbox" class="approve-check" data-id="${r.id}" ${r.overall_pass && !r.is_duplicate ? 'checked' : ''}></td>
-      <td>${esc(r.title||'')}</td>
+      <td><a href="${r.url}" target="_blank">${esc((r.title||'').slice(0,60))}</a></td>
       <td>${r.source}</td>
       <td>${dup}</td>
       <td>${q.score} ${q.pass?'✅':'❌'}</td>
       <td>${rel.score} ${rel.pass?'✅':'❌'}</td>
       <td>${f.score} ${f.status||''}</td>
       <td>${v.score} ${v.level||''}</td>
+      <td style="color:${sentColor}">${sent.score||0} ${sent.label||''}</td>
+      <td>${mom.score||0} ${momLevel} (${mom.sources_1h||0}/${mom.sources_6h||0}/${mom.sources_24h||0})</td>
+      <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(tags)}">${tags}</td>
       <td><b>${r.total_score}</b></td>
       <td>${passIcon}</td>
     </tr>`;
@@ -1156,6 +1189,21 @@ async function testSheets() {
   document.getElementById('test-sheets-result').textContent = JSON.stringify(r, null, 2);
 }
 
+// Health
+async function loadHealth() {
+  const data = await api('/api/health');
+  document.getElementById('health-table').innerHTML = data.map(h => {
+    const icon = h.status==='healthy'?'✅':h.status==='low'?'🟡':h.status==='warning'?'⚠️':'❌';
+    return `<tr>
+      <td>${icon} ${h.status}</td>
+      <td>${h.source}</td>
+      <td>${h.count_24h}</td>
+      <td>${fmtDate(h.last_parsed)}</td>
+      <td>${h.minutes_ago >= 0 ? h.minutes_ago + ' min' : '?'}</td>
+    </tr>`;
+  }).join('');
+}
+
 // Init
 function loadAll() { loadStats(); loadNews(); }
 loadAll();
@@ -1163,7 +1211,9 @@ loadSources();
 loadPrompts();
 loadSettings();
 loadUsers();
+loadHealth();
 setInterval(loadAll, 30000);
+setInterval(loadHealth, 60000);
 </script>
 </body>
 </html>"""

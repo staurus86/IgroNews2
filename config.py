@@ -5,6 +5,7 @@ load_dotenv()
 
 # API Keys
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
 KEYSO_API_KEY = os.getenv("KEYSO_API_KEY", "")
 
 # Google Sheets
@@ -16,7 +17,7 @@ SHEETS_TAB = "Лист1"
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///news.db")
 
 # LLM
-LLM_MODEL = "gpt-4o-mini"
+LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
 
 # Google Trends regions
 REGIONS = ["RU", "US", "GB", "DE"]

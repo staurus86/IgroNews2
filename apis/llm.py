@@ -1,11 +1,21 @@
 import json
 import logging
+import os
 from openai import OpenAI
 import config
 
 logger = logging.getLogger(__name__)
 
-client = OpenAI(api_key=config.OPENAI_API_KEY)
+# Primary: OpenRouter key 1, Fallback: OpenRouter key 2
+_API_KEYS = [k for k in [
+    config.OPENAI_API_KEY,
+    os.getenv("OPENAI_API_KEY_2", ""),
+] if k]
+
+client = OpenAI(
+    api_key=_API_KEYS[0] if _API_KEYS else "",
+    base_url=config.OPENAI_BASE_URL,
+)
 
 PROMPT_TREND_FORECAST = """
 Ты — аналитик игровых медиа. Оцени вероятность того, что эта новость
@@ -56,20 +66,31 @@ PROMPT_KEYSO_QUERIES = """
 
 
 def _call_llm(prompt: str) -> dict | None:
-    """Вызывает OpenAI GPT и парсит JSON-ответ."""
-    try:
-        response = client.chat.completions.create(
-            model=config.LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            response_format={"type": "json_object"},
-        )
-        text = response.choices[0].message.content
-        logger.info("LLM response: %s", text[:200])
-        return json.loads(text)
-    except Exception as e:
-        logger.error("LLM error: %s", e, exc_info=True)
-        return None
+    """Вызывает LLM через OpenRouter с fallback на второй ключ."""
+    global client
+    for i, key in enumerate(_API_KEYS):
+        try:
+            c = OpenAI(api_key=key, base_url=config.OPENAI_BASE_URL)
+            response = c.chat.completions.create(
+                model=config.LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+            )
+            text = response.choices[0].message.content
+            logger.info("LLM response (key %d): %s", i + 1, text[:200])
+            # Try to parse as JSON (strip markdown fences if present)
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                cleaned = "\n".join(cleaned.split("\n")[1:])
+                if cleaned.endswith("```"):
+                    cleaned = cleaned[:-3]
+                cleaned = cleaned.strip()
+            return json.loads(cleaned)
+        except Exception as e:
+            logger.warning("LLM key %d failed: %s", i + 1, e)
+            continue
+    logger.error("All LLM keys failed")
+    return None
 
 
 def forecast_trend(title: str, text: str, bigrams: list,
