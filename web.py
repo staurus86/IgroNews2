@@ -2144,17 +2144,21 @@ async function login() {
             self._json({"status": "error", "message": "not found"})
             return
         title = row[0] if _is_postgres() else row["title"]
-        from apis.llm import translate_title
-        result = translate_title(title)
-        if result:
-            # Save translated title as h1 if not Russian
-            if not result.get("is_russian") and result.get("translated"):
-                cur.execute(f"UPDATE news SET h1 = {ph} WHERE id = {ph}", (result["translated"], news_id))
-                if not _is_postgres():
-                    conn.commit()
-            self._json({"status": "ok", **result})
-        else:
-            self._json({"status": "error", "message": "Translation failed"})
+        try:
+            from apis.llm import translate_title
+            result = translate_title(title)
+            if result:
+                # Save translated title as h1 if not Russian
+                if not result.get("is_russian") and result.get("translated"):
+                    cur.execute(f"UPDATE news SET h1 = {ph} WHERE id = {ph}", (result["translated"], news_id))
+                    if not _is_postgres():
+                        conn.commit()
+                self._json({"status": "ok", **result})
+            else:
+                self._json({"status": "error", "message": "LLM not responding. Check API keys and rate limits."})
+        except Exception as e:
+            logger.error("Translate error: %s", e)
+            self._json({"status": "error", "message": str(e)})
 
     def _ai_recommend(self, body):
         news_id = body.get("news_id", "")
@@ -3275,6 +3279,9 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
   t.classList.add('active');
   document.getElementById('panel-' + t.dataset.tab).classList.add('active');
+  // Refresh data when switching to key tabs
+  if (t.dataset.tab === 'dashboard') { loadStats(); loadNews(); }
+  if (t.dataset.tab === 'news') { loadNewsPage(0); }
 }));
 
 function toast(msg, isError) {
@@ -3318,8 +3325,8 @@ async function loadStats() {
 
 function filterByStatus(status) {
   document.getElementById('dash-status').value = status;
-  applyDashFilters();
   loadStats();
+  loadNews().then(() => applyDashFilters());
 }
 
 // Dashboard groups data
@@ -3386,22 +3393,33 @@ let _newsOffset = 0;
 let _newsPageSize = 100;
 
 async function loadNews() {
+  // Build URL with current dashboard filters for server-side filtering
+  const dashStatus = document.getElementById('dash-status')?.value || '';
+  const dashSource = document.getElementById('dash-source')?.value || '';
+  const dashDateFrom = document.getElementById('dash-date-from')?.value || '';
+  const dashDateTo = document.getElementById('dash-date-to')?.value || '';
   let url = `/api/news?limit=500`;
+  if (dashStatus) url += `&status=${dashStatus}`;
+  if (dashSource) url += `&source=${encodeURIComponent(dashSource)}`;
+  if (dashDateFrom) url += `&date_from=${dashDateFrom}`;
+  if (dashDateTo) url += `&date_to=${dashDateTo}`;
 
   const resp = await api(url);
   const news = resp.news || resp;  // backward compat
   _allNews = news;
   _newsTotal = resp.total || news.length;
 
-  // Populate source filters
-  const sources = [...new Set(news.map(n => n.source))].sort();
-  const dashSrc = document.getElementById('dash-source');
-  if (dashSrc && dashSrc.options.length <= 1) {
-    sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; dashSrc.appendChild(o); });
-  }
-  const srcFilter = document.getElementById('filter-source');
-  if (srcFilter && srcFilter.options.length <= 1) {
-    sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; srcFilter.appendChild(o); });
+  // Populate source filters (only on first load with no filters)
+  if (!dashStatus && !dashSource) {
+    const sources = [...new Set(news.map(n => n.source))].sort();
+    const dashSrc = document.getElementById('dash-source');
+    if (dashSrc && dashSrc.options.length <= 1) {
+      sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; dashSrc.appendChild(o); });
+    }
+    const srcFilter = document.getElementById('filter-source');
+    if (srcFilter && srcFilter.options.length <= 1) {
+      sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; srcFilter.appendChild(o); });
+    }
   }
 
   applyDashFilters();

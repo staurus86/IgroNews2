@@ -113,14 +113,32 @@ def _call_llm_raw(prompt: str, key_index: int = 0) -> dict | None:
 
 def _call_llm(prompt: str) -> dict | None:
     """Вызывает LLM с retry, fallback ключами и rate limiting."""
-    from apis.cache import retry_call, rate_check
+    from apis.cache import retry_call, rate_check, rate_increment
     if not rate_check("llm"):
         logger.warning("LLM rate limit exceeded")
         return None
     for i in range(len(_API_KEYS)):
-        result = retry_call(_call_llm_raw, prompt, i, max_retries=2, base_delay=3.0, service="llm")
-        if result is not None:
-            return result
+        try:
+            rate_increment("llm")
+            result = _call_llm_raw(prompt, i)
+            if result is not None:
+                return result
+        except json.JSONDecodeError as e:
+            logger.warning("LLM key %d JSON parse error: %s", i, e)
+            continue
+        except Exception as e:
+            logger.warning("LLM key %d error: %s", i, e)
+            # Retry once with delay
+            import time
+            time.sleep(2)
+            try:
+                rate_increment("llm")
+                result = _call_llm_raw(prompt, i)
+                if result is not None:
+                    return result
+            except Exception as e2:
+                logger.warning("LLM key %d retry failed: %s", i, e2)
+                continue
     logger.error("All LLM keys failed")
     return None
 
