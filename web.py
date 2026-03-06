@@ -101,7 +101,20 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/dashboard_groups": lambda: self._dashboard_groups(),
             "/api/sources_stats": lambda: self._json(self._get_sources_stats()),
             "/api/db_info": lambda: self._json(self._get_db_info()),
+            "/api/articles": lambda: self._json(self._get_articles()),
         }
+
+        # DOCX download (GET with query param)
+        if path == "/api/articles/docx":
+            from urllib.parse import parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            aid = qs.get("id", [""])[0]
+            if aid:
+                self._serve_docx(aid)
+            else:
+                self._json({"error": "id required"}, 400)
+            return
+
         handler = routes.get(path)
         if handler:
             handler()
@@ -148,6 +161,12 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/merge": lambda: self._merge_news(body),
             "/api/news/detail": lambda: self._news_detail(body),
             "/api/export_sheets_bulk": lambda: self._export_sheets_bulk(body),
+            "/api/articles/save": lambda: self._save_article(body),
+            "/api/articles/update": lambda: self._update_article(body),
+            "/api/articles/delete": lambda: self._delete_article(body),
+            "/api/articles/rewrite": lambda: self._rewrite_article(body),
+            "/api/articles/improve": lambda: self._improve_article(body),
+            "/api/articles/detail": lambda: self._article_detail(body),
         }
         handler = routes.get(path)
         if handler:
@@ -1022,6 +1041,280 @@ async function login() {
                 analysis = dict(arow)
         self._json({"status": "ok", "news": news, "analysis": analysis})
 
+    # --- Articles ---
+    def _get_articles(self):
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM articles ORDER BY updated_at DESC")
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            return [dict(zip(columns, row)) for row in cur.fetchall()]
+        return [dict(row) for row in cur.fetchall()]
+
+    def _save_article(self, body):
+        import uuid
+        from datetime import datetime, timezone
+        aid = str(uuid.uuid4())[:12]
+        now = datetime.now(timezone.utc).isoformat()
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        import json
+        tags = json.dumps(body.get("tags", []), ensure_ascii=False)
+        cur.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
+            style, language, original_title, original_text, source_url, status, created_at, updated_at)
+            VALUES ({','.join([ph]*15)})""",
+            (aid, body.get("news_id", ""), body.get("title", ""), body.get("text", ""),
+             body.get("seo_title", ""), body.get("seo_description", ""), tags,
+             body.get("style", ""), body.get("language", "русский"),
+             body.get("original_title", ""), body.get("original_text", ""),
+             body.get("source_url", ""), "draft", now, now))
+        if not _is_postgres():
+            conn.commit()
+        self._json({"status": "ok", "id": aid})
+
+    def _update_article(self, body):
+        from datetime import datetime, timezone
+        aid = body.get("id")
+        if not aid:
+            self._json({"status": "error", "message": "id required"})
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        import json
+        tags = json.dumps(body.get("tags", []), ensure_ascii=False)
+        cur.execute(f"""UPDATE articles SET title={ph}, text={ph}, seo_title={ph},
+            seo_description={ph}, tags={ph}, status={ph}, updated_at={ph} WHERE id={ph}""",
+            (body.get("title", ""), body.get("text", ""), body.get("seo_title", ""),
+             body.get("seo_description", ""), tags, body.get("status", "draft"), now, aid))
+        if not _is_postgres():
+            conn.commit()
+        self._json({"status": "ok"})
+
+    def _delete_article(self, body):
+        aid = body.get("id")
+        if not aid:
+            self._json({"status": "error", "message": "id required"})
+            return
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        cur.execute(f"DELETE FROM articles WHERE id = {ph}", (aid,))
+        if not _is_postgres():
+            conn.commit()
+        self._json({"status": "ok"})
+
+    def _article_detail(self, body):
+        aid = body.get("id")
+        if not aid:
+            self._json({"status": "error", "message": "id required"})
+            return
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        cur.execute(f"SELECT * FROM articles WHERE id = {ph}", (aid,))
+        row = cur.fetchone()
+        if not row:
+            self._json({"status": "error", "message": "Not found"})
+            return
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            article = dict(zip(columns, row))
+        else:
+            article = dict(row)
+        self._json({"status": "ok", "article": article})
+
+    def _rewrite_article(self, body):
+        """Переписать существующую статью в другом стиле."""
+        aid = body.get("id")
+        style = body.get("style", "news")
+        language = body.get("language", "русский")
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        cur.execute(f"SELECT title, text, original_title, original_text FROM articles WHERE id = {ph}", (aid,))
+        row = cur.fetchone()
+        if not row:
+            self._json({"status": "error", "message": "Article not found"})
+            return
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            article = dict(zip(columns, row))
+        else:
+            article = dict(row)
+        # Use original text for rewriting to avoid degradation
+        src_title = article.get("original_title") or article.get("title", "")
+        src_text = article.get("original_text") or article.get("text", "")
+        from apis.llm import rewrite_news
+        result = rewrite_news(src_title, src_text, style, language)
+        if result:
+            self._json({"status": "ok", "result": result})
+        else:
+            self._json({"status": "error", "message": "LLM returned no result"})
+
+    def _improve_article(self, body):
+        """Улучшить текст статьи через LLM (грамматика, стиль, SEO)."""
+        aid = body.get("id")
+        action = body.get("action", "improve")  # improve, expand, shorten, fix_grammar, add_seo
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        cur.execute(f"SELECT title, text FROM articles WHERE id = {ph}", (aid,))
+        row = cur.fetchone()
+        if not row:
+            self._json({"status": "error", "message": "Article not found"})
+            return
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            article = dict(zip(columns, row))
+        else:
+            article = dict(row)
+
+        actions_map = {
+            "improve": "Улучши текст: исправь стилистические ошибки, сделай более профессиональным, сохрани факты.",
+            "expand": "Расширь текст: добавь подробностей, контекста, аналитики. Увеличь объём в 1.5-2 раза, не добавляя вымышленных фактов.",
+            "shorten": "Сократи текст в 2 раза, оставив только ключевые факты. Убери воду и повторы.",
+            "fix_grammar": "Исправь все грамматические, пунктуационные и стилистические ошибки. Не меняй смысл и структуру.",
+            "add_seo": "Добавь SEO-оптимизацию: включи ключевые слова естественно, добавь подзаголовки (## H2), улучши мета-описание.",
+            "make_engaging": "Сделай текст более вовлекающим: добавь интригу, живые примеры, вопросы к читателю. Сохрани факты.",
+        }
+        instruction = actions_map.get(action, actions_map["improve"])
+
+        from apis.llm import _call_llm
+        prompt = f"""Ты — профессиональный редактор игровых новостей.
+
+Задача: {instruction}
+
+Заголовок: {article['title']}
+Текст: {article['text'][:4000]}
+
+Верни строго JSON (без markdown):
+{{
+  "title": "обновлённый заголовок",
+  "text": "обновлённый текст",
+  "seo_title": "SEO title до 60 символов",
+  "seo_description": "meta description до 155 символов",
+  "changes_summary": "что было изменено (1-2 предложения)"
+}}"""
+        result = _call_llm(prompt)
+        if result:
+            self._json({"status": "ok", "result": result})
+        else:
+            self._json({"status": "error", "message": "LLM returned no result"})
+
+    def _serve_docx(self, article_id):
+        """Генерация и отдача DOCX файла."""
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        cur.execute(f"SELECT * FROM articles WHERE id = {ph}", (article_id,))
+        row = cur.fetchone()
+        if not row:
+            self.send_response(404)
+            self.end_headers()
+            return
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            article = dict(zip(columns, row))
+        else:
+            article = dict(row)
+
+        import io
+        import json
+        from docx import Document
+        from docx.shared import Pt, Inches, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+        doc = Document()
+        style = doc.styles['Normal']
+        style.font.name = 'Calibri'
+        style.font.size = Pt(11)
+
+        # Title
+        title_p = doc.add_heading(article.get("title", ""), level=1)
+        title_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+        # Meta info block
+        meta_p = doc.add_paragraph()
+        meta_p.paragraph_format.space_after = Pt(6)
+        run = meta_p.add_run(f"Стиль: {article.get('style', '')} | Язык: {article.get('language', '')}")
+        run.font.size = Pt(9)
+        run.font.color.rgb = RGBColor(128, 128, 128)
+        if article.get("source_url"):
+            run2 = meta_p.add_run(f"\nИсточник: {article['source_url']}")
+            run2.font.size = Pt(9)
+            run2.font.color.rgb = RGBColor(128, 128, 128)
+
+        # SEO block
+        if article.get("seo_title") or article.get("seo_description"):
+            doc.add_heading("SEO", level=2)
+            if article.get("seo_title"):
+                p = doc.add_paragraph()
+                p.add_run("Title: ").bold = True
+                p.add_run(article["seo_title"])
+            if article.get("seo_description"):
+                p = doc.add_paragraph()
+                p.add_run("Description: ").bold = True
+                p.add_run(article["seo_description"])
+
+        # Tags
+        tags = []
+        try:
+            tags = json.loads(article.get("tags", "[]"))
+        except Exception:
+            pass
+        if tags:
+            p = doc.add_paragraph()
+            p.add_run("Теги: ").bold = True
+            p.add_run(", ".join(tags))
+
+        doc.add_paragraph("")  # spacer
+
+        # Article text
+        doc.add_heading("Текст статьи", level=2)
+        text = article.get("text", "")
+        for paragraph in text.split("\n"):
+            paragraph = paragraph.strip()
+            if paragraph:
+                if paragraph.startswith("## "):
+                    doc.add_heading(paragraph[3:], level=3)
+                elif paragraph.startswith("# "):
+                    doc.add_heading(paragraph[2:], level=2)
+                else:
+                    doc.add_paragraph(paragraph)
+
+        # Original text if exists
+        if article.get("original_text"):
+            doc.add_page_break()
+            doc.add_heading("Оригинал", level=2)
+            orig_p = doc.add_paragraph()
+            if article.get("original_title"):
+                run = orig_p.add_run(article["original_title"] + "\n\n")
+                run.bold = True
+            for line in article["original_text"][:3000].split("\n"):
+                line = line.strip()
+                if line:
+                    p = doc.add_paragraph(line)
+                    for run in p.runs:
+                        run.font.color.rgb = RGBColor(128, 128, 128)
+                        run.font.size = Pt(10)
+
+        buffer = io.BytesIO()
+        doc.save(buffer)
+        data = buffer.getvalue()
+
+        safe_title = "".join(c for c in article.get("title", "article")[:40] if c.isalnum() or c in " _-").strip() or "article"
+        filename = f"{safe_title}.docx"
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     # --- Dashboard HTML ---
     def _serve_dashboard(self):
         html = DASHBOARD_HTML
@@ -1197,6 +1490,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div class="tab" data-tab="prompts">Промпты</div>
     <div class="tab" data-tab="tools">Инструменты</div>
     <div class="tab" data-tab="editor">Редактор</div>
+    <div class="tab" data-tab="articles">Статьи <span id="articles-badge" class="badge badge-new" style="display:none">0</span></div>
     <div class="tab" data-tab="health">Здоровье</div>
     <div class="tab" data-tab="settings">Настройки</div>
     <div class="tab" data-tab="users">Пользователи</div>
@@ -1465,8 +1759,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
             <button class="editor-view-tab active" id="tab-preview-btn" onclick="switchEditorView('preview')" style="padding:8px 16px;background:none;border:none;border-bottom:2px solid #1da1f2;color:#1da1f2;cursor:pointer;font-size:0.9em;font-weight:500">Оригинал</button>
             <button class="editor-view-tab" id="tab-result-btn" onclick="switchEditorView('result')" style="padding:8px 16px;background:none;border:none;border-bottom:2px solid transparent;color:#8899a6;cursor:pointer;font-size:0.9em">Результат</button>
             <div style="flex:1"></div>
-            <div id="rw-copy-buttons" style="display:none;gap:6px;display:none">
-              <button class="btn btn-sm btn-success" onclick="copyRewrite()" title="Заголовок + текст">&#128203; Текст</button>
+            <div id="rw-copy-buttons" style="display:none;gap:6px">
+              <button class="btn btn-sm btn-success" onclick="saveRewriteAsArticle()" title="Сохранить в Статьи">&#128190; В статьи</button>
+              <button class="btn btn-sm btn-secondary" onclick="copyRewrite()" title="Заголовок + текст">&#128203; Текст</button>
               <button class="btn btn-sm btn-secondary" onclick="copyRewriteSeo()" title="SEO-поля">SEO</button>
               <button class="btn btn-sm btn-secondary" onclick="copyRewriteJson()" title="Весь JSON">{}</button>
               <button class="btn btn-sm btn-secondary" onclick="copyRewriteHtml()" title="Как HTML">&lt;/&gt;</button>
@@ -1526,6 +1821,137 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
               </div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ARTICLES -->
+  <div class="panel" id="panel-articles">
+    <style>
+      .art-card { background:#192734; border-radius:10px; padding:16px; margin-bottom:12px; transition:box-shadow .15s; cursor:pointer; border-left:3px solid transparent; }
+      .art-card:hover { box-shadow:0 2px 12px rgba(0,0,0,0.2); }
+      .art-card.selected { border-left-color:#1da1f2; background:#1da1f215; }
+      .art-status { display:inline-block; padding:2px 8px; border-radius:10px; font-size:0.75em; font-weight:500; }
+      .art-status-draft { background:#38444d; color:#8899a6; }
+      .art-status-ready { background:#17bf6320; color:#17bf63; }
+      .art-status-published { background:#1da1f220; color:#1da1f2; }
+      .art-actions-bar { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
+      .art-editor { background:#192734; border-radius:10px; padding:16px; }
+      .art-field { margin-bottom:12px; }
+      .art-field label { display:block; font-size:0.75em; color:#8899a6; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; }
+      .art-field input, .art-field textarea { width:100%; background:#22303c; border:1px solid #38444d; border-radius:6px; color:#e1e8ed; padding:8px 12px; font-size:0.9em; font-family:inherit; resize:vertical; }
+      .art-field input:focus, .art-field textarea:focus { border-color:#1da1f2; outline:none; }
+      .art-field .char-count { font-size:0.72em; color:#657786; text-align:right; margin-top:2px; }
+      .art-improve-btn { padding:6px 12px; background:#22303c; border:1px solid #38444d; border-radius:6px; color:#e1e8ed; cursor:pointer; font-size:0.82em; transition:all .15s; }
+      .art-improve-btn:hover { border-color:#1da1f2; color:#1da1f2; }
+      .art-improve-btn.loading { opacity:0.5; pointer-events:none; }
+    </style>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <h2 style="margin:0">Мои статьи</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="search" id="art-search" placeholder="Поиск..." oninput="filterArticles()" autocomplete="off" style="padding:6px 10px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em;width:200px">
+        <select id="art-status-filter" onchange="filterArticles()" style="padding:6px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
+          <option value="">Все</option>
+          <option value="draft">Черновики</option>
+          <option value="ready">Готовые</option>
+          <option value="published">Опубликованные</option>
+        </select>
+        <span id="art-count" style="color:#8899a6;font-size:0.82em"></span>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:360px 1fr;gap:15px" id="articles-layout">
+      <!-- Left: list -->
+      <div>
+        <div id="articles-list" style="max-height:calc(100vh - 200px);overflow-y:auto"></div>
+      </div>
+
+      <!-- Right: editor -->
+      <div class="art-editor" id="art-editor-panel">
+        <div id="art-empty" style="text-align:center;padding:80px 20px;color:#8899a6">
+          <div style="font-size:2em;margin-bottom:10px;opacity:0.3">&#128221;</div>
+          <div>Выберите статью из списка или создайте новую в Редакторе</div>
+        </div>
+
+        <div id="art-edit-form" style="display:none">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <h2 style="margin:0;font-size:1em" id="art-edit-header">Редактирование</h2>
+              <select id="art-edit-status" style="padding:4px 8px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.82em">
+                <option value="draft">Черновик</option>
+                <option value="ready">Готово</option>
+                <option value="published">Опубликовано</option>
+              </select>
+            </div>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-sm btn-success" onclick="saveCurrentArticle()">Сохранить</button>
+              <button class="btn btn-sm btn-primary" onclick="downloadArticleDocx()">DOCX</button>
+              <button class="btn btn-sm btn-secondary" onclick="copyArticleText()">Копировать</button>
+              <button class="btn btn-sm" style="background:#e0245e;color:#fff" onclick="deleteCurrentArticle()">Удалить</button>
+            </div>
+          </div>
+
+          <div class="art-field">
+            <label>Заголовок</label>
+            <input type="text" id="art-edit-title" oninput="artCharCount('art-edit-title', 100)">
+            <div class="char-count" id="art-edit-title-count"></div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div class="art-field">
+              <label>SEO Title (до 60 симв.)</label>
+              <input type="text" id="art-edit-seo-title" oninput="artCharCount('art-edit-seo-title', 60)">
+              <div class="char-count" id="art-edit-seo-title-count"></div>
+            </div>
+            <div class="art-field">
+              <label>Meta Description (до 155 симв.)</label>
+              <input type="text" id="art-edit-seo-desc" oninput="artCharCount('art-edit-seo-desc', 155)">
+              <div class="char-count" id="art-edit-seo-desc-count"></div>
+            </div>
+          </div>
+
+          <div class="art-field">
+            <label>Теги (через запятую)</label>
+            <input type="text" id="art-edit-tags">
+          </div>
+
+          <div class="art-field">
+            <label>Текст статьи</label>
+            <textarea id="art-edit-text" rows="14" oninput="artCharCount('art-edit-text', 0)"></textarea>
+            <div class="char-count" id="art-edit-text-count"></div>
+          </div>
+
+          <!-- AI Actions -->
+          <div style="margin-top:8px;padding:12px;background:#22303c;border-radius:8px">
+            <div style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">AI-действия</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="art-improve-btn" onclick="improveArticle('improve')">&#9998; Улучшить стиль</button>
+              <button class="art-improve-btn" onclick="improveArticle('expand')">&#128200; Расширить</button>
+              <button class="art-improve-btn" onclick="improveArticle('shorten')">&#9986; Сократить</button>
+              <button class="art-improve-btn" onclick="improveArticle('fix_grammar')">&#128221; Грамматика</button>
+              <button class="art-improve-btn" onclick="improveArticle('add_seo')">&#128269; Добавить SEO</button>
+              <button class="art-improve-btn" onclick="improveArticle('make_engaging')">&#128293; Вовлекающий</button>
+              <span style="margin-left:8px;font-size:0.8em;color:#657786">|</span>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('news')">Новость</button>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('seo')">SEO</button>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('clickbait')">Кликбейт</button>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('social')">Соцсети</button>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('short')">Кратко</button>
+            </div>
+            <div id="art-ai-loading" style="display:none;margin-top:8px;font-size:0.85em;color:#8899a6">
+              <span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#1da1f2;border-radius:50%;animation:spin .8s linear infinite;display:inline-block;vertical-align:middle"></span>
+              <span id="art-ai-loading-text">Обрабатываем...</span>
+            </div>
+            <div id="art-ai-changes" style="display:none;margin-top:8px;padding:8px 12px;background:#17bf6315;border-radius:6px;font-size:0.83em;color:#17bf63"></div>
+          </div>
+
+          <!-- Original text (collapsed) -->
+          <details style="margin-top:12px" id="art-original-block">
+            <summary style="cursor:pointer;font-size:0.82em;color:#8899a6">Оригинал</summary>
+            <div id="art-original-text" style="margin-top:8px;padding:12px;background:#22303c;border-radius:8px;font-size:0.83em;color:#8899a6;max-height:300px;overflow-y:auto;white-space:pre-wrap;line-height:1.5"></div>
+          </details>
         </div>
       </div>
     </div>
@@ -2941,6 +3367,238 @@ function initEditorSourceFilter() {
   filterEditorNews();
 }
 
+// ===== ARTICLES TAB =====
+let _articles = [];
+let _currentArticleId = null;
+
+async function loadArticles() {
+  const data = await api('/api/articles');
+  if (Array.isArray(data)) _articles = data;
+  const badge = document.getElementById('articles-badge');
+  if (badge) {
+    if (_articles.length) { badge.style.display = 'inline'; badge.textContent = _articles.length; }
+    else badge.style.display = 'none';
+  }
+  filterArticles();
+}
+
+function filterArticles() {
+  const search = (document.getElementById('art-search')?.value || '').toLowerCase();
+  const status = document.getElementById('art-status-filter')?.value || '';
+  let filtered = _articles;
+  if (search) filtered = filtered.filter(a => (a.title||'').toLowerCase().includes(search));
+  if (status) filtered = filtered.filter(a => a.status === status);
+  renderArticlesList(filtered);
+  const cnt = document.getElementById('art-count');
+  if (cnt) cnt.textContent = filtered.length + ' из ' + _articles.length;
+}
+
+function renderArticlesList(articles) {
+  const el = document.getElementById('articles-list');
+  if (!articles.length) {
+    el.innerHTML = '<div style="text-align:center;padding:40px;color:#8899a6"><div style="font-size:2em;margin-bottom:10px;opacity:0.3">&#128221;</div>Нет статей<br><span style="font-size:0.85em">Создайте статью в Редакторе</span></div>';
+    return;
+  }
+  el.innerHTML = articles.map(a => {
+    const isSel = _currentArticleId === a.id;
+    const statusCls = 'art-status art-status-' + (a.status || 'draft');
+    const date = a.updated_at ? fmtDate(a.updated_at) : '';
+    const textLen = (a.text||'').length;
+    return `<div class="art-card${isSel?' selected':''}" onclick="selectArticle('${a.id}')">
+      <div style="display:flex;justify-content:space-between;align-items:start;gap:8px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:0.92em;font-weight:500;line-height:1.3;margin-bottom:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(a.title||'Без заголовка')}</div>
+          <div style="font-size:0.75em;color:#8899a6;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <span class="${statusCls}">${{draft:'Черновик',ready:'Готово',published:'Опубликовано'}[a.status]||a.status}</span>
+            <span>${a.style||''}</span>
+            <span>${textLen} симв.</span>
+            <span>${date}</span>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function selectArticle(id) {
+  _currentArticleId = id;
+  filterArticles();
+  document.getElementById('art-empty').style.display = 'none';
+  document.getElementById('art-edit-form').style.display = 'block';
+  document.getElementById('art-ai-changes').style.display = 'none';
+
+  const r = await api('/api/articles/detail', {id});
+  if (r.status !== 'ok') { toast(r.message, true); return; }
+  const a = r.article;
+  document.getElementById('art-edit-title').value = a.title || '';
+  document.getElementById('art-edit-seo-title').value = a.seo_title || '';
+  document.getElementById('art-edit-seo-desc').value = a.seo_description || '';
+  let tags = [];
+  try { tags = JSON.parse(a.tags || '[]'); } catch(e){}
+  document.getElementById('art-edit-tags').value = Array.isArray(tags) ? tags.join(', ') : '';
+  document.getElementById('art-edit-text').value = a.text || '';
+  document.getElementById('art-edit-status').value = a.status || 'draft';
+  document.getElementById('art-edit-header').textContent = (a.style ? a.style + ' | ' : '') + (a.language || '');
+
+  // Original
+  const origBlock = document.getElementById('art-original-block');
+  const origText = document.getElementById('art-original-text');
+  if (a.original_text || a.original_title) {
+    origBlock.style.display = 'block';
+    origText.textContent = (a.original_title ? a.original_title + '\n\n' : '') + (a.original_text || '');
+  } else {
+    origBlock.style.display = 'none';
+  }
+
+  // Char counts
+  artCharCount('art-edit-title', 100);
+  artCharCount('art-edit-seo-title', 60);
+  artCharCount('art-edit-seo-desc', 155);
+  artCharCount('art-edit-text', 0);
+}
+
+function artCharCount(id, max) {
+  const el = document.getElementById(id);
+  const cnt = document.getElementById(id + '-count');
+  if (!el || !cnt) return;
+  const len = (el.value||'').length;
+  if (max > 0) {
+    cnt.textContent = len + '/' + max;
+    cnt.style.color = len > max ? '#e0245e' : '#657786';
+  } else {
+    cnt.textContent = len + ' симв.';
+  }
+}
+
+async function saveCurrentArticle() {
+  if (!_currentArticleId) return;
+  const tags = document.getElementById('art-edit-tags').value.split(',').map(t => t.trim()).filter(Boolean);
+  const r = await api('/api/articles/update', {
+    id: _currentArticleId,
+    title: document.getElementById('art-edit-title').value,
+    text: document.getElementById('art-edit-text').value,
+    seo_title: document.getElementById('art-edit-seo-title').value,
+    seo_description: document.getElementById('art-edit-seo-desc').value,
+    tags: tags,
+    status: document.getElementById('art-edit-status').value,
+  });
+  if (r.status === 'ok') { toast('Сохранено!'); loadArticles(); }
+  else toast(r.message, true);
+}
+
+async function deleteCurrentArticle() {
+  if (!_currentArticleId) return;
+  if (!confirm('Удалить эту статью?')) return;
+  const r = await api('/api/articles/delete', {id: _currentArticleId});
+  if (r.status === 'ok') {
+    _currentArticleId = null;
+    document.getElementById('art-edit-form').style.display = 'none';
+    document.getElementById('art-empty').style.display = 'block';
+    toast('Удалено');
+    loadArticles();
+  } else toast(r.message, true);
+}
+
+function downloadArticleDocx() {
+  if (!_currentArticleId) return;
+  window.open('/api/articles/docx?id=' + _currentArticleId, '_blank');
+}
+
+function copyArticleText() {
+  const title = document.getElementById('art-edit-title').value;
+  const text = document.getElementById('art-edit-text').value;
+  navigator.clipboard.writeText(title + '\n\n' + text);
+  toast('Скопировано!');
+}
+
+async function improveArticle(action) {
+  if (!_currentArticleId) return;
+  // Save current edits first
+  await saveCurrentArticle();
+  const loadEl = document.getElementById('art-ai-loading');
+  const loadText = document.getElementById('art-ai-loading-text');
+  const changesEl = document.getElementById('art-ai-changes');
+  const labels = {improve:'Улучшаем стиль',expand:'Расширяем',shorten:'Сокращаем',fix_grammar:'Исправляем грамматику',add_seo:'Добавляем SEO',make_engaging:'Делаем вовлекающим'};
+  loadText.textContent = (labels[action]||'Обрабатываем') + '...';
+  loadEl.style.display = 'block';
+  changesEl.style.display = 'none';
+  document.querySelectorAll('.art-improve-btn').forEach(b => b.classList.add('loading'));
+
+  const r = await api('/api/articles/improve', {id: _currentArticleId, action});
+  loadEl.style.display = 'none';
+  document.querySelectorAll('.art-improve-btn').forEach(b => b.classList.remove('loading'));
+
+  if (r.status === 'ok' && r.result) {
+    document.getElementById('art-edit-title').value = r.result.title || document.getElementById('art-edit-title').value;
+    document.getElementById('art-edit-text').value = r.result.text || document.getElementById('art-edit-text').value;
+    if (r.result.seo_title) document.getElementById('art-edit-seo-title').value = r.result.seo_title;
+    if (r.result.seo_description) document.getElementById('art-edit-seo-desc').value = r.result.seo_description;
+    artCharCount('art-edit-title', 100);
+    artCharCount('art-edit-seo-title', 60);
+    artCharCount('art-edit-seo-desc', 155);
+    artCharCount('art-edit-text', 0);
+    if (r.result.changes_summary) {
+      changesEl.textContent = r.result.changes_summary;
+      changesEl.style.display = 'block';
+    }
+    toast('Текст обновлён! Не забудьте сохранить.');
+  } else {
+    toast(r.message || 'Ошибка', true);
+  }
+}
+
+async function rewriteArticleInStyle(style) {
+  if (!_currentArticleId) return;
+  await saveCurrentArticle();
+  const loadEl = document.getElementById('art-ai-loading');
+  const loadText = document.getElementById('art-ai-loading-text');
+  loadText.textContent = 'Переписываем в стиле ' + style + '...';
+  loadEl.style.display = 'block';
+  document.querySelectorAll('.art-improve-btn').forEach(b => b.classList.add('loading'));
+
+  const r = await api('/api/articles/rewrite', {id: _currentArticleId, style});
+  loadEl.style.display = 'none';
+  document.querySelectorAll('.art-improve-btn').forEach(b => b.classList.remove('loading'));
+
+  if (r.status === 'ok' && r.result) {
+    document.getElementById('art-edit-title').value = r.result.title || '';
+    document.getElementById('art-edit-text').value = r.result.text || '';
+    if (r.result.seo_title) document.getElementById('art-edit-seo-title').value = r.result.seo_title;
+    if (r.result.seo_description) document.getElementById('art-edit-seo-desc').value = r.result.seo_description;
+    if (r.result.tags) document.getElementById('art-edit-tags').value = r.result.tags.join(', ');
+    artCharCount('art-edit-title', 100);
+    artCharCount('art-edit-seo-title', 60);
+    artCharCount('art-edit-seo-desc', 155);
+    artCharCount('art-edit-text', 0);
+    toast('Переписано! Не забудьте сохранить.');
+  } else {
+    toast(r.message || 'Ошибка', true);
+  }
+}
+
+// Save rewrite from Editor tab as article
+async function saveRewriteAsArticle() {
+  if (!_lastRewrite) { toast('Нет результата для сохранения', true); return; }
+  const n = _allNews.find(x => x.id === _editorNewsId);
+  const r = await api('/api/articles/save', {
+    news_id: _editorNewsId || '',
+    title: _lastRewrite.title || _lastRewrite.merged_title || '',
+    text: _lastRewrite.text || _lastRewrite.merged_text || '',
+    seo_title: _lastRewrite.seo_title || '',
+    seo_description: _lastRewrite.seo_description || '',
+    tags: _lastRewrite.tags || [],
+    style: _editorSelectedStyle,
+    language: document.getElementById('rewrite-lang')?.value || 'русский',
+    original_title: n?.title || '',
+    original_text: window._editorOriginalText || '',
+    source_url: n?.url || '',
+  });
+  if (r.status === 'ok') {
+    toast('Сохранено в Статьи!');
+    loadArticles();
+  } else toast(r.message, true);
+}
+
 // Init
 function loadAll() { loadStats(); loadNews(); }
 loadAll();
@@ -2950,6 +3608,7 @@ loadSettings();
 loadUsers();
 loadHealth();
 loadDbInfo();
+loadArticles();
 setInterval(loadAll, 30000);
 setInterval(loadHealth, 60000);
 </script>

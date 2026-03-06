@@ -41,6 +41,26 @@ def init_db():
     conn = get_connection()
     cur = conn.cursor()
 
+    articles_sql = """
+        CREATE TABLE IF NOT EXISTS articles (
+            id TEXT PRIMARY KEY,
+            news_id TEXT,
+            title TEXT,
+            text TEXT,
+            seo_title TEXT,
+            seo_description TEXT,
+            tags TEXT,
+            style TEXT,
+            language TEXT DEFAULT 'русский',
+            original_title TEXT,
+            original_text TEXT,
+            source_url TEXT,
+            status TEXT DEFAULT 'draft',
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """
+
     if _is_postgres():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS news (
@@ -70,6 +90,7 @@ def init_db():
                 processed_at TEXT
             )
         """)
+        cur.execute(articles_sql)
     else:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS news (
@@ -99,6 +120,7 @@ def init_db():
                 processed_at TEXT
             )
         """)
+        cur.execute(articles_sql)
         conn.commit()
 
     logger.info("Database initialized")
