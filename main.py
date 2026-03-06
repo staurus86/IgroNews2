@@ -10,6 +10,7 @@ logging.basicConfig(
 from storage.database import init_db
 from storage.sheets import setup_headers
 from scheduler import start_scheduler
+from web import start_web
 
 
 def main():
@@ -20,6 +21,10 @@ def main():
 
     # Создание заголовков в Sheets (если пусто)
     setup_headers()
+
+    # Запуск веб-дашборда на порту 8080
+    start_web()
+    logging.info("Dashboard running on port 8080")
 
     # Запуск планировщика
     start_scheduler()
