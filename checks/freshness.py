@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 
 def check_freshness(news: dict) -> dict:
-    published_at = news.get("published_at", "")
+    published_at = news.get("published_at", "") or news.get("parsed_at", "")
     if not published_at:
         return {"age_hours": -1, "status": "unknown", "score": 30, "pass": True}
 

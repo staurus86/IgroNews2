@@ -99,6 +99,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/users": lambda: self._json(self._get_users()),
             "/api/health": lambda: self._json(self._get_health()),
             "/api/dashboard_groups": lambda: self._dashboard_groups(),
+            "/api/sources_stats": lambda: self._json(self._get_sources_stats()),
+            "/api/db_info": lambda: self._json(self._get_db_info()),
         }
         handler = routes.get(path)
         if handler:
@@ -136,6 +138,11 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/reject": lambda: self._reject_news(body),
             "/api/users/add": lambda: self._add_user(body),
             "/api/users/delete": lambda: self._delete_user(body),
+            "/api/users/change_password": lambda: self._change_password(body),
+            "/api/news/bulk_status": lambda: self._bulk_status(body),
+            "/api/test_parse": lambda: self._test_parse(body),
+            "/api/setup_headers": lambda: self._setup_headers(body),
+            "/api/reparse_all": lambda: self._reparse_all(body),
         }
         handler = routes.get(path)
         if handler:
@@ -769,6 +776,102 @@ async function login() {
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
 
+    def _change_password(self, body):
+        username = body.get("username", "")
+        password = body.get("password", "")
+        if not username or not password:
+            self._json({"status": "error", "message": "Username and password required"})
+            return
+        if username not in USERS:
+            self._json({"status": "error", "message": "User not found"})
+            return
+        USERS[username] = hashlib.sha256(password.encode()).hexdigest()
+        self._json({"status": "ok"})
+
+    def _bulk_status(self, body):
+        news_ids = body.get("news_ids", [])
+        new_status = body.get("status", "")
+        if not news_ids or not new_status:
+            self._json({"status": "error", "message": "news_ids and status required"})
+            return
+        for nid in news_ids:
+            update_news_status(nid, new_status)
+        self._json({"status": "ok", "updated": len(news_ids)})
+
+    def _test_parse(self, body):
+        url = body.get("url", "")
+        if not url:
+            self._json({"status": "error", "message": "URL required"})
+            return
+        try:
+            from parsers.html_parser import _fetch_article
+            h1, description, plain_text = _fetch_article(url)
+            self._json({
+                "status": "ok",
+                "h1": h1,
+                "description": description[:500],
+                "plain_text": plain_text[:1000],
+                "text_length": len(plain_text),
+            })
+        except Exception as e:
+            self._json({"status": "error", "message": str(e)})
+
+    def _setup_headers(self, body):
+        try:
+            from storage.sheets import setup_headers
+            setup_headers()
+            self._json({"status": "ok"})
+        except Exception as e:
+            self._json({"status": "error", "message": str(e)})
+
+    def _reparse_all(self, body):
+        try:
+            import config
+            from parsers.rss_parser import parse_rss_source
+            from parsers.html_parser import parse_html_source, parse_sitemap_source
+            total = 0
+            for source in config.SOURCES:
+                try:
+                    if source["type"] == "rss":
+                        total += parse_rss_source(source)
+                    elif source["type"] == "sitemap":
+                        total += parse_sitemap_source(source)
+                    else:
+                        total += parse_html_source(source)
+                except Exception as e:
+                    logger.error("Reparse %s error: %s", source["name"], e)
+            self._json({"status": "ok", "new_articles": total})
+        except Exception as e:
+            self._json({"status": "error", "message": str(e)})
+
+    def _get_sources_stats(self):
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT source, COUNT(*) as cnt, MAX(parsed_at) as last_parsed FROM news GROUP BY source ORDER BY cnt DESC")
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            return [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            return [dict(row) for row in cur.fetchall()]
+
+    def _get_db_info(self):
+        conn = get_connection()
+        cur = conn.cursor()
+        info = {"type": "PostgreSQL" if _is_postgres() else "SQLite"}
+        cur.execute("SELECT COUNT(*) FROM news")
+        info["total_news"] = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM news_analysis")
+        info["total_analyzed"] = cur.fetchone()[0]
+        for status in ["new", "approved", "processed", "rejected"]:
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"SELECT COUNT(*) FROM news WHERE status = {ph}", (status,))
+            info[f"status_{status}"] = cur.fetchone()[0]
+        cur.execute("SELECT MIN(parsed_at), MAX(parsed_at) FROM news")
+        row = cur.fetchone()
+        info["oldest"] = str(row[0]) if row[0] else "-"
+        info["newest"] = str(row[1]) if row[1] else "-"
+        return info
+
     # --- Dashboard HTML ---
     def _serve_dashboard(self):
         html = DASHBOARD_HTML
@@ -955,7 +1058,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <!-- Dashboard Filters -->
     <div class="dash-filters">
       <span class="filter-label">Поиск:</span>
-      <input type="search" id="dash-search" placeholder="По заголовку..." oninput="applyDashFilters()">
+      <input type="search" id="dash-search" placeholder="По заголовку..." oninput="applyDashFilters()" autocomplete="off" name="dash-search-nologin">
       <span class="filter-sep"></span>
       <span class="filter-label">Источник:</span>
       <select id="dash-source" onchange="applyDashFilters()">
@@ -1054,6 +1157,20 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       </select>
       <span class="filter-sep"></span>
       <button class="btn btn-sm btn-primary" onclick="loadReviewTab()">Проверить</button>
+      <span class="filter-sep"></span>
+      <span class="filter-label">Поиск:</span>
+      <input type="search" id="rev-search" placeholder="По заголовку..." oninput="filterReviewTable()" autocomplete="off" name="rev-search-nologin">
+      <span class="filter-sep"></span>
+      <span class="filter-label">Тональность:</span>
+      <select id="rev-sentiment" onchange="filterReviewTable()">
+        <option value="">Все</option>
+        <option value="positive">Позитивная</option>
+        <option value="neutral">Нейтральная</option>
+        <option value="negative">Негативная</option>
+      </select>
+      <span class="filter-sep"></span>
+      <span class="filter-label">Мин. скор:</span>
+      <input type="number" id="rev-min-score" placeholder="0" min="0" max="100" style="width:70px" oninput="filterReviewTable()" autocomplete="off">
       <span id="rev-loading" style="color:#8899a6;font-size:0.85em;margin-left:8px"></span>
     </div>
     <div class="btn-group">
@@ -1089,16 +1206,26 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 
   <!-- HEALTH -->
   <div class="panel" id="panel-health">
-    <h2>Здоровье источников (24ч)</h2>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h2>Здоровье источников (24ч)</h2>
+      <div>
+        <span id="health-summary" style="color:#8899a6;font-size:0.85em;margin-right:12px"></span>
+        <button class="btn btn-sm btn-secondary" onclick="loadHealth()">Обновить</button>
+      </div>
+    </div>
     <table>
-      <thead><tr><th>Статус</th><th>Источник</th><th>Статей (24ч)</th><th>Последний парсинг</th><th>Минут назад</th></tr></thead>
+      <thead><tr><th>Статус</th><th>Источник</th><th>Статей (24ч)</th><th style="min-width:120px">Активность</th><th>Последний парсинг</th><th>Минут назад</th></tr></thead>
       <tbody id="health-table"></tbody>
     </table>
   </div>
 
   <!-- NEWS -->
   <div class="panel" id="panel-news">
-    <div class="filters">
+    <div class="dash-filters">
+      <span class="filter-label">Поиск:</span>
+      <input type="search" id="news-search" placeholder="По заголовку..." oninput="filterNewsTable()" autocomplete="off" name="news-search-nologin">
+      <span class="filter-sep"></span>
+      <span class="filter-label">Статус:</span>
       <select id="filter-status" onchange="loadNews()">
         <option value="">Все статусы</option>
         <option value="new">Новые</option>
@@ -1109,14 +1236,35 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <option value="rejected">Отклонены</option>
         <option value="ready">Готовы</option>
       </select>
+      <span class="filter-sep"></span>
+      <span class="filter-label">Источник:</span>
       <select id="filter-source" onchange="loadNews()">
         <option value="">Все источники</option>
       </select>
-      <input type="number" id="filter-limit" value="100" min="10" max="500" style="width:80px" onchange="loadNews()">
-      <button class="btn btn-secondary btn-sm" onclick="loadNews()">Фильтр</button>
+      <span class="filter-sep"></span>
+      <span class="filter-label">Кол-во:</span>
+      <input type="number" id="filter-limit" value="100" min="10" max="500" style="width:80px" onchange="loadNews()" autocomplete="off">
     </div>
-    <table>
-      <thead><tr><th>Источник</th><th>Заголовок</th><th>H1</th><th>Опубл.</th><th>Статус</th><th>Биграммы</th><th>LLM</th><th>Скор</th><th>Лист</th><th>Действия</th></tr></thead>
+    <div class="btn-group">
+      <button class="btn btn-secondary btn-sm" onclick="loadNews()">Обновить</button>
+      <button class="btn btn-warning btn-sm" onclick="bulkStatusChange('approved')">Одобрить выбранные</button>
+      <button class="btn btn-danger btn-sm" onclick="bulkStatusChange('rejected')">Отклонить выбранные</button>
+      <span id="news-selected-count" style="color:#1da1f2;font-size:0.85em;margin-left:8px"></span>
+      <span id="news-count" style="color:#8899a6;font-size:0.85em;margin-left:auto"></span>
+    </div>
+    <table id="news-main-table">
+      <thead><tr>
+        <th style="width:30px"><input type="checkbox" id="news-check-all" onchange="toggleAllNews(this)"></th>
+        <th class="sortable" data-sort="source" onclick="sortNewsTab('source')">Источник <span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort="title" onclick="sortNewsTab('title')">Заголовок <span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort="published_at" onclick="sortNewsTab('published_at')">Опубл. <span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort="status" onclick="sortNewsTab('status')">Статус <span class="sort-arrow">&#9650;</span></th>
+        <th>Биграммы</th>
+        <th>LLM</th>
+        <th class="sortable" data-sort="score" onclick="sortNewsTab('score')">Скор <span class="sort-arrow">&#9650;</span></th>
+        <th>Лист</th>
+        <th>Действия</th>
+      </tr></thead>
       <tbody id="news-table"></tbody>
     </table>
   </div>
@@ -1133,15 +1281,17 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       </div>
       <div class="card">
         <h2>Добавить источник</h2>
-        <div class="form-group"><label>Имя</label><input id="src-name"></div>
-        <div class="form-group"><label>Type</label>
-          <select id="src-type" onchange="document.getElementById('src-selector-group').style.display=this.value==='html'?'block':'none'">
-            <option value="rss">RSS</option><option value="html">HTML</option>
+        <div class="form-group"><label>Имя</label><input id="src-name" autocomplete="off"></div>
+        <div class="form-group"><label>Тип</label>
+          <select id="src-type" onchange="toggleSrcFields()">
+            <option value="rss">RSS</option><option value="html">HTML</option><option value="dtf">DTF (SPA)</option><option value="sitemap">Sitemap XML</option>
           </select>
         </div>
-        <div class="form-group"><label>URL</label><input id="src-url"></div>
-        <div class="form-group"><label>Интервал (мин)</label><input type="number" id="src-interval" value="15"></div>
-        <div class="form-group" id="src-selector-group" style="display:none"><label>CSS Селектор</label><input id="src-selector" placeholder=".news-item"></div>
+        <div class="form-group"><label>URL</label><input id="src-url" autocomplete="off"></div>
+        <div class="form-group"><label>Интервал (мин)</label><input type="number" id="src-interval" value="15" autocomplete="off"></div>
+        <div class="form-group" id="src-selector-group" style="display:none"><label>CSS Селектор</label><input id="src-selector" placeholder=".news-item" autocomplete="off"></div>
+        <div class="form-group" id="src-title-sel-group" style="display:none"><label>Title Селектор</label><input id="src-title-selector" placeholder="h3 a" autocomplete="off"></div>
+        <div class="form-group" id="src-url-filter-group" style="display:none"><label>Фильтр URL</label><input id="src-url-filter" placeholder="/news/" autocomplete="off"></div>
         <button class="btn btn-primary" onclick="addSource()">Добавить</button>
       </div>
     </div>
@@ -1185,6 +1335,12 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <button class="btn btn-primary" onclick="testSheets()">Проверить соединение</button>
       <pre id="test-sheets-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
     </div>
+    <div class="card" style="margin-top:15px">
+      <h2>Тест парсинга URL</h2>
+      <div class="form-group"><label>URL статьи</label><input id="test-parse-url" placeholder="https://example.com/article" autocomplete="off"></div>
+      <button class="btn btn-primary" onclick="testParse()">Парсить</button>
+      <pre id="test-parse-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
+    </div>
   </div>
 
   <!-- USERS -->
@@ -1199,9 +1355,16 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       </div>
       <div class="card">
         <h2>Добавить пользователя</h2>
-        <div class="form-group"><label>Логин</label><input id="new-username"></div>
-        <div class="form-group"><label>Пароль</label><input id="new-password" type="password"></div>
+        <div class="form-group"><label>Логин</label><input id="new-username" autocomplete="off"></div>
+        <div class="form-group"><label>Пароль</label><input id="new-password" type="password" autocomplete="new-password"></div>
         <button class="btn btn-primary" onclick="addUser()">Добавить</button>
+        <hr style="border-color:#38444d;margin:15px 0">
+        <h2>Сменить пароль</h2>
+        <div class="form-group"><label>Пользователь</label>
+          <select id="chpass-user"></select>
+        </div>
+        <div class="form-group"><label>Новый пароль</label><input id="chpass-password" type="password" autocomplete="new-password"></div>
+        <button class="btn btn-warning" onclick="changePassword()">Сменить</button>
       </div>
     </div>
   </div>
@@ -1227,6 +1390,20 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <div class="card">
         <h2>Статус API</h2>
         <div id="api-status"></div>
+      </div>
+    </div>
+    <div class="grid-2" style="margin-top:15px">
+      <div class="card">
+        <h2>База данных</h2>
+        <div id="db-info" style="color:#8899a6;font-size:0.9em">Загрузка...</div>
+      </div>
+      <div class="card">
+        <h2>Быстрые действия</h2>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <button class="btn btn-primary" onclick="runProcess()">Обогатить одобренные</button>
+          <button class="btn btn-warning" onclick="reparseAll()">Парсить все источники</button>
+          <button class="btn btn-secondary" onclick="setupHeaders()">Создать заголовки Sheets</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1368,9 +1545,6 @@ function selectGroup() {
 let _allNews = []; // full news array for client-side filtering
 
 async function loadNews() {
-  const status = document.getElementById('filter-status')?.value || '';
-  const source = document.getElementById('filter-source')?.value || '';
-  const limit = document.getElementById('filter-limit')?.value || 100;
   let url = `/api/news?limit=500`;
 
   const news = await api(url);
@@ -1388,7 +1562,7 @@ async function loadNews() {
   }
 
   applyDashFilters();
-  renderNewsTab(news, status, source, limit);
+  renderNewsTab(news);
 }
 
 function applyDashFilters() {
@@ -1577,35 +1751,8 @@ function renderGroupClickable(newsId) {
   return `<span class="group-marker" style="background:${color}33;color:${color}" title="${g ? g.count + ' шт — нажми чтобы выбрать' : ''}" onclick="selectGroupById(${gid})">G${gid}</span>`;
 }
 
-function renderNewsTab(news, status, source, limit) {
-  let filtered = news;
-  if (status) filtered = filtered.filter(n => n.status === status);
-  if (source) filtered = filtered.filter(n => n.source === source);
-  filtered = filtered.slice(0, parseInt(limit) || 100);
-
-  const newsTb = document.getElementById('news-table');
-  if (newsTb) {
-    newsTb.innerHTML = filtered.map(n => {
-      let bigrams = '';
-      try { bigrams = JSON.parse(n.bigrams||'[]').map(b=>b[0]).join(', '); } catch(e){}
-      const statusLabel = STATUS_LABELS[n.status] || n.status;
-      return `<tr>
-        <td>${n.source}</td>
-        <td><a href="${n.url}" target="_blank">${esc(n.title||'')}</a></td>
-        <td>${esc(n.h1||'')}</td>
-        <td>${fmtDate(n.published_at)}</td>
-        <td><span class="badge badge-${n.status}">${statusLabel}</span></td>
-        <td title="${esc(bigrams)}">${bigrams.slice(0,40)}</td>
-        <td>${esc(n.llm_recommendation||'-')}</td>
-        <td>${n.llm_trend_forecast||'-'}</td>
-        <td>${n.sheets_row||'-'}</td>
-        <td>
-          <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')">Анализ</button>
-          <button class="btn btn-sm btn-success" onclick="exportOne('${n.id}')">Sheets</button>
-        </td>
-      </tr>`;
-    }).join('');
-  }
+function renderNewsTab(news) {
+  renderNewsFiltered();
 }
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
@@ -1953,13 +2100,13 @@ async function saveSettings() {
 
 // Tools
 async function testLLM() {
-  document.getElementById('test-llm-result').textContent = 'Loading...';
+  document.getElementById('test-llm-result').textContent = 'Загрузка...';
   const r = await api('/api/test_llm', {prompt: document.getElementById('test-llm-prompt').value});
   document.getElementById('test-llm-result').textContent = JSON.stringify(r, null, 2);
 }
 
 async function testKeyso() {
-  document.getElementById('test-keyso-result').textContent = 'Loading...';
+  document.getElementById('test-keyso-result').textContent = 'Загрузка...';
   const r = await api('/api/test_keyso', {keyword: document.getElementById('test-keyso-kw').value});
   document.getElementById('test-keyso-result').textContent = JSON.stringify(r, null, 2);
 }
@@ -1970,6 +2117,10 @@ async function loadUsers() {
   document.getElementById('users-table').innerHTML = users.map(u =>
     `<tr><td>${u.username}</td><td>${u.username==='admin'?'':'<button class="btn btn-sm btn-danger" onclick="deleteUser(\''+u.username+'\')">Удалить</button>'}</td></tr>`
   ).join('');
+  const sel = document.getElementById('chpass-user');
+  if (sel) {
+    sel.innerHTML = users.map(u => `<option value="${u.username}">${u.username}</option>`).join('');
+  }
 }
 async function addUser() {
   const username = document.getElementById('new-username').value;
@@ -1987,24 +2138,187 @@ async function deleteUser(username) {
 }
 
 async function testSheets() {
-  document.getElementById('test-sheets-result').textContent = 'Loading...';
+  document.getElementById('test-sheets-result').textContent = 'Загрузка...';
   const r = await api('/api/test_sheets', {});
   document.getElementById('test-sheets-result').textContent = JSON.stringify(r, null, 2);
+}
+
+async function testParse() {
+  const url = document.getElementById('test-parse-url').value;
+  if (!url) { toast('Введите URL', true); return; }
+  document.getElementById('test-parse-result').textContent = 'Загрузка...';
+  const r = await api('/api/test_parse', {url});
+  document.getElementById('test-parse-result').textContent = JSON.stringify(r, null, 2);
 }
 
 // Health
 async function loadHealth() {
   const data = await api('/api/health');
+  const maxCount = Math.max(...data.map(h => h.count_24h), 1);
+  let healthy=0, warn=0, dead=0;
   document.getElementById('health-table').innerHTML = data.map(h => {
-    const icon = h.status==='healthy'?'✅':h.status==='low'?'🟡':h.status==='warning'?'⚠️':'❌';
+    const icon = h.status==='healthy'?'&#9989;':h.status==='low'?'&#128993;':h.status==='warning'?'&#9888;&#65039;':'&#10060;';
+    if (h.status==='healthy') healthy++; else if (h.status==='dead') dead++; else warn++;
+    const pct = Math.round((h.count_24h / maxCount) * 100);
+    const barColor = h.status==='healthy'?'#17bf63':h.status==='low'?'#ffad1f':'#e0245e';
     return `<tr>
       <td>${icon} ${h.status}</td>
       <td>${h.source}</td>
       <td>${h.count_24h}</td>
+      <td><div style="background:#22303c;border-radius:4px;overflow:hidden;height:18px"><div style="background:${barColor};width:${pct}%;height:100%;border-radius:4px;transition:width .5s"></div></div></td>
       <td>${fmtDate(h.last_parsed)}</td>
-      <td>${h.minutes_ago >= 0 ? h.minutes_ago + ' min' : '?'}</td>
+      <td>${h.minutes_ago >= 0 ? h.minutes_ago + ' мин' : '?'}</td>
     </tr>`;
   }).join('');
+  const el = document.getElementById('health-summary');
+  if (el) el.textContent = `${healthy} ок / ${warn} внимание / ${dead} мертв`;
+}
+
+// Review filter
+function filterReviewTable() {
+  const search = (document.getElementById('rev-search')?.value || '').toLowerCase();
+  const sentiment = document.getElementById('rev-sentiment')?.value || '';
+  const minScore = parseInt(document.getElementById('rev-min-score')?.value) || 0;
+  let filtered = _reviewResults;
+  if (search) filtered = filtered.filter(r => (r.title||'').toLowerCase().includes(search));
+  if (sentiment) filtered = filtered.filter(r => (r.sentiment?.label||'') === sentiment);
+  if (minScore > 0) filtered = filtered.filter(r => (r.total_score||0) >= minScore);
+  const sorted = sortReviewData(filtered, _revSortField, _revSortDir);
+  renderReviewRows(sorted);
+  document.getElementById('review-count').textContent = filtered.length + ' / ' + _reviewResults.length + ' новостей';
+}
+
+// News tab sorting & filtering
+let _newsSortField = 'parsed_at';
+let _newsSortDir = 'desc';
+let _newsFiltered = [];
+
+function sortNewsTab(field) {
+  if (_newsSortField === field) {
+    _newsSortDir = _newsSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _newsSortField = field;
+    _newsSortDir = 'asc';
+  }
+  document.querySelectorAll('#news-main-table th.sortable').forEach(th => {
+    const arrow = th.querySelector('.sort-arrow');
+    if (th.dataset.sort === field) {
+      th.classList.add('sort-active');
+      arrow.innerHTML = _newsSortDir === 'asc' ? '&#9650;' : '&#9660;';
+    } else {
+      th.classList.remove('sort-active');
+      arrow.innerHTML = '&#9650;';
+    }
+  });
+  renderNewsFiltered();
+}
+
+function filterNewsTable() {
+  renderNewsFiltered();
+}
+
+function renderNewsFiltered() {
+  const search = (document.getElementById('news-search')?.value || '').toLowerCase();
+  const status = document.getElementById('filter-status')?.value || '';
+  const source = document.getElementById('filter-source')?.value || '';
+  const limit = parseInt(document.getElementById('filter-limit')?.value) || 100;
+  let filtered = _allNews;
+  if (status) filtered = filtered.filter(n => n.status === status);
+  if (source) filtered = filtered.filter(n => n.source === source);
+  if (search) filtered = filtered.filter(n => (n.title||'').toLowerCase().includes(search));
+  _newsFiltered = filtered;
+  const sorted = sortNews(filtered, _newsSortField, _newsSortDir).slice(0, limit);
+  const newsTb = document.getElementById('news-table');
+  if (!newsTb) return;
+  newsTb.innerHTML = sorted.map(n => {
+    let bigrams = '';
+    try { bigrams = JSON.parse(n.bigrams||'[]').map(b=>b[0]).join(', '); } catch(e){}
+    const statusLabel = STATUS_LABELS[n.status] || n.status;
+    return `<tr>
+      <td><input type="checkbox" class="news-tab-check" data-id="${n.id}" onchange="updateNewsSelectedCount()"></td>
+      <td>${n.source}</td>
+      <td><a href="${n.url}" target="_blank" title="${esc(n.description||'')}">${esc(n.title||'')}</a></td>
+      <td>${fmtDate(n.published_at)}</td>
+      <td><span class="badge badge-${n.status}">${statusLabel}</span></td>
+      <td title="${esc(bigrams)}">${bigrams.slice(0,40)}</td>
+      <td>${esc(n.llm_recommendation||'-')}</td>
+      <td>${n.llm_trend_forecast||'-'}</td>
+      <td>${n.sheets_row||'-'}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')">Анализ</button>
+        <button class="btn btn-sm btn-success" onclick="exportOne('${n.id}')">Sheets</button>
+      </td>
+    </tr>`;
+  }).join('');
+  document.getElementById('news-count').textContent = sorted.length + ' из ' + filtered.length;
+}
+
+function getNewsSelectedIds() {
+  return [...document.querySelectorAll('.news-tab-check:checked')].map(c => c.dataset.id);
+}
+function updateNewsSelectedCount() {
+  const cnt = getNewsSelectedIds().length;
+  document.getElementById('news-selected-count').textContent = cnt ? cnt + ' выбрано' : '';
+}
+function toggleAllNews(el) {
+  document.querySelectorAll('.news-tab-check').forEach(c => c.checked = el.checked);
+  updateNewsSelectedCount();
+}
+
+async function bulkStatusChange(newStatus) {
+  const ids = getNewsSelectedIds();
+  if (!ids.length) { toast('Сначала выберите новости', true); return; }
+  if (!confirm('Изменить статус ' + ids.length + ' новостей на "' + newStatus + '"?')) return;
+  const r = await api('/api/news/bulk_status', {news_ids: ids, status: newStatus});
+  if (r.status === 'ok') toast('Обновлено: ' + r.updated);
+  else toast(r.message, true);
+  loadAll();
+}
+
+// Source type field toggles
+function toggleSrcFields() {
+  const t = document.getElementById('src-type').value;
+  document.getElementById('src-selector-group').style.display = (t==='html')?'block':'none';
+  document.getElementById('src-title-sel-group').style.display = (t==='html')?'block':'none';
+  document.getElementById('src-url-filter-group').style.display = (t==='sitemap')?'block':'none';
+}
+
+// Change password
+async function changePassword() {
+  const username = document.getElementById('chpass-user').value;
+  const password = document.getElementById('chpass-password').value;
+  if (!password) { toast('Введите новый пароль', true); return; }
+  const r = await api('/api/users/change_password', {username, password});
+  if (r.status === 'ok') { toast('Пароль изменён'); document.getElementById('chpass-password').value = ''; }
+  else toast(r.message, true);
+}
+
+// DB info
+async function loadDbInfo() {
+  const info = await api('/api/db_info');
+  document.getElementById('db-info').innerHTML =
+    `<p style="margin:6px 0">Тип: <b>${info.type}</b></p>` +
+    `<p style="margin:6px 0">Всего новостей: <b>${info.total_news}</b></p>` +
+    `<p style="margin:6px 0">Проанализировано: <b>${info.total_analyzed}</b></p>` +
+    `<p style="margin:6px 0">Новые: ${info.status_new} | Одобрены: ${info.status_approved} | Обогащены: ${info.status_processed} | Отклонены: ${info.status_rejected}</p>` +
+    `<p style="margin:6px 0;font-size:0.85em;color:#8899a6">Период: ${fmtDate(info.oldest)} — ${fmtDate(info.newest)}</p>`;
+}
+
+// Reparse all
+async function reparseAll() {
+  if (!confirm('Парсить все источники? Это может занять несколько минут.')) return;
+  toast('Парсинг всех источников...');
+  const r = await api('/api/reparse_all', {});
+  if (r.status === 'ok') toast('Готово! Новых: ' + r.new_articles);
+  else toast(r.message, true);
+  loadAll();
+}
+
+// Setup Sheets headers
+async function setupHeaders() {
+  const r = await api('/api/setup_headers', {});
+  if (r.status === 'ok') toast('Заголовки Sheets созданы');
+  else toast(r.message, true);
 }
 
 // Init
@@ -2015,6 +2329,7 @@ loadPrompts();
 loadSettings();
 loadUsers();
 loadHealth();
+loadDbInfo();
 setInterval(loadAll, 30000);
 setInterval(loadHealth, 60000);
 </script>

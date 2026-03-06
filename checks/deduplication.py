@@ -26,7 +26,7 @@ def tfidf_similarity(titles: list[str]) -> list[tuple]:
     for i in range(len(titles)):
         for j in range(i + 1, len(titles)):
             score = sim[i][j]
-            if score > 0.55:
+            if score > 0.40:
                 pairs.append((i, j, round(float(score), 2)))
     return pairs
 

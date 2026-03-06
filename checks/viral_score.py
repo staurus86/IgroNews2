@@ -108,12 +108,68 @@ VIRAL_TRIGGERS = {
         "weight": 10,
         "keywords": ["goty", "лучшая игра", "игра года", "game of the year", "award"],
     },
+    "next_gen": {
+        "label": "Next-gen",
+        "weight": 25,
+        "keywords": [
+            "следующего поколения", "нового поколения", "next-gen", "next gen",
+            "новая консоль", "ps6", "playstation 6", "xbox next",
+        ],
+    },
+    "big_update": {
+        "label": "Big update",
+        "weight": 15,
+        "keywords": [
+            "крупное обновление", "масштабное обновление", "большой патч",
+            "major update", "big update", "massive update", "season pass",
+            "новый сезон", "new season", "expansion", "дополнение",
+            "dlc", "технологичнее", "обновился",
+        ],
+    },
+    "release_date": {
+        "label": "Release date",
+        "weight": 20,
+        "keywords": [
+            "дата выхода", "release date", "дата релиза", "выходит",
+            "релиз состоится", "launches", "coming soon", "выйдет",
+        ],
+    },
+    "trailer": {
+        "label": "Trailer",
+        "weight": 15,
+        "keywords": [
+            "трейлер", "trailer", "тизер", "teaser", "геймплей",
+            "gameplay", "первый взгляд", "first look", "показали",
+        ],
+    },
+    "record": {
+        "label": "Record",
+        "weight": 30,
+        "keywords": [
+            "рекорд", "record", "побил рекорд", "миллион игроков",
+            "million players", "peak players", "пик онлайна",
+            "best-selling", "самая продаваемая",
+        ],
+    },
+    "digest": {
+        "label": "Digest",
+        "weight": 5,
+        "keywords": [
+            "самое интересное", "дайджест", "итоги дня", "итоги недели",
+            "обзор новостей", "digest", "weekly roundup", "recap",
+        ],
+    },
 }
 
 BIG_TITLES = [
     "gta 6", "grand theft auto", "elder scrolls 6", "half-life 3",
     "call of duty", "zelda", "pokemon", "mario", "batman",
     "spider-man", "god of war", "horizon", "red dead",
+    "escape from tarkov", "tarkov", "cyberpunk", "elden ring",
+    "baldur's gate", "starfield", "diablo", "world of warcraft",
+    "final fantasy", "resident evil", "fortnite", "minecraft",
+    "the witcher", "mass effect", "dragon age", "halo",
+    "xbox", "playstation", "nintendo", "steam deck",
 ]
 
 GAMING_EVENTS_CALENDAR = [
@@ -150,12 +206,18 @@ def viral_score(news: dict) -> dict:
                 "weight": trigger["weight"],
             })
 
+    # Big title bonus
+    has_big_title = any(t in text for t in BIG_TITLES)
+    if has_big_title:
+        score += 15
+        matched = [t for t in BIG_TITLES if t in text]
+        triggered.append({"id": "big_title", "label": f"Big title: {matched[0] if matched else '?'}", "weight": 15})
+
     # Big title + leak combo
     has_leak = any(kw in text for kw in ["leak", "leaked", "утечка", "слив", "инсайдер"])
-    has_big_title = any(t in text for t in BIG_TITLES)
     if has_leak and has_big_title:
-        score += 60
-        triggered.append({"id": "leak_big_title", "label": "Big title leak", "weight": 60})
+        score += 45
+        triggered.append({"id": "leak_big_title", "label": "Big title leak", "weight": 45})
 
     # Calendar boost
     cal_boost, event_name = get_calendar_boost()
