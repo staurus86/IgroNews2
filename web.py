@@ -115,6 +115,17 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._json({"error": "id required"}, 400)
             return
 
+        # Bulk DOCX (ZIP with multiple DOCX)
+        if path == "/api/articles/docx_bulk":
+            from urllib.parse import parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            ids = qs.get("ids", [""])[0]
+            if ids:
+                self._serve_docx_bulk(ids.split(","))
+            else:
+                self._json({"error": "ids required"}, 400)
+            return
+
         handler = routes.get(path)
         if handler:
             handler()
@@ -162,6 +173,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/news/detail": lambda: self._news_detail(body),
             "/api/export_sheets_bulk": lambda: self._export_sheets_bulk(body),
             "/api/analyze_news": lambda: self._analyze_news(body),
+            "/api/batch_rewrite": lambda: self._batch_rewrite(body),
             "/api/articles/save": lambda: self._save_article(body),
             "/api/articles/update": lambda: self._update_article(body),
             "/api/articles/delete": lambda: self._delete_article(body),
@@ -1115,6 +1127,151 @@ async function login() {
         result["total_score"] = min(100, total + result["momentum"]["score"] // 5)
         self._json({"status": "ok", "analysis": result})
 
+    def _batch_rewrite(self, body):
+        """Батч-переписка новостей: создаёт статьи из списка news_ids."""
+        news_ids = body.get("news_ids", [])
+        style = body.get("style", "news")
+        language = body.get("language", "русский")
+        if not news_ids:
+            self._json({"status": "error", "message": "news_ids required"})
+            return
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        from apis.llm import rewrite_news
+        import uuid, json
+        from datetime import datetime, timezone
+
+        results = []
+        for nid in news_ids:
+            try:
+                cur.execute(f"SELECT id, title, plain_text, description, url, source FROM news WHERE id = {ph}", (nid,))
+                row = cur.fetchone()
+                if not row:
+                    results.append({"news_id": nid, "ok": False, "error": "not found"})
+                    continue
+                if _is_postgres():
+                    columns = [desc[0] for desc in cur.description]
+                    news = dict(zip(columns, row))
+                else:
+                    news = dict(row)
+                title = news.get("title", "")
+                text = news.get("plain_text", "") or news.get("description", "")
+                result = rewrite_news(title, text, style, language)
+                if not result:
+                    results.append({"news_id": nid, "ok": False, "error": "LLM failed"})
+                    continue
+                # Save as article
+                aid = str(uuid.uuid4())[:12]
+                now = datetime.now(timezone.utc).isoformat()
+                tags = json.dumps(result.get("tags", []), ensure_ascii=False)
+                cur.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
+                    style, language, original_title, original_text, source_url, status, created_at, updated_at)
+                    VALUES ({','.join([ph]*15)})""",
+                    (aid, nid, result.get("title", ""), result.get("text", ""),
+                     result.get("seo_title", ""), result.get("seo_description", ""), tags,
+                     style, language, title, text[:5000],
+                     news.get("url", ""), "draft", now, now))
+                if not _is_postgres():
+                    conn.commit()
+                results.append({"news_id": nid, "ok": True, "article_id": aid, "title": result.get("title", "")})
+            except Exception as e:
+                logger.warning("Batch rewrite error for %s: %s", nid, e)
+                results.append({"news_id": nid, "ok": False, "error": str(e)})
+
+        ok_count = sum(1 for r in results if r.get("ok"))
+        self._json({"status": "ok", "total": len(news_ids), "success": ok_count,
+                     "failed": len(news_ids) - ok_count, "results": results})
+
+    def _serve_docx_bulk(self, article_ids):
+        """Генерирует ZIP с несколькими DOCX файлами."""
+        import io
+        import json
+        import zipfile
+        from docx import Document
+        from docx.shared import Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for aid in article_ids:
+                cur.execute(f"SELECT * FROM articles WHERE id = {ph}", (aid,))
+                row = cur.fetchone()
+                if not row:
+                    continue
+                if _is_postgres():
+                    columns = [desc[0] for desc in cur.description]
+                    article = dict(zip(columns, row))
+                else:
+                    article = dict(row)
+
+                doc = Document()
+                style = doc.styles['Normal']
+                style.font.name = 'Calibri'
+                style.font.size = Pt(11)
+
+                doc.add_heading(article.get("title", ""), level=1)
+
+                meta_p = doc.add_paragraph()
+                run = meta_p.add_run(f"Стиль: {article.get('style', '')} | Язык: {article.get('language', '')}")
+                run.font.size = Pt(9)
+                run.font.color.rgb = RGBColor(128, 128, 128)
+                if article.get("source_url"):
+                    run2 = meta_p.add_run(f"\nИсточник: {article['source_url']}")
+                    run2.font.size = Pt(9)
+                    run2.font.color.rgb = RGBColor(128, 128, 128)
+
+                if article.get("seo_title") or article.get("seo_description"):
+                    doc.add_heading("SEO", level=2)
+                    if article.get("seo_title"):
+                        p = doc.add_paragraph()
+                        p.add_run("Title: ").bold = True
+                        p.add_run(article["seo_title"])
+                    if article.get("seo_description"):
+                        p = doc.add_paragraph()
+                        p.add_run("Description: ").bold = True
+                        p.add_run(article["seo_description"])
+
+                tags = []
+                try:
+                    tags = json.loads(article.get("tags", "[]"))
+                except Exception:
+                    pass
+                if tags:
+                    p = doc.add_paragraph()
+                    p.add_run("Теги: ").bold = True
+                    p.add_run(", ".join(tags))
+
+                doc.add_paragraph("")
+                doc.add_heading("Текст статьи", level=2)
+                text = article.get("text", "")
+                for paragraph in text.split("\n"):
+                    paragraph = paragraph.strip()
+                    if paragraph:
+                        if paragraph.startswith("## "):
+                            doc.add_heading(paragraph[3:], level=3)
+                        elif paragraph.startswith("# "):
+                            doc.add_heading(paragraph[2:], level=2)
+                        else:
+                            doc.add_paragraph(paragraph)
+
+                doc_buffer = io.BytesIO()
+                doc.save(doc_buffer)
+                safe_title = "".join(c for c in article.get("title", "article")[:40] if c.isalnum() or c in " _-").strip() or "article"
+                zf.writestr(f"{safe_title}.docx", doc_buffer.getvalue())
+
+        data = zip_buffer.getvalue()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", 'attachment; filename="articles.zip"')
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     # --- Articles ---
     def _get_articles(self):
         conn = get_connection()
@@ -1835,6 +1992,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
             <button class="btn btn-secondary" onclick="analyzeEditorNews()" id="analyze-btn" disabled style="white-space:nowrap">
               &#128202; Анализ
             </button>
+            <button class="btn btn-success" onclick="batchRewrite()" id="batch-rewrite-btn" disabled style="white-space:nowrap">
+              $ &#9889; Батч
+            </button>
             <span id="rewrite-loading" style="color:#8899a6;font-size:0.85em"></span>
           </div>
         </div>
@@ -1934,9 +2094,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       .art-improve-btn.loading { opacity:0.5; pointer-events:none; }
     </style>
 
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <h2 style="margin:0">Мои статьи</h2>
-      <div style="display:flex;gap:8px;align-items:center">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <input type="search" id="art-search" placeholder="Поиск..." oninput="filterArticles()" autocomplete="off" style="padding:6px 10px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em;width:200px">
         <select id="art-status-filter" onchange="filterArticles()" style="padding:6px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
           <option value="">Все</option>
@@ -1944,6 +2104,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           <option value="ready">Готовые</option>
           <option value="published">Опубликованные</option>
         </select>
+        <button class="btn btn-sm btn-primary" onclick="downloadSelectedDocx()" id="art-bulk-docx-btn" disabled>DOCX выбранные</button>
+        <button class="btn btn-sm" style="background:#e0245e;color:#fff" onclick="deleteSelectedArticles()" id="art-bulk-del-btn" disabled>Удалить выбранные</button>
+        <span id="art-selected-count" style="color:#1da1f2;font-size:0.82em;font-weight:500"></span>
         <span id="art-count" style="color:#8899a6;font-size:0.82em"></span>
       </div>
     </div>
@@ -3250,11 +3413,12 @@ function updateMergeCounter() {
   const txt = document.getElementById('merge-count-text');
   if (cnt > 0) {
     el.style.display = 'inline-flex';
-    txt.textContent = cnt + ' для слияния';
+    txt.textContent = cnt + ' выбрано';
   } else {
     el.style.display = 'none';
   }
   document.getElementById('merge-btn').disabled = cnt < 2;
+  document.getElementById('batch-rewrite-btn').disabled = cnt < 1;
 }
 
 function clearMergeSelection() {
@@ -3590,6 +3754,8 @@ function filterArticles() {
   if (cnt) cnt.textContent = filtered.length + ' из ' + _articles.length;
 }
 
+let _artSelectedIds = new Set();
+
 function renderArticlesList(articles) {
   const el = document.getElementById('articles-list');
   if (!articles.length) {
@@ -3598,11 +3764,13 @@ function renderArticlesList(articles) {
   }
   el.innerHTML = articles.map(a => {
     const isSel = _currentArticleId === a.id;
+    const isChecked = _artSelectedIds.has(a.id);
     const statusCls = 'art-status art-status-' + (a.status || 'draft');
     const date = a.updated_at ? fmtDate(a.updated_at) : '';
     const textLen = (a.text||'').length;
     return `<div class="art-card${isSel?' selected':''}" onclick="selectArticle('${a.id}')">
-      <div style="display:flex;justify-content:space-between;align-items:start;gap:8px">
+      <div style="display:flex;gap:8px;align-items:start">
+        <input type="checkbox" ${isChecked?'checked':''} onclick="event.stopPropagation();toggleArtSelect('${a.id}',this.checked)" style="margin-top:2px;cursor:pointer;width:16px;height:16px;min-width:16px;flex-shrink:0">
         <div style="flex:1;min-width:0">
           <div style="font-size:0.92em;font-weight:500;line-height:1.3;margin-bottom:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(a.title||'Без заголовка')}</div>
           <div style="font-size:0.75em;color:#8899a6;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -3615,6 +3783,19 @@ function renderArticlesList(articles) {
       </div>
     </div>`;
   }).join('');
+}
+
+function toggleArtSelect(id, checked) {
+  if (checked) _artSelectedIds.add(id); else _artSelectedIds.delete(id);
+  updateArtBulkButtons();
+}
+
+function updateArtBulkButtons() {
+  const cnt = _artSelectedIds.size;
+  document.getElementById('art-bulk-docx-btn').disabled = cnt < 1;
+  document.getElementById('art-bulk-del-btn').disabled = cnt < 1;
+  const el = document.getElementById('art-selected-count');
+  el.textContent = cnt > 0 ? cnt + ' выбрано' : '';
 }
 
 async function selectArticle(id) {
@@ -3771,6 +3952,58 @@ async function rewriteArticleInStyle(style) {
   } else {
     toast(r.message || 'Ошибка', true);
   }
+}
+
+// Batch rewrite from Editor
+async function batchRewrite() {
+  if (_editorMergeIds.size < 1) { toast('Выберите новости', true); return; }
+  const style = _editorSelectedStyle;
+  const lang = document.getElementById('rewrite-lang')?.value || 'русский';
+  const cnt = _editorMergeIds.size;
+  if (!confirm(`$ Батч-переписать ${cnt} новостей в стиле "${style}"?\nЭто ${cnt} вызовов LLM API.`)) return;
+
+  const loadEl = document.getElementById('rewrite-loading');
+  loadEl.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px"><span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#17bf63;border-radius:50%;animation:spin .8s linear infinite;display:inline-block"></span> Батч: 0/${cnt}...</span>`;
+
+  const r = await api('/api/batch_rewrite', {news_ids: [..._editorMergeIds], style, language: lang});
+  loadEl.textContent = '';
+
+  if (r.status === 'ok') {
+    toast(`Готово: ${r.success} переписано, ${r.failed} ошибок`);
+    loadArticles();
+    clearMergeSelection();
+  } else {
+    toast(r.message, true);
+  }
+}
+
+// Bulk DOCX download (ZIP)
+function downloadSelectedDocx() {
+  if (_artSelectedIds.size < 1) return;
+  const ids = [..._artSelectedIds].join(',');
+  window.open('/api/articles/docx_bulk?ids=' + encodeURIComponent(ids), '_blank');
+  toast('Скачивание ZIP...');
+}
+
+// Bulk delete articles
+async function deleteSelectedArticles() {
+  const cnt = _artSelectedIds.size;
+  if (cnt < 1) return;
+  if (!confirm(`Удалить ${cnt} статей?`)) return;
+  let ok = 0;
+  for (const id of _artSelectedIds) {
+    const r = await api('/api/articles/delete', {id});
+    if (r.status === 'ok') ok++;
+  }
+  _artSelectedIds.clear();
+  updateArtBulkButtons();
+  if (_currentArticleId && !_articles.find(a => a.id === _currentArticleId)) {
+    _currentArticleId = null;
+    document.getElementById('art-edit-form').style.display = 'none';
+    document.getElementById('art-empty').style.display = 'block';
+  }
+  toast(`Удалено: ${ok}`);
+  loadArticles();
 }
 
 // Save rewrite from Editor tab as article
