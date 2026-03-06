@@ -1620,8 +1620,8 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 
     <!-- Action buttons -->
     <div class="btn-group">
-      <button class="btn btn-primary" onclick="sendToReview()">Отправить на проверку</button>
-      <button class="btn btn-success" onclick="runProcess()">Обогатить одобренные</button>
+      <button class="btn btn-primary" onclick="sendToReview()">Проверить</button>
+      <button class="btn btn-success" onclick="runProcess()">$ Обогатить одобренные</button>
       <button class="btn btn-warning" onclick="loadDashboardGroups()">Найти группы</button>
       <button class="btn btn-secondary" onclick="selectAll()">Выбрать все</button>
       <button class="btn btn-secondary" onclick="deselectAll()">Снять выбор</button>
@@ -1818,10 +1818,10 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
               <option value="английский">EN</option>
             </select>
             <button class="btn btn-primary" onclick="rewriteNews()" id="rewrite-btn" disabled style="white-space:nowrap">
-              &#9998; Переписать
+              $ &#9998; Переписать
             </button>
             <button class="btn btn-warning" onclick="mergeSelected()" id="merge-btn" disabled style="white-space:nowrap">
-              &#128279; Объединить
+              $ &#128279; Объединить
             </button>
             <button class="btn btn-secondary" onclick="analyzeEditorNews()" id="analyze-btn" disabled style="white-space:nowrap">
               &#128202; Анализ
@@ -2004,18 +2004,18 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           <div style="margin-top:8px;padding:12px;background:#22303c;border-radius:8px">
             <div style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">AI-действия</div>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
-              <button class="art-improve-btn" onclick="improveArticle('improve')">&#9998; Улучшить стиль</button>
-              <button class="art-improve-btn" onclick="improveArticle('expand')">&#128200; Расширить</button>
-              <button class="art-improve-btn" onclick="improveArticle('shorten')">&#9986; Сократить</button>
-              <button class="art-improve-btn" onclick="improveArticle('fix_grammar')">&#128221; Грамматика</button>
-              <button class="art-improve-btn" onclick="improveArticle('add_seo')">&#128269; Добавить SEO</button>
-              <button class="art-improve-btn" onclick="improveArticle('make_engaging')">&#128293; Вовлекающий</button>
+              <button class="art-improve-btn" onclick="improveArticle('improve')">$ &#9998; Улучшить стиль</button>
+              <button class="art-improve-btn" onclick="improveArticle('expand')">$ &#128200; Расширить</button>
+              <button class="art-improve-btn" onclick="improveArticle('shorten')">$ &#9986; Сократить</button>
+              <button class="art-improve-btn" onclick="improveArticle('fix_grammar')">$ &#128221; Грамматика</button>
+              <button class="art-improve-btn" onclick="improveArticle('add_seo')">$ &#128269; Добавить SEO</button>
+              <button class="art-improve-btn" onclick="improveArticle('make_engaging')">$ &#128293; Вовлекающий</button>
               <span style="margin-left:8px;font-size:0.8em;color:#657786">|</span>
-              <button class="art-improve-btn" onclick="rewriteArticleInStyle('news')">Новость</button>
-              <button class="art-improve-btn" onclick="rewriteArticleInStyle('seo')">SEO</button>
-              <button class="art-improve-btn" onclick="rewriteArticleInStyle('clickbait')">Кликбейт</button>
-              <button class="art-improve-btn" onclick="rewriteArticleInStyle('social')">Соцсети</button>
-              <button class="art-improve-btn" onclick="rewriteArticleInStyle('short')">Кратко</button>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('news')">$ Новость</button>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('seo')">$ SEO</button>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('clickbait')">$ Кликбейт</button>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('social')">$ Соцсети</button>
+              <button class="art-improve-btn" onclick="rewriteArticleInStyle('short')">$ Кратко</button>
             </div>
             <div id="art-ai-loading" style="display:none;margin-top:8px;font-size:0.85em;color:#8899a6">
               <span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#1da1f2;border-radius:50%;animation:spin .8s linear infinite;display:inline-block;vertical-align:middle"></span>
@@ -2152,13 +2152,13 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <div class="card">
         <h2>Тест LLM</h2>
         <div class="form-group"><label>Промпт</label><textarea id="test-llm-prompt" rows="4">Ты аналитик. Ответь JSON: {"test": "ok", "model": "your_model"}</textarea></div>
-        <button class="btn btn-primary" onclick="testLLM()">Отправить</button>
+        <button class="btn btn-primary" onclick="testLLM()">$ Отправить</button>
         <pre id="test-llm-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
       </div>
       <div class="card">
         <h2>Тест Keys.so</h2>
         <div class="form-group"><label>Ключевое слово</label><input id="test-keyso-kw" value="gta 6"></div>
-        <button class="btn btn-primary" onclick="testKeyso()">Проверить</button>
+        <button class="btn btn-primary" onclick="testKeyso()">$ Проверить</button>
         <pre id="test-keyso-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
       </div>
     </div>
@@ -2232,7 +2232,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <div class="card">
         <h2>Быстрые действия</h2>
         <div style="display:flex;flex-direction:column;gap:8px">
-          <button class="btn btn-primary" onclick="runProcess()">Обогатить одобренные</button>
+          <button class="btn btn-primary" onclick="runProcess()">$ Обогатить одобренные</button>
           <button class="btn btn-warning" onclick="reparseAll()">Парсить все источники</button>
           <button class="btn btn-secondary" onclick="setupHeaders()">Создать заголовки Sheets</button>
         </div>
