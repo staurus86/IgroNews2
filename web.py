@@ -1,10 +1,11 @@
 import json
+import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from storage.database import get_connection, _is_postgres
 
-PORT = 8080
+PORT = int(os.getenv("PORT", 8080))
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
