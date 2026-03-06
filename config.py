@@ -37,8 +37,7 @@ SOURCES = [
     {"name": "Playground",       "type": "rss",  "url": "https://www.playground.ru/rss/news.xml",      "interval": 15},
     # HTML
     {"name": "DTF",              "type": "html", "url": "https://dtf.ru/games",                        "interval": 10, "selector": "a[href*='/games/']", "title_selector": "", "url_pattern": r"/games/\d+"},
-    {"name": "iXBT.games",       "type": "html", "url": "https://ixbt.games/news",                    "interval": 30, "selector": "a[href*='/news/']", "title_selector": "h3"},
-    {"name": "iXBT.games-sitemap","type": "sitemap", "url": "https://ixbt.games/export/sitemapindex.xml", "interval": 60, "url_filter": "/news/"},
+    {"name": "iXBT.games",       "type": "html", "url": "https://ixbt.games/news",                    "interval": 30, "selector": "a[href*='/news/']", "title_selector": "h3", "url_pattern": r"/news/\d{4}/\d{2}/\d{2}/"},
     {"name": "VGTimes",          "type": "html", "url": "https://vgtimes.ru/news/",                    "interval": 30, "selector": "a[href*='.html']", "title_selector": "", "url_pattern": r"/\d+-.*\.html"},
 ]
 
