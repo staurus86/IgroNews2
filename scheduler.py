@@ -27,6 +27,77 @@ def parse_sources(interval_min: int):
     logger.info("[%dmin] Total new articles: %d", interval_min, total)
 
 
+def _process_single_news(news_id: str) -> dict:
+    """Обрабатывает одну новость по ID. Возвращает результат."""
+    from storage.database import get_connection, _is_postgres
+    conn = get_connection()
+    cur = conn.cursor()
+    ph = "%s" if _is_postgres() else "?"
+    cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
+    if _is_postgres():
+        columns = [desc[0] for desc in cur.description]
+        news = dict(zip(columns, cur.fetchone()))
+    else:
+        news = dict(cur.fetchone())
+    return _do_process(news)
+
+
+def _do_process(news: dict) -> dict:
+    """Выполняет полный цикл обработки одной новости."""
+    news_id = news["id"]
+    title = news.get("title", "")
+    text = news.get("plain_text", "") or news.get("description", "")
+
+    # 1. TF-IDF
+    combined_text = f"{title} {news.get('h1', '')} {text}"
+    keywords = extract_keywords(combined_text)
+    bigrams = keywords.get("bigrams", [])
+    trigrams = keywords.get("trigrams", [])
+
+    # 2. Keys.so
+    top_bigram = bigrams[0][0] if bigrams else title
+    keyso_info = get_keyword_info(top_bigram)
+    similar = get_similar_keywords(top_bigram, limit=10)
+
+    # 3. Google Trends
+    trends = get_trends_for_keyword(top_bigram)
+
+    # 4. LLM
+    fc = forecast_trend(
+        title=title, text=text, bigrams=bigrams,
+        keyso_freq=keyso_info.get("ws", 0), trends=trends,
+    )
+    recommendation = fc.get("recommendation", "") if fc else ""
+    trend_score = str(fc.get("trend_score", "")) if fc else ""
+
+    # 5. Save
+    analysis_data = {
+        "bigrams": bigrams, "trigrams": trigrams,
+        "trends_data": trends,
+        "keyso_data": {"freq": keyso_info.get("ws", 0), "similar": similar},
+        "llm_recommendation": recommendation,
+        "llm_trend_forecast": trend_score,
+    }
+    save_analysis(news_id, **analysis_data)
+
+    # 6. Sheets
+    analysis_for_sheets = {
+        "bigrams": json.dumps(bigrams, ensure_ascii=False),
+        "trends_data": json.dumps(trends, ensure_ascii=False),
+        "keyso_data": json.dumps({"freq": keyso_info.get("ws", 0), "similar": [s["word"] for s in similar]}, ensure_ascii=False),
+        "llm_recommendation": recommendation,
+        "llm_trend_forecast": trend_score,
+        "llm_merged_with": "",
+    }
+    row = write_news_row(news, analysis_for_sheets)
+    if row:
+        save_analysis(news_id, sheets_row=row, **analysis_data)
+
+    update_news_status(news_id, "processed")
+    logger.info("Processed: %s", title[:60])
+    return {"trend_score": trend_score, "recommendation": recommendation, "bigrams": bigrams}
+
+
 def process_news():
     """Обрабатывает новые новости: NLP, APIs, LLM, Sheets."""
     news_list = get_unprocessed_news(limit=10)
@@ -36,66 +107,7 @@ def process_news():
 
     for news in news_list:
         try:
-            news_id = news["id"]
-            title = news.get("title", "")
-            text = news.get("plain_text", "") or news.get("description", "")
-
-            # 1. TF-IDF
-            combined_text = f"{title} {news.get('h1', '')} {text}"
-            keywords = extract_keywords(combined_text)
-            bigrams = keywords.get("bigrams", [])
-            trigrams = keywords.get("trigrams", [])
-
-            # 2. Keys.so — частота топ-биграммы
-            top_bigram = bigrams[0][0] if bigrams else title
-            keyso_info = get_keyword_info(top_bigram)
-            similar = get_similar_keywords(top_bigram, limit=10)
-
-            # 3. Google Trends
-            trends = get_trends_for_keyword(top_bigram)
-
-            # 4. LLM — прогноз трендовости
-            forecast = forecast_trend(
-                title=title,
-                text=text,
-                bigrams=bigrams,
-                keyso_freq=keyso_info.get("ws", 0),
-                trends=trends,
-            )
-
-            recommendation = ""
-            trend_score = ""
-            if forecast:
-                recommendation = forecast.get("recommendation", "")
-                trend_score = str(forecast.get("trend_score", ""))
-
-            # 5. Сохраняем анализ в БД
-            analysis_data = {
-                "bigrams": bigrams,
-                "trigrams": trigrams,
-                "trends_data": trends,
-                "keyso_data": {"freq": keyso_info.get("ws", 0), "similar": similar},
-                "llm_recommendation": recommendation,
-                "llm_trend_forecast": trend_score,
-            }
-            save_analysis(news_id, **analysis_data)
-
-            # 6. Пишем в Google Sheets
-            analysis_for_sheets = {
-                "bigrams": json.dumps(bigrams, ensure_ascii=False),
-                "trends_data": json.dumps(trends, ensure_ascii=False),
-                "keyso_data": json.dumps({"freq": keyso_info.get("ws", 0), "similar": [s["word"] for s in similar]}, ensure_ascii=False),
-                "llm_recommendation": recommendation,
-                "llm_trend_forecast": trend_score,
-                "llm_merged_with": "",
-            }
-            row = write_news_row(news, analysis_for_sheets)
-            if row:
-                save_analysis(news_id, sheets_row=row, **analysis_data)
-
-            update_news_status(news_id, "processed")
-            logger.info("Processed: %s", title[:60])
-
+            _do_process(news)
         except Exception as e:
             logger.error("Error processing news %s: %s", news.get("id"), e)
 
