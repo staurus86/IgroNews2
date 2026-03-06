@@ -27,6 +27,7 @@ def parse_html_source(source: dict) -> int:
     url = source["url"]
     selector = source.get("selector", "article")
     title_selector = source.get("title_selector", "")
+    url_pattern = source.get("url_pattern", "")
     count = 0
 
     try:
@@ -47,6 +48,10 @@ def parse_html_source(source: dict) -> int:
 
             href = a_tag["href"]
             link = urljoin(url, href)
+
+            # Фильтр по URL паттерну
+            if url_pattern and not re.search(url_pattern, link):
+                continue
 
             # Заголовок: кастомный селектор, или h2/h3/h4, или текст ссылки
             title = ""

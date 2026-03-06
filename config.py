@@ -33,15 +33,13 @@ SOURCES = [
     {"name": "Polygon",          "type": "rss",  "url": "https://www.polygon.com/rss/index.xml",       "interval": 15},
     {"name": "RockPaperShotgun", "type": "rss",  "url": "https://feeds.feedburner.com/RockPaperShotgun", "interval": 30},
     {"name": "GameRant",         "type": "rss",  "url": "https://gamerant.com/feed/",                  "interval": 10},
-    {"name": "StopGame",         "type": "rss",  "url": "https://stopgame.ru/rss/news.xml",            "interval": 10},
-    {"name": "Cybersport",       "type": "rss",  "url": "https://cyber.sports.ru/rss/news.xml",        "interval": 15},
+    {"name": "StopGame",         "type": "html", "url": "https://stopgame.ru/news",                    "interval": 10, "selector": "a[href*='/newsdata/']", "title_selector": "", "url_pattern": r"/newsdata/\d+"},
     {"name": "Playground",       "type": "rss",  "url": "https://www.playground.ru/rss/news.xml",      "interval": 15},
     # HTML
-    {"name": "Metacritic",       "type": "html", "url": "https://www.metacritic.com/news/",            "interval": 30, "selector": "article"},
-    {"name": "DTF",              "type": "dtf",  "url": "https://dtf.ru/games",                        "interval": 5},
+    {"name": "DTF",              "type": "html", "url": "https://dtf.ru/games",                        "interval": 10, "selector": "a[href*='/games/']", "title_selector": "", "url_pattern": r"/games/\d+"},
     {"name": "iXBT.games",       "type": "html", "url": "https://ixbt.games/news",                    "interval": 30, "selector": "a[href*='/news/']", "title_selector": "h3"},
     {"name": "iXBT.games-sitemap","type": "sitemap", "url": "https://ixbt.games/export/sitemapindex.xml", "interval": 60, "url_filter": "/news/"},
-    {"name": "VGTimes",          "type": "html", "url": "https://vgtimes.ru/news/",                    "interval": 30, "selector": ".news-item", "title_selector": "h3 a"},
+    {"name": "VGTimes",          "type": "html", "url": "https://vgtimes.ru/news/",                    "interval": 30, "selector": "a[href*='.html']", "title_selector": "", "url_pattern": r"/\d+-.*\.html"},
 ]
 
 # Keys.so
