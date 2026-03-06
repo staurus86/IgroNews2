@@ -630,12 +630,17 @@ async function login() {
             self._json({"status": "error", "message": str(e), "type": type(e).__name__})
 
     def _dashboard_groups(self):
-        """Возвращает теги и группы для всех new новостей."""
+        """Возвращает теги и группы для новостей (учитывает фильтр статуса)."""
         try:
             conn = get_connection()
             cur = conn.cursor()
             ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"SELECT id, title, description, plain_text FROM news WHERE status = {ph} ORDER BY parsed_at DESC LIMIT 200", ("new",))
+            qs = parse_qs(urlparse(self.path).query)
+            status_filter = qs.get("status", [None])[0]
+            if status_filter:
+                cur.execute(f"SELECT id, title, description, plain_text FROM news WHERE status = {ph} ORDER BY parsed_at DESC LIMIT 200", (status_filter,))
+            else:
+                cur.execute("SELECT id, title, description, plain_text FROM news ORDER BY parsed_at DESC LIMIT 200")
             if _is_postgres():
                 columns = [desc[0] for desc in cur.description]
                 rows = [dict(zip(columns, row)) for row in cur.fetchall()]
@@ -3337,11 +3342,17 @@ const GROUP_COLORS = ['#e0245e','#1da1f2','#17bf63','#ffad1f','#794bc4','#ff6300
 
 async function loadDashboardGroups() {
   toast('Анализ групп...');
-  const r = await api('/api/dashboard_groups');
+  const status = document.getElementById('dash-status')?.value || '';
+  let url = '/api/dashboard_groups';
+  if (status) url += '?status=' + status;
+  const r = await api(url);
   if (r.status !== 'ok') { toast(r.message, true); return; }
   _dashTags = r.tags || {};
   _dashGroups = r.groups || [];
-  _dashIdToGroup = r.id_to_group || {};
+  // Ensure string keys for ID matching with DOM dataset
+  const rawIdMap = r.id_to_group || {};
+  _dashIdToGroup = {};
+  for (const [k, v] of Object.entries(rawIdMap)) _dashIdToGroup[String(k)] = v;
 
   // Show groups summary
   const gs = document.getElementById('groups-summary');
@@ -3367,19 +3378,29 @@ async function loadDashboardGroups() {
 }
 
 function selectGroupById(gid) {
-  const ids = (_dashGroups.find(g => g.group === gid) || {}).ids || [];
+  const group = _dashGroups.find(g => g.group === gid);
+  if (!group || !group.ids || !group.ids.length) {
+    toast('Группа не найдена или пуста', true);
+    return;
+  }
+  const ids = group.ids.map(String);
+  let selected = 0;
   document.querySelectorAll('.news-check').forEach(c => {
-    c.checked = ids.includes(c.dataset.id);
+    const match = ids.includes(String(c.dataset.id));
+    c.checked = match;
+    if (match) selected++;
   });
   updateSelectedCount();
+  if (selected === 0) toast('Новости группы не найдены в таблице — попробуйте обновить', true);
+  else toast('Выбрано ' + selected + ' новостей из группы ' + gid);
 }
 
 function selectGroup() {
-  // Select the group of the first checked item
+  if (!_dashGroups.length) { toast('Сначала нажмите "Найти группы"', true); return; }
   const checked = document.querySelector('.news-check:checked');
   if (!checked) { toast('Сначала выберите новость из группы', true); return; }
-  const gid = _dashIdToGroup[checked.dataset.id];
-  if (!gid) { toast('Эта новость не в группе', true); return; }
+  const gid = _dashIdToGroup[String(checked.dataset.id)];
+  if (!gid) { toast('Эта новость не в группе — выберите другую', true); return; }
   selectGroupById(gid);
 }
 
