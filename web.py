@@ -791,7 +791,15 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div class="grid-2">
       <div class="card">
         <h2>General</h2>
-        <div class="form-group"><label>LLM Model</label><input id="set-model"></div>
+        <div class="form-group"><label>LLM Model</label>
+          <select id="set-model">
+            <option value="anthropic/claude-sonnet-4">Claude Sonnet 4 (anthropic)</option>
+            <option value="openai/gpt-4o-mini">GPT-4o Mini (openai)</option>
+            <option value="openai/gpt-4o">GPT-4o (openai)</option>
+            <option value="google/gemini-2.0-flash-001">Gemini 2.0 Flash (google)</option>
+            <option value="meta-llama/llama-3.1-70b-instruct">Llama 3.1 70B (meta)</option>
+          </select>
+        </div>
         <div class="form-group"><label>Keys.so Region</label><input id="set-keyso-region"></div>
         <div class="form-group"><label>Sheets Tab Name</label><input id="set-sheets-tab"></div>
         <button class="btn btn-primary" onclick="saveSettings()">Save</button>
