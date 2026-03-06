@@ -330,7 +330,8 @@ async function login() {
         query = f"""
             SELECT n.id, n.source, n.title, n.url, n.h1, n.description,
                    n.published_at, n.parsed_at, n.status,
-                   a.bigrams, a.llm_recommendation, a.llm_trend_forecast, a.sheets_row
+                   a.bigrams, a.trigrams, a.trends_data, a.keyso_data,
+                   a.llm_recommendation, a.llm_trend_forecast, a.sheets_row, a.processed_at
             FROM news n
             LEFT JOIN news_analysis a ON n.id = a.news_id
             {where}
@@ -2534,6 +2535,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <button class="btn btn-warning btn-sm" onclick="bulkStatusChange('approved')">Одобрить выбранные</button>
       <button class="btn btn-danger btn-sm" onclick="bulkStatusChange('rejected')">Отклонить выбранные</button>
       <button class="btn btn-danger btn-sm" onclick="deleteSelectedNews()" style="margin-left:4px">Удалить выбранные</button>
+      <button class="btn btn-primary btn-sm" onclick="analyzeSelectedNews()">$ Анализировать выбранные</button>
       <button class="btn btn-success btn-sm" onclick="exportSelectedToSheets()">В Sheets</button>
       <span id="news-selected-count" style="color:#1da1f2;font-size:0.85em;margin-left:8px"></span>
       <span id="news-count" style="color:#8899a6;font-size:0.85em;margin-left:auto"></span>
@@ -2546,8 +2548,11 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <th class="sortable" data-sort="published_at" onclick="sortNewsTab('published_at')">Опубл. <span class="sort-arrow">&#9650;</span></th>
         <th class="sortable" data-sort="status" onclick="sortNewsTab('status')">Статус <span class="sort-arrow">&#9650;</span></th>
         <th>Биграммы</th>
+        <th>Keys.so</th>
+        <th>Trends</th>
         <th>LLM</th>
         <th class="sortable" data-sort="score" onclick="sortNewsTab('score')">Скор <span class="sort-arrow">&#9650;</span></th>
+        <th>Анализ</th>
         <th>Лист</th>
         <th>Действия</th>
       </tr></thead>
@@ -3535,18 +3540,40 @@ function renderNewsFiltered() {
     let bigrams = '';
     try { bigrams = JSON.parse(n.bigrams||'[]').map(b=>b[0]).join(', '); } catch(e){}
     const statusLabel = STATUS_LABELS[n.status] || n.status;
+    // Keys.so data
+    let keysoFreq = '-', keysoSimilar = 0;
+    try {
+      const kd = JSON.parse(n.keyso_data||'{}');
+      keysoFreq = kd.freq || kd.ws || '-';
+      keysoSimilar = (kd.similar||[]).length;
+    } catch(e){}
+    // Trends
+    let trendsLabel = '-';
+    try {
+      const td = JSON.parse(n.trends_data||'{}');
+      if (td && typeof td === 'object') {
+        const vals = Object.values(td);
+        if (vals.length > 0 && typeof vals[0] === 'number') trendsLabel = vals[vals.length-1];
+        else if (td.interest_over_time) trendsLabel = 'есть';
+        else if (vals.length > 0) trendsLabel = 'есть';
+      }
+    } catch(e){}
+    const analyzed = n.processed_at ? fmtDate(n.processed_at) : '-';
     return `<tr>
       <td><input type="checkbox" class="news-tab-check" data-id="${n.id}" onchange="updateNewsSelectedCount()"></td>
       <td>${n.source}</td>
       <td class="td-title"><a href="${n.url}" target="_blank" title="${esc(n.description||'')}">${esc(n.title||'')}</a></td>
       <td>${fmtDate(n.published_at)}</td>
       <td><span class="badge badge-${n.status}">${statusLabel}</span></td>
-      <td title="${esc(bigrams)}">${bigrams.slice(0,40)}</td>
-      <td>${esc(n.llm_recommendation||'-')}</td>
+      <td title="${esc(bigrams)}" style="max-width:160px;font-size:0.82em">${bigrams.slice(0,50)||'-'}</td>
+      <td style="font-size:0.82em" title="Частота: ${keysoFreq}, Похожих: ${keysoSimilar}">${keysoFreq}${keysoSimilar?' <span style="color:#8899a6">(${keysoSimilar})</span>':''}</td>
+      <td style="font-size:0.82em">${trendsLabel}</td>
+      <td style="font-size:0.82em">${esc(n.llm_recommendation||'-')}</td>
       <td>${n.llm_trend_forecast||'-'}</td>
+      <td style="font-size:0.82em;color:${analyzed!=='-'?'#17bf63':'#8899a6'}">${analyzed}</td>
       <td>${n.sheets_row||'-'}</td>
       <td style="white-space:nowrap">
-        <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')">Анализ</button>
+        <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')" title="$ Анализ API">$ Анализ</button>
         <button class="btn btn-sm btn-success" onclick="exportOne('${n.id}')">Sheets</button>
       </td>
     </tr>`;
@@ -3564,6 +3591,22 @@ function updateNewsSelectedCount() {
 function toggleAllNews(el) {
   document.querySelectorAll('.news-tab-check').forEach(c => c.checked = el.checked);
   updateNewsSelectedCount();
+}
+
+async function analyzeSelectedNews() {
+  const ids = getNewsSelectedIds();
+  if (!ids.length) { toast('Сначала выберите новости', true); return; }
+  if (!confirm(`$ Анализировать ${ids.length} новостей? Это расходует API (Keys.so, Trends, LLM).`)) return;
+  toast(`Запуск анализа ${ids.length} новостей...`);
+  let ok = 0, fail = 0;
+  for (const id of ids) {
+    try {
+      const r = await api('/api/process_one', {news_id: id});
+      if (r.status === 'ok') ok++; else fail++;
+    } catch(e) { fail++; }
+  }
+  toast(`Анализ завершён: ${ok} успешно, ${fail} ошибок`);
+  loadNews();
 }
 
 async function exportSelectedToSheets() {
