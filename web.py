@@ -131,6 +131,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/test_sheets": lambda: self._test_sheets(body),
             "/api/quick_tags": lambda: self._quick_tags(body),
             "/api/review": lambda: self._run_review(body),
+            "/api/review_batch": lambda: self._review_batch(body),
             "/api/approve": lambda: self._approve_news(body),
             "/api/reject": lambda: self._reject_news(body),
             "/api/users/add": lambda: self._add_user(body),
@@ -630,6 +631,82 @@ async function login() {
         except Exception as e:
             self._json({"status": "error", "message": str(e), "type": type(e).__name__})
 
+    def _review_batch(self, body):
+        """Проверяет новости по статусу (batch, без изменения статуса)."""
+        status = body.get("status", "new")
+        limit = int(body.get("limit", 50))
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            ph = "%s" if _is_postgres() else "?"
+            if status:
+                cur.execute(f"SELECT * FROM news WHERE status = {ph} ORDER BY parsed_at DESC LIMIT {ph}", (status, limit))
+            else:
+                cur.execute(f"SELECT * FROM news ORDER BY parsed_at DESC LIMIT {ph}", (limit,))
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                news_list = [dict(row) for row in cur.fetchall()]
+
+            if not news_list:
+                self._json({"status": "ok", "results": [], "groups": []})
+                return
+
+            from checks.pipeline import run_review_pipeline
+            # Прогоняем pipeline но НЕ меняем статусы
+            from checks.deduplication import tfidf_similarity, build_groups
+            from checks.quality import check_quality
+            from checks.relevance import check_relevance
+            from checks.freshness import check_freshness
+            from checks.viral_score import viral_score
+            from checks.tags import auto_tag
+            from checks.sentiment import analyze_sentiment
+            from checks.momentum import get_momentum
+
+            results = []
+            for news in news_list:
+                result = {
+                    "id": news["id"],
+                    "title": news.get("title", ""),
+                    "source": news.get("source", ""),
+                    "url": news.get("url", ""),
+                    "published_at": news.get("published_at", ""),
+                    "status": news.get("status", ""),
+                    "checks": {},
+                }
+                result["checks"]["quality"] = check_quality(news)
+                result["checks"]["relevance"] = check_relevance(news)
+                result["checks"]["freshness"] = check_freshness(news)
+                result["checks"]["viral"] = viral_score(news)
+                result["tags"] = auto_tag(news)
+                result["sentiment"] = analyze_sentiment(news)
+                result["momentum"] = get_momentum(news)
+
+                all_pass = all(c["pass"] for c in result["checks"].values())
+                total_score = sum(c["score"] for c in result["checks"].values()) // 4
+                momentum_bonus = result["momentum"]["score"] // 5
+                total_score = min(100, total_score + momentum_bonus)
+                result["overall_pass"] = all_pass
+                result["total_score"] = total_score
+                results.append(result)
+
+            # Dedup
+            titles = [r["title"] for r in results]
+            pairs = tfidf_similarity(titles)
+            groups = build_groups(results, pairs)
+            for group in groups:
+                for idx in group.get("duplicate_indices", []):
+                    if idx < len(results):
+                        results[idx]["overall_pass"] = False
+                        results[idx]["is_duplicate"] = True
+                for member in group["members"]:
+                    member["dedup_status"] = group["status"]
+
+            self._json({"status": "ok", "results": results, "groups": groups})
+        except Exception as e:
+            self._json({"status": "error", "message": str(e), "type": type(e).__name__})
+
     def _approve_news(self, body):
         """Одобряет новости для обогащения."""
         news_ids = body.get("news_ids", [])
@@ -958,36 +1035,55 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 
   <!-- REVIEW -->
   <div class="panel" id="panel-review">
-    <div id="review-empty" style="padding:30px;text-align:center;color:#8899a6">
-      Выберите новости на Дашборде и нажмите «Отправить на проверку»
+    <div class="dash-filters" style="margin-bottom:12px">
+      <span class="filter-label">Статус:</span>
+      <select id="rev-status" onchange="loadReviewTab()">
+        <option value="new" selected>Новые</option>
+        <option value="in_review">На проверке</option>
+        <option value="">Все</option>
+        <option value="approved">Одобрены</option>
+        <option value="duplicate">Дубликаты</option>
+        <option value="rejected">Отклонены</option>
+      </select>
+      <span class="filter-sep"></span>
+      <span class="filter-label">Кол-во:</span>
+      <select id="rev-limit" onchange="loadReviewTab()">
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+        <option value="200">200</option>
+      </select>
+      <span class="filter-sep"></span>
+      <button class="btn btn-sm btn-primary" onclick="loadReviewTab()">Проверить</button>
+      <span id="rev-loading" style="color:#8899a6;font-size:0.85em;margin-left:8px"></span>
     </div>
-    <div id="review-content" style="display:none">
-      <div class="btn-group">
-        <button class="btn btn-success" onclick="approveSelected()">Одобрить выбранные</button>
-        <button class="btn btn-danger" onclick="rejectSelected()">Отклонить выбранные</button>
-        <button class="btn btn-secondary" onclick="toggleApproveAllPassed()">Выбрать прошедшие</button>
-        <span id="review-count" style="color:#8899a6;font-size:0.9em;margin-left:10px"></span>
-      </div>
-      <div id="review-groups" style="margin-bottom:12px"></div>
-      <table>
-        <thead><tr>
-          <th><input type="checkbox" id="approve-all" onchange="toggleApproveAll(this)"></th>
-          <th>Заголовок</th>
-          <th>Источник</th>
-          <th>Дедуп</th>
-          <th>Качество</th>
-          <th>Релев.</th>
-          <th>Свежесть</th>
-          <th>Вирал.</th>
-          <th>Тональн.</th>
-          <th>Момент</th>
-          <th>Теги</th>
-          <th>Итог</th>
-          <th>Ок</th>
-          <th>Действия</th>
-        </tr></thead>
-        <tbody id="review-table"></tbody>
-      </table>
+    <div class="btn-group">
+      <button class="btn btn-success" onclick="approveSelected()">Одобрить выбранные</button>
+      <button class="btn btn-danger" onclick="rejectSelected()">Отклонить выбранные</button>
+      <button class="btn btn-secondary" onclick="toggleApproveAllPassed()">Выбрать прошедшие</button>
+      <span id="review-count" style="color:#8899a6;font-size:0.9em;margin-left:10px"></span>
+    </div>
+    <div id="review-groups" style="margin-bottom:12px"></div>
+    <table id="review-main-table">
+      <thead><tr>
+        <th><input type="checkbox" id="approve-all" onchange="toggleApproveAll(this)"></th>
+        <th class="sortable" data-sort="title" onclick="sortReview('title')">Заголовок <span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort="source" onclick="sortReview('source')">Источник <span class="sort-arrow">&#9650;</span></th>
+        <th>Дедуп</th>
+        <th class="sortable" data-sort="quality" onclick="sortReview('quality')">Качество <span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort="relevance" onclick="sortReview('relevance')">Релев. <span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort="freshness" onclick="sortReview('freshness')">Свежесть <span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort="viral" onclick="sortReview('viral')">Вирал. <span class="sort-arrow">&#9650;</span></th>
+        <th>Тональн.</th>
+        <th>Теги</th>
+        <th class="sortable" data-sort="total_score" onclick="sortReview('total_score')">Итог <span class="sort-arrow">&#9650;</span></th>
+        <th>Ок</th>
+        <th>Действия</th>
+      </tr></thead>
+      <tbody id="review-table"></tbody>
+    </table>
+    <div id="review-empty" class="empty-state" style="display:none">
+      <div class="empty-icon">&#128203;</div>
+      <div>Нажмите «Проверить» чтобы загрузить и оценить новости</div>
     </div>
   </div>
 
@@ -1529,6 +1625,8 @@ function toggleAll(el) { document.querySelectorAll('.news-check').forEach(c => c
 
 // Review
 let _reviewResults = [];
+let _revSortField = 'total_score';
+let _revSortDir = 'desc';
 
 function switchToTab(tabName) {
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
@@ -1537,6 +1635,19 @@ function switchToTab(tabName) {
   document.getElementById('panel-' + tabName).classList.add('active');
 }
 
+// Load review tab — batch check by status
+async function loadReviewTab() {
+  const status = document.getElementById('rev-status').value;
+  const limit = document.getElementById('rev-limit').value;
+  document.getElementById('rev-loading').textContent = 'Загрузка и проверка...';
+  const r = await api('/api/review_batch', {status, limit: parseInt(limit)});
+  document.getElementById('rev-loading').textContent = '';
+  if (r.status !== 'ok') { toast(r.message, true); return; }
+  _reviewResults = r.results || [];
+  renderReviewResults(r);
+}
+
+// Send selected from dashboard to review (with status change)
 async function sendToReview() {
   const ids = getSelectedIds();
   if (!ids.length) { toast('Сначала выберите новости', true); return; }
@@ -1544,38 +1655,101 @@ async function sendToReview() {
   const r = await api('/api/review', {news_ids: ids});
   if (r.status !== 'ok') { toast(r.message, true); return; }
   _reviewResults = r.results || [];
+  renderReviewResults(r);
+  switchToTab('review');
+  loadAll();
+}
 
-  // Show groups
-  const groupsHtml = (r.groups||[]).map(g => {
+function renderReviewResults(r) {
+  // Groups
+  const groupsHtml = (r.groups||[]).filter(g => g.members.length >= 2).map(g => {
     const icon = g.status === 'trending' ? '&#9889;' : g.status === 'popular' ? '&#128293;' : '&#128994;';
     const titles = g.members.map(m => esc(m.title)).join('<br>');
-    return `<div class="card" style="margin-bottom:8px;padding:10px"><b>${icon} ${g.status.toUpperCase()}</b> (${g.members.length} шт):<div style="font-size:0.85em;color:#8899a6;margin-top:4px">${titles}</div></div>`;
+    return `<div class="card" style="margin-bottom:6px;padding:8px"><b>${icon} ${g.status.toUpperCase()}</b> (${g.members.length} шт):<div style="font-size:0.85em;color:#8899a6;margin-top:3px">${titles}</div></div>`;
   }).join('');
   document.getElementById('review-groups').innerHTML = groupsHtml;
 
-  // Render results table with action buttons
-  document.getElementById('review-table').innerHTML = _reviewResults.map(r => {
+  // Badge
+  const badge = document.getElementById('review-badge');
+  badge.textContent = _reviewResults.length;
+  badge.style.display = 'inline';
+  document.getElementById('review-count').textContent = _reviewResults.length + ' новостей';
+
+  if (!_reviewResults.length) {
+    document.getElementById('review-table').innerHTML = '';
+    document.getElementById('review-empty').style.display = 'block';
+    return;
+  }
+  document.getElementById('review-empty').style.display = 'none';
+
+  // Sort and render
+  const sorted = sortReviewData(_reviewResults, _revSortField, _revSortDir);
+  renderReviewRows(sorted);
+  toast('Проверено: ' + _reviewResults.length + ' новостей');
+}
+
+function sortReview(field) {
+  if (_revSortField === field) {
+    _revSortDir = _revSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _revSortField = field;
+    _revSortDir = field === 'total_score' || field === 'quality' || field === 'relevance' || field === 'freshness' || field === 'viral' ? 'desc' : 'asc';
+  }
+  document.querySelectorAll('#review-main-table th.sortable').forEach(th => {
+    const arrow = th.querySelector('.sort-arrow');
+    if (th.dataset.sort === field) {
+      th.classList.add('sort-active');
+      arrow.innerHTML = _revSortDir === 'asc' ? '&#9650;' : '&#9660;';
+    } else {
+      th.classList.remove('sort-active');
+      arrow.innerHTML = '&#9650;';
+    }
+  });
+  const sorted = sortReviewData(_reviewResults, field, _revSortDir);
+  renderReviewRows(sorted);
+}
+
+function sortReviewData(results, field, dir) {
+  const arr = [...results];
+  const mult = dir === 'asc' ? 1 : -1;
+  arr.sort((a, b) => {
+    let va, vb;
+    if (field === 'title') { va = (a.title||'').toLowerCase(); vb = (b.title||'').toLowerCase(); }
+    else if (field === 'source') { va = a.source||''; vb = b.source||''; }
+    else if (field === 'total_score') { va = a.total_score||0; vb = b.total_score||0; }
+    else if (field === 'quality') { va = a.checks?.quality?.score||0; vb = b.checks?.quality?.score||0; }
+    else if (field === 'relevance') { va = a.checks?.relevance?.score||0; vb = b.checks?.relevance?.score||0; }
+    else if (field === 'freshness') { va = a.checks?.freshness?.score||0; vb = b.checks?.freshness?.score||0; }
+    else if (field === 'viral') { va = a.checks?.viral?.score||0; vb = b.checks?.viral?.score||0; }
+    else { va = ''; vb = ''; }
+    if (va < vb) return -1 * mult;
+    if (va > vb) return 1 * mult;
+    return 0;
+  });
+  return arr;
+}
+
+function renderReviewRows(results) {
+  document.getElementById('review-table').innerHTML = results.map(r => {
     const q = r.checks.quality, rel = r.checks.relevance, f = r.checks.freshness, v = r.checks.viral;
     const sent = r.sentiment || {};
-    const mom = r.momentum || {};
-    const tags = (r.tags||[]).map(t=>t.label).join(', ') || '-';
+    const tags = (r.tags||[]).map(t => `<span class="tag tag-${t.id}">${t.label}</span>`).join('') || '-';
     const sentColor = sent.label==='positive'?'#17bf63':sent.label==='negative'?'#e0245e':'#8899a6';
-    const momLevel = mom.level||'none';
     const passIcon = r.overall_pass ? '&#9989;' : '&#10060;';
     const dup = r.is_duplicate ? '&#128308; DUP' : (r.dedup_status||'unique');
+    const statusBadge = r.status ? `<span class="badge badge-${r.status}" style="margin-left:4px">${STATUS_LABELS[r.status]||r.status}</span>` : '';
     return `<tr id="review-row-${r.id}">
       <td><input type="checkbox" class="approve-check" data-id="${r.id}" ${r.overall_pass && !r.is_duplicate ? 'checked' : ''}></td>
-      <td><a href="${r.url}" target="_blank" title="${esc(r.title||'')}">${esc((r.title||'').slice(0,55))}</a></td>
+      <td><a href="${r.url}" target="_blank" title="${esc(r.title||'')}">${esc((r.title||'').slice(0,50))}</a>${statusBadge}</td>
       <td>${r.source}</td>
       <td>${dup}</td>
-      <td>${q.score} ${q.pass?'&#9989;':'&#10060;'}</td>
-      <td>${rel.score} ${rel.pass?'&#9989;':'&#10060;'}</td>
-      <td>${f.score} ${f.status||''}</td>
-      <td>${v.score} ${v.level||''}</td>
+      <td style="color:${q.pass?'#17bf63':'#e0245e'}">${q.score}</td>
+      <td style="color:${rel.pass?'#17bf63':'#e0245e'}">${rel.score}</td>
+      <td>${f.score} <span style="color:#8899a6;font-size:0.8em">${f.status||''}</span></td>
+      <td>${v.score} <span style="color:#8899a6;font-size:0.8em">${v.level||''}</span></td>
       <td style="color:${sentColor}">${sent.score||0} ${sent.label||''}</td>
-      <td>${mom.score||0} ${momLevel}</td>
-      <td style="max-width:100px;overflow:hidden;text-overflow:ellipsis" title="${esc(tags)}">${tags}</td>
-      <td><b>${r.total_score}</b></td>
+      <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis">${tags}</td>
+      <td><b style="color:${r.total_score>=60?'#17bf63':r.total_score>=30?'#ffad1f':'#e0245e'}">${r.total_score}</b></td>
       <td>${passIcon}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-sm btn-success" onclick="approveOne('${r.id}')">&#10004;</button>
@@ -1583,18 +1757,6 @@ async function sendToReview() {
       </td>
     </tr>`;
   }).join('');
-
-  // Update badge and switch to review tab
-  const badge = document.getElementById('review-badge');
-  badge.textContent = _reviewResults.length;
-  badge.style.display = 'inline';
-  document.getElementById('review-empty').style.display = 'none';
-  document.getElementById('review-content').style.display = 'block';
-  document.getElementById('review-count').textContent = _reviewResults.length + ' новостей';
-
-  switchToTab('review');
-  toast('Проверено: ' + _reviewResults.length + ' новостей');
-  loadAll();
 }
 
 function toggleApproveAll(el) { document.querySelectorAll('.approve-check').forEach(c => c.checked = el.checked); }
