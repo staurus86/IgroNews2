@@ -2799,6 +2799,10 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       .editor-news-item.selected { background:rgba(29,161,242,0.1); border-left:3px solid #1da1f2; }
       .editor-news-item.merge { background:rgba(255,173,31,0.1); border-left:3px solid #ffad1f; }
       .editor-news-item.selected.merge { border-left:3px solid #1da1f2; box-shadow:inset -3px 0 0 #ffad1f; }
+      .editor-news-item.viral-pick { background:rgba(100,200,255,0.08); border-left:3px solid #64c8ff; }
+      .editor-news-item.viral-pick:hover { background:rgba(100,200,255,0.15); }
+      .editor-news-item.viral-pick.selected { background:rgba(100,200,255,0.18); border-left:3px solid #64c8ff; box-shadow:inset -3px 0 0 #1da1f2; }
+      .viral-pick-badge { display:inline-block;background:#64c8ff22;color:#64c8ff;font-size:0.7em;padding:1px 6px;border-radius:4px;font-weight:600;margin-left:4px; }
       .style-option { display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:8px; cursor:pointer; border:2px solid #22303c; background:#192734; color:#e1e8ed; transition:all .15s; font-family:inherit; }
       .style-option:hover { border-color:#38444d; background:#22303c; }
       .style-option.active { border-color:#1da1f2; background:rgba(29,161,242,0.12); }
@@ -2835,6 +2839,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
             <option value="new">Новые</option>
             <option value="approved">Одобренные</option>
             <option value="rejected">Отклонённые</option>
+            <option value="_viral" style="color:#64c8ff">&#9733; Viral picks</option>
           </select>
         </div>
         <div id="editor-news-list" style="flex:1;overflow-y:auto;font-size:0.85em;margin:0 -15px;padding:0 15px"></div>
@@ -3227,8 +3232,14 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     </div>
 
     <!-- Table -->
-    <div style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+    <div style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
       <span id="viral-count" style="color:#8899a6;font-size:0.85em"></span>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm" style="background:#64c8ff22;color:#64c8ff;border:1px solid #64c8ff44" onclick="sendViralToEditor('high')">HIGH &#8594; Редактор</button>
+        <button class="btn btn-sm" style="background:#64c8ff22;color:#64c8ff;border:1px solid #64c8ff44" onclick="sendViralToEditor('medium')">MED &#8594; Редактор</button>
+        <button class="btn btn-sm" style="background:#64c8ff22;color:#64c8ff;border:1px solid #64c8ff44" onclick="sendViralToEditor('all')">Все &#8594; Редактор</button>
+        <span id="viral-picks-count" style="color:#64c8ff;font-size:0.85em;align-self:center;display:none"></span>
+      </div>
     </div>
     <table>
       <thead><tr>
@@ -3241,6 +3252,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <th>Теги</th>
         <th class="sortable" data-sort="parsed_at" onclick="sortViralTab('parsed_at')">Дата <span class="sort-arrow">&#9650;</span></th>
         <th>Статус</th>
+        <th style="width:40px"></th>
       </tr></thead>
       <tbody id="viral-table"></tbody>
     </table>
@@ -4740,7 +4752,11 @@ function filterEditorNews() {
   let filtered = _allNews;
   if (search) filtered = filtered.filter(n => (n.title||'').toLowerCase().includes(search));
   if (source) filtered = filtered.filter(n => n.source === source);
-  if (status) filtered = filtered.filter(n => n.status === status);
+  if (status === '_viral') {
+    filtered = filtered.filter(n => _viralPicks.has(n.id));
+  } else if (status) {
+    filtered = filtered.filter(n => n.status === status);
+  }
   const shown = filtered.slice(0, 60);
   renderEditorList(shown);
   const countEl = document.getElementById('editor-list-count');
@@ -4749,16 +4765,23 @@ function filterEditorNews() {
 
 function renderEditorList(news) {
   const el = document.getElementById('editor-news-list');
-  if (!news.length) { el.innerHTML = '<div style="color:#8899a6;padding:40px 20px;text-align:center">Нет новостей</div>'; return; }
-  el.innerHTML = news.map(n => {
+  // Sort viral picks to top
+  const sorted = [...news].sort((a, b) => {
+    const ap = _viralPicks.has(a.id) ? 0 : 1;
+    const bp = _viralPicks.has(b.id) ? 0 : 1;
+    return ap - bp;
+  });
+  if (!sorted.length) { el.innerHTML = '<div style="color:#8899a6;padding:40px 20px;text-align:center">Нет новостей</div>'; return; }
+  el.innerHTML = sorted.map(n => {
     const isSelected = _editorNewsId === n.id;
     const isMerge = _editorMergeIds.has(n.id);
-    const cls = 'editor-news-item' + (isSelected ? ' selected' : '') + (isMerge ? ' merge' : '');
+    const isViral = _viralPicks.has(n.id);
+    const cls = 'editor-news-item' + (isSelected ? ' selected' : '') + (isMerge ? ' merge' : '') + (isViral ? ' viral-pick' : '');
     const dateStr = fmtDate(n.published_at || n.parsed_at);
     return `<div class="${cls}" onclick="selectEditorNews('${n.id}')">
       <input type="checkbox" ${isMerge?'checked':''} onclick="event.stopPropagation();toggleMerge('${n.id}',this.checked)" style="margin-top:2px;cursor:pointer;width:16px;height:16px;min-width:16px;flex-shrink:0">
       <div style="flex:1;min-width:0">
-        <div style="font-size:0.88em;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden" title="${esc(n.title||'')}">${esc(n.title||'')}</div>
+        <div style="font-size:0.88em;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden" title="${esc(n.title||'')}">${esc(n.title||'')}${isViral ? '<span class="viral-pick-badge">VIRAL</span>' : ''}</div>
         <div style="font-size:0.72em;color:#8899a6;margin-top:3px;display:flex;align-items:center;gap:6px">
           <span style="font-weight:500;color:#657786">${n.source}</span>
           <span>${dateStr}</span>
@@ -5692,6 +5715,7 @@ function debounceDashSearch() {
 let _viralData = [];
 let _viralSortField = 'viral_score';
 let _viralSortDir = 'desc';
+let _viralPicks = new Set(); // IDs sent to editor from viral tab
 
 async function loadViral() {
   const level = document.getElementById('viral-level')?.value || '';
@@ -5832,18 +5856,59 @@ function renderViralTable() {
       `<span class="tag tag-${t.id}">${t.label}</span>`
     ).join('');
     const statusLabel = STATUS_LABELS[n.status] || n.status;
-    return `<tr>
+    const isPick = _viralPicks.has(n.id);
+    const rowBg = isPick ? 'background:rgba(100,200,255,0.06)' : '';
+    const pickBtn = isPick
+      ? `<button class="btn btn-sm" style="background:#64c8ff33;color:#64c8ff;border:none;padding:3px 6px;font-size:0.8em" disabled title="Уже в редакторе">&#10003;</button>`
+      : `<button class="btn btn-sm" style="background:#64c8ff22;color:#64c8ff;border:1px solid #64c8ff44;padding:3px 6px;font-size:0.8em" onclick="sendOneToEditor('${n.id}')" title="В редактор">&#9998;</button>`;
+    return `<tr style="${rowBg}">
       <td style="text-align:center"><span style="font-weight:700;font-size:1.1em;color:${levelColors[n.viral_level]||'#8899a6'}">${n.viral_score}</span></td>
       <td><span style="padding:2px 8px;border-radius:4px;font-size:0.8em;font-weight:600;background:${levelColors[n.viral_level]||'#38444d'}22;color:${levelColors[n.viral_level]||'#8899a6'}">${levelLabels[n.viral_level]||'-'}</span></td>
       <td style="text-align:center"><span style="color:${sentColors[n.sentiment]||'#8899a6'};font-size:1.1em" title="${n.sentiment} (${n.sentiment_score})">${sentIcons[n.sentiment]||''}</span></td>
       <td style="font-size:0.85em">${esc(n.source)}</td>
-      <td class="td-title"><a href="${n.url}" target="_blank">${esc(n.title||'')}</a></td>
+      <td class="td-title"><a href="${n.url}" target="_blank">${esc(n.title||'')}</a>${isPick ? '<span class="viral-pick-badge">VIRAL</span>' : ''}</td>
       <td style="max-width:250px">${triggers || '<span style="color:#38444d">-</span>'}</td>
       <td>${tags || '-'}</td>
       <td style="font-size:0.82em;white-space:nowrap">${fmtDate(n.parsed_at)}</td>
       <td><span class="badge badge-${n.status}">${statusLabel}</span></td>
+      <td>${pickBtn}</td>
     </tr>`;
   }).join('');
+}
+
+function sendOneToEditor(id) {
+  _viralPicks.add(id);
+  updateViralPicksCount();
+  renderViralTable();
+  // Switch to editor and select this news
+  switchToTab('editor');
+  selectEditorNews(id);
+  toast('Отправлено в редактор');
+}
+
+function sendViralToEditor(level) {
+  let items;
+  if (level === 'all') items = _viralData;
+  else if (level === 'high') items = _viralData.filter(n => n.viral_level === 'high');
+  else if (level === 'medium') items = _viralData.filter(n => n.viral_level === 'medium' || n.viral_level === 'high');
+  else items = _viralData.filter(n => n.viral_level === level);
+
+  if (!items.length) { toast('Нет подходящих новостей', true); return; }
+  items.forEach(n => _viralPicks.add(n.id));
+  updateViralPicksCount();
+  renderViralTable();
+  toast('Отправлено ' + items.length + ' новостей в редактор');
+}
+
+function updateViralPicksCount() {
+  const el = document.getElementById('viral-picks-count');
+  if (!el) return;
+  if (_viralPicks.size > 0) {
+    el.textContent = _viralPicks.size + ' в редакторе';
+    el.style.display = 'inline';
+  } else {
+    el.style.display = 'none';
+  }
 }
 
 function sortViralTab(field) {
