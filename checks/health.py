@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 
 def get_sources_health() -> list[dict]:
     """Возвращает статус здоровья каждого источника за последние 24ч."""
+    import config
+
     conn = get_connection()
     cur = conn.cursor()
 
@@ -34,13 +36,30 @@ def get_sources_health() -> list[dict]:
     else:
         rows = [dict(row) for row in cur.fetchall()]
 
-    results = []
+    # Build lookup by source name
+    db_sources = {row["source"]: row for row in rows}
+
+    # Include ALL configured sources
+    all_source_names = [s["name"] for s in config.SOURCES]
+    # Also include sources from DB that aren't in config
     for row in rows:
-        last_parsed = row["last_parsed"] or ""
-        count = row["count_24h"]
+        if row["source"] not in all_source_names:
+            all_source_names.append(row["source"])
+
+    results = []
+    for name in all_source_names:
+        row = db_sources.get(name)
+        if row:
+            last_parsed = row["last_parsed"] or ""
+            count = row["count_24h"]
+        else:
+            last_parsed = ""
+            count = 0
 
         # Determine health status
-        if last_parsed > cutoff_3h:
+        if count == 0:
+            status = "dead"
+        elif last_parsed > cutoff_3h:
             if count >= 10:
                 status = "healthy"
             else:
@@ -62,11 +81,14 @@ def get_sources_health() -> list[dict]:
                 pass
 
         results.append({
-            "source": row["source"],
+            "source": name,
             "count_24h": count,
             "last_parsed": last_parsed,
             "minutes_ago": minutes_ago,
             "status": status,
         })
+
+    # Sort: dead first, then by count desc
+    results.sort(key=lambda x: (0 if x["status"] == "dead" else 1, -x["count_24h"]))
 
     return results
