@@ -7,6 +7,9 @@ from checks.viral_score import viral_score
 from checks.tags import auto_tag
 from checks.sentiment import analyze_sentiment
 from checks.momentum import get_momentum
+from checks.ner import extract_entities
+from checks.headline_score import headline_score
+from checks.source_weight import get_source_weight
 from storage.database import get_connection, _is_postgres, update_news_status
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,9 @@ def run_review_pipeline(news_list: list[dict]) -> dict:
         result["tags"] = auto_tag(news)
         result["sentiment"] = analyze_sentiment(news)
         result["momentum"] = get_momentum(news)
+        result["entities"] = extract_entities(news)
+        result["headline"] = headline_score(news)
+        result["source_weight"] = get_source_weight(news.get("source", ""))
 
         all_pass = all(c["pass"] for c in result["checks"].values())
         total_score = sum(c["score"] for c in result["checks"].values()) // 4
@@ -44,8 +50,17 @@ def run_review_pipeline(news_list: list[dict]) -> dict:
         momentum_bonus = result["momentum"]["score"] // 5
         total_score = min(100, total_score + momentum_bonus)
 
+        # Source weight multiplier
+        sw = result["source_weight"]
+        total_score = min(100, int(total_score * sw))
+
+        # Headline bonus
+        headline_bonus = max(0, (result["headline"]["score"] - 50)) // 10
+        total_score = min(100, total_score + headline_bonus)
+
         result["overall_pass"] = all_pass
         result["total_score"] = total_score
+        result["status"] = news.get("status", "new")
 
         results.append(result)
 

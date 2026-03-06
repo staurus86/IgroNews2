@@ -103,6 +103,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/db_info": lambda: self._json(self._get_db_info()),
             "/api/articles": lambda: self._json(self._get_articles()),
             "/api/queue": lambda: self._json(self._get_queue()),
+            "/api/analytics": lambda: self._json(self._get_analytics()),
+            "/api/prompt_versions": lambda: self._json(self._get_prompt_versions()),
         }
 
         # DOCX download (GET with query param)
@@ -181,6 +183,10 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/articles/rewrite": lambda: self._rewrite_article(body),
             "/api/articles/improve": lambda: self._improve_article(body),
             "/api/articles/detail": lambda: self._article_detail(body),
+            "/api/prompt_versions/save": lambda: self._save_prompt_version(body),
+            "/api/prompt_versions/activate": lambda: self._activate_prompt_version(body),
+            "/api/generate_digest": lambda: self._generate_digest(body),
+            "/api/event_chain": lambda: self._get_event_chain(body),
             "/api/queue/cancel": lambda: self._cancel_queue_task(body),
             "/api/queue/cancel_all": lambda: self._cancel_all_queue(body),
             "/api/queue/clear_done": lambda: self._clear_done_queue(body),
@@ -766,7 +772,13 @@ async function login() {
             return
         try:
             from checks.pipeline import approve_for_enrichment
+            from checks.feedback import record_decision
             approve_for_enrichment(news_ids)
+            for nid in news_ids:
+                try:
+                    record_decision(nid, "approved")
+                except Exception:
+                    pass
             self._json({"status": "ok", "approved": len(news_ids)})
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
@@ -778,7 +790,12 @@ async function login() {
             self._json({"status": "error", "message": "news_id required"})
             return
         try:
+            from checks.feedback import record_decision
             update_news_status(news_id, "rejected")
+            try:
+                record_decision(news_id, "rejected")
+            except Exception:
+                pass
             self._json({"status": "ok"})
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
@@ -1189,6 +1206,251 @@ async function login() {
         ok_count = sum(1 for r in results if r.get("ok"))
         self._json({"status": "ok", "total": len(news_ids), "success": ok_count,
                      "failed": len(news_ids) - ok_count, "results": results})
+
+    # ---- Analytics methods ----
+
+    def _get_analytics(self):
+        """Возвращает аналитику для дашборда."""
+        import json
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+
+        # 1. Top sources (7 days)
+        if _is_postgres():
+            cur.execute("""SELECT source, COUNT(*) as cnt FROM news
+                WHERE parsed_at > (NOW() - INTERVAL '7 days')::text GROUP BY source ORDER BY cnt DESC LIMIT 15""")
+        else:
+            cur.execute("SELECT source, COUNT(*) as cnt FROM news WHERE parsed_at > datetime('now', '-7 days') GROUP BY source ORDER BY cnt DESC LIMIT 15")
+        top_sources = []
+        for row in cur.fetchall():
+            if _is_postgres():
+                top_sources.append({"source": row[0], "count": row[1]})
+            else:
+                top_sources.append({"source": row["source"], "count": row["cnt"]})
+
+        # 2. Status distribution
+        cur.execute("SELECT status, COUNT(*) as cnt FROM news GROUP BY status")
+        statuses = {}
+        for row in cur.fetchall():
+            if _is_postgres():
+                statuses[row[0]] = row[1]
+            else:
+                statuses[row["status"]] = row["cnt"]
+
+        # 3. Approval rate
+        total_decisions = statuses.get("approved", 0) + statuses.get("processed", 0) + statuses.get("rejected", 0) + statuses.get("duplicate", 0)
+        approved_total = statuses.get("approved", 0) + statuses.get("processed", 0)
+        approval_rate = round(approved_total / total_decisions * 100, 1) if total_decisions > 0 else 0
+
+        # 4. Top viral triggers (from review results in last 7 days of news_analysis)
+        if _is_postgres():
+            cur.execute("SELECT bigrams FROM news_analysis WHERE processed_at > (NOW() - INTERVAL '7 days')::text LIMIT 500")
+        else:
+            cur.execute("SELECT bigrams FROM news_analysis WHERE processed_at > datetime('now', '-7 days') LIMIT 500")
+        all_bigrams = {}
+        for row in cur.fetchall():
+            raw = row[0] if _is_postgres() else row["bigrams"]
+            try:
+                for bg in json.loads(raw or "[]"):
+                    term = bg[0] if isinstance(bg, list) else bg
+                    all_bigrams[term] = all_bigrams.get(term, 0) + 1
+            except Exception:
+                pass
+        top_bigrams = sorted(all_bigrams.items(), key=lambda x: x[1], reverse=True)[:20]
+
+        # 5. News per day (last 14 days)
+        if _is_postgres():
+            cur.execute("""SELECT DATE(parsed_at::timestamp) as d, COUNT(*) as cnt FROM news
+                WHERE parsed_at > (NOW() - INTERVAL '14 days')::text GROUP BY d ORDER BY d""")
+        else:
+            cur.execute("SELECT DATE(parsed_at) as d, COUNT(*) as cnt FROM news WHERE parsed_at > datetime('now', '-14 days') GROUP BY d ORDER BY d")
+        daily = []
+        for row in cur.fetchall():
+            if _is_postgres():
+                daily.append({"date": str(row[0]), "count": row[1]})
+            else:
+                daily.append({"date": row["d"], "count": row["cnt"]})
+
+        # 6. Peak hours
+        if _is_postgres():
+            cur.execute("""SELECT EXTRACT(HOUR FROM parsed_at::timestamp)::int as h, COUNT(*) as cnt FROM news
+                WHERE parsed_at > (NOW() - INTERVAL '7 days')::text GROUP BY h ORDER BY cnt DESC""")
+        else:
+            cur.execute("SELECT CAST(strftime('%H', parsed_at) AS INTEGER) as h, COUNT(*) as cnt FROM news WHERE parsed_at > datetime('now', '-7 days') GROUP BY h ORDER BY cnt DESC")
+        peak_hours = []
+        for row in cur.fetchall():
+            if _is_postgres():
+                peak_hours.append({"hour": row[0], "count": row[1]})
+            else:
+                peak_hours.append({"hour": row["h"], "count": row["cnt"]})
+
+        # 7. Source weights
+        try:
+            from checks.source_weight import get_source_stats
+            source_stats = get_source_stats()
+        except Exception:
+            source_stats = []
+
+        # 8. Feedback summary
+        try:
+            from checks.feedback import get_feedback_summary
+            feedback = get_feedback_summary()
+        except Exception:
+            feedback = {"sources": [], "tags": []}
+
+        # 9. Articles stats
+        cur.execute("SELECT status, COUNT(*) as cnt FROM articles GROUP BY status")
+        art_stats = {}
+        for row in cur.fetchall():
+            if _is_postgres():
+                art_stats[row[0]] = row[1]
+            else:
+                art_stats[row["status"]] = row["cnt"]
+
+        return {
+            "status": "ok",
+            "top_sources": top_sources,
+            "statuses": statuses,
+            "approval_rate": approval_rate,
+            "top_bigrams": top_bigrams,
+            "daily": daily,
+            "peak_hours": peak_hours[:5],
+            "source_stats": source_stats,
+            "feedback": feedback,
+            "article_stats": art_stats,
+            "total_news": sum(statuses.values()),
+            "total_articles": sum(art_stats.values()),
+        }
+
+    def _get_prompt_versions(self):
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM prompt_versions ORDER BY prompt_name, version DESC")
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            rows = [dict(row) for row in cur.fetchall()]
+        return {"status": "ok", "versions": rows}
+
+    def _save_prompt_version(self, body):
+        import uuid
+        from datetime import datetime, timezone
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        name = body.get("prompt_name", "")
+        content = body.get("content", "")
+        notes = body.get("notes", "")
+        if not name or not content:
+            self._json({"status": "error", "message": "name and content required"})
+            return
+        # Get next version
+        cur.execute(f"SELECT MAX(version) FROM prompt_versions WHERE prompt_name = {ph}", (name,))
+        row = cur.fetchone()
+        max_v = (row[0] if row and row[0] else 0) if _is_postgres() else (row["MAX(version)"] if row else 0)
+        if max_v is None:
+            max_v = 0
+        version = max_v + 1
+        vid = str(uuid.uuid4())[:12]
+        now = datetime.now(timezone.utc).isoformat()
+        cur.execute(f"""INSERT INTO prompt_versions (id, prompt_name, version, content, is_active, created_at, notes)
+            VALUES ({','.join([ph]*7)})""", (vid, name, version, content, 0, now, notes))
+        if not _is_postgres():
+            conn.commit()
+        self._json({"status": "ok", "id": vid, "version": version})
+
+    def _activate_prompt_version(self, body):
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        vid = body.get("id", "")
+        if not vid:
+            self._json({"status": "error", "message": "id required"})
+            return
+        # Get prompt name
+        cur.execute(f"SELECT prompt_name FROM prompt_versions WHERE id = {ph}", (vid,))
+        row = cur.fetchone()
+        if not row:
+            self._json({"status": "error", "message": "not found"})
+            return
+        name = row[0] if _is_postgres() else row["prompt_name"]
+        # Deactivate all for this name
+        cur.execute(f"UPDATE prompt_versions SET is_active = 0 WHERE prompt_name = {ph}", (name,))
+        # Activate this one
+        cur.execute(f"UPDATE prompt_versions SET is_active = 1 WHERE id = {ph}", (vid,))
+        if not _is_postgres():
+            conn.commit()
+        self._json({"status": "ok"})
+
+    def _generate_digest(self, body):
+        """Генерирует дайджест за указанный период."""
+        period = body.get("period", "today")  # today, week
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        if period == "week":
+            interval = "7 days"
+        else:
+            interval = "1 day"
+        if _is_postgres():
+            cur.execute(f"SELECT id, title, source, url FROM news WHERE status IN ('approved', 'processed') AND parsed_at > (NOW() - INTERVAL '{interval}')::text ORDER BY parsed_at DESC LIMIT 30")
+            columns = [desc[0] for desc in cur.description]
+            news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            cur.execute(f"SELECT id, title, source, url FROM news WHERE status IN ('approved', 'processed') AND parsed_at > datetime('now', '-{interval}') ORDER BY parsed_at DESC LIMIT 30")
+            news_list = [dict(row) for row in cur.fetchall()]
+
+        if not news_list:
+            self._json({"status": "ok", "digest": "Нет одобренных новостей за выбранный период."})
+            return
+
+        from apis.llm import _call_llm
+        news_text = "\n".join(f"- [{n['source']}] {n['title']}" for n in news_list)
+        prompt = f"""Ты — редактор игрового медиа. Составь краткий дайджест «Главное за {'неделю' if period == 'week' else 'день'}» из этих новостей.
+
+Новости:
+{news_text}
+
+Формат ответа JSON:
+{{
+  "title": "Заголовок дайджеста",
+  "summary": "3-5 предложений — самое важное",
+  "top_news": ["Главная новость 1", "Главная новость 2", "Главная новость 3"],
+  "trends": ["Тренд 1", "Тренд 2"]
+}}"""
+        result = _call_llm(prompt)
+        if result:
+            self._json({"status": "ok", "digest": result, "news_count": len(news_list)})
+        else:
+            self._json({"status": "error", "message": "LLM failed"})
+
+    def _get_event_chain(self, body):
+        news_id = body.get("news_id", "")
+        if not news_id:
+            self._json({"status": "error", "message": "news_id required"})
+            return
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            row = cur.fetchone()
+            if not row:
+                self._json({"status": "error", "message": "not found"})
+                return
+            news = dict(zip(columns, row))
+        else:
+            row = cur.fetchone()
+            if not row:
+                self._json({"status": "error", "message": "not found"})
+                return
+            news = dict(row)
+        from checks.temporal_clusters import get_event_chain
+        chain = get_event_chain(news)
+        self._json({"status": "ok", **chain})
 
     # ---- Queue methods ----
 
@@ -1967,6 +2229,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div class="tab" data-tab="editor">Редактор</div>
     <div class="tab" data-tab="articles">Статьи <span id="articles-badge" class="badge badge-new" style="display:none">0</span></div>
     <div class="tab" data-tab="queue">Очередь <span id="queue-badge" class="badge badge-new" style="display:none">0</span></div>
+    <div class="tab" data-tab="analytics">Аналитика</div>
     <div class="tab" data-tab="health">Здоровье</div>
     <div class="tab" data-tab="settings">Настройки</div>
     <div class="tab" data-tab="users">Пользователи</div>
@@ -2124,6 +2387,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <th class="sortable" data-sort="viral" onclick="sortReview('viral')">Вирал. <span class="sort-arrow">&#9650;</span></th>
         <th>Тональн.</th>
         <th>Теги</th>
+        <th>NER</th>
+        <th class="sortable" data-sort="headline" onclick="sortReview('headline')">Заг. <span class="sort-arrow">&#9650;</span></th>
+        <th>Момент.</th>
         <th class="sortable" data-sort="total_score" onclick="sortReview('total_score')">Итог <span class="sort-arrow">&#9650;</span></th>
         <th>Ок</th>
         <th>Действия</th>
@@ -2486,6 +2752,70 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div style="margin-top:8px;display:flex;gap:8px">
       <span id="queue-selected-count" style="color:#8899a6;font-size:0.85em;line-height:28px"></span>
       <button class="btn btn-sm" style="background:#e0245e;color:#fff" onclick="cancelSelectedQueue()">Отменить выбранные</button>
+    </div>
+  </div>
+
+  <!-- ANALYTICS -->
+  <div class="panel" id="panel-analytics">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h2>Аналитика</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-sm btn-secondary" onclick="loadAnalytics()">Обновить</button>
+        <button class="btn btn-sm btn-primary" onclick="generateDigest('today')">$ Дайджест за день</button>
+        <button class="btn btn-sm btn-primary" onclick="generateDigest('week')">$ Дайджест за неделю</button>
+      </div>
+    </div>
+
+    <!-- Summary cards -->
+    <div class="grid-2" style="gap:12px;margin-bottom:16px" id="analytics-summary"></div>
+
+    <!-- Charts row -->
+    <div class="grid-2" style="gap:12px;margin-bottom:16px">
+      <div class="card">
+        <h3 style="font-size:0.95em;margin-bottom:10px">Топ источников (7 дней)</h3>
+        <div id="analytics-top-sources"></div>
+      </div>
+      <div class="card">
+        <h3 style="font-size:0.95em;margin-bottom:10px">Новости по дням (14 дней)</h3>
+        <div id="analytics-daily" style="display:flex;align-items:flex-end;gap:3px;height:120px"></div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="gap:12px;margin-bottom:16px">
+      <div class="card">
+        <h3 style="font-size:0.95em;margin-bottom:10px">Пиковые часы</h3>
+        <div id="analytics-peak-hours"></div>
+      </div>
+      <div class="card">
+        <h3 style="font-size:0.95em;margin-bottom:10px">Топ ключевые слова</h3>
+        <div id="analytics-bigrams" style="display:flex;flex-wrap:wrap;gap:4px"></div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="gap:12px;margin-bottom:16px">
+      <div class="card">
+        <h3 style="font-size:0.95em;margin-bottom:10px">Веса источников (Feedback)</h3>
+        <div id="analytics-source-weights"></div>
+      </div>
+      <div class="card">
+        <h3 style="font-size:0.95em;margin-bottom:10px">Версии промптов</h3>
+        <div id="analytics-prompts"></div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <select id="prompt-name-select" style="padding:4px 8px;background:#192734;border:1px solid #38444d;border-radius:6px;color:#e1e8ed">
+            <option value="trend_forecast">trend_forecast</option>
+            <option value="merge_analysis">merge_analysis</option>
+            <option value="keyso_queries">keyso_queries</option>
+            <option value="rewrite">rewrite</option>
+          </select>
+          <button class="btn btn-sm btn-success" onclick="saveCurrentPromptVersion()">Сохранить текущую версию</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Digest result -->
+    <div class="card" id="digest-result" style="display:none;margin-bottom:16px">
+      <h3 style="font-size:0.95em;margin-bottom:10px">Дайджест</h3>
+      <div id="digest-content"></div>
     </div>
   </div>
 
@@ -3160,6 +3490,7 @@ function sortReviewData(results, field, dir) {
     else if (field === 'relevance') { va = a.checks?.relevance?.score||0; vb = b.checks?.relevance?.score||0; }
     else if (field === 'freshness') { va = a.checks?.freshness?.score||0; vb = b.checks?.freshness?.score||0; }
     else if (field === 'viral') { va = a.checks?.viral?.score||0; vb = b.checks?.viral?.score||0; }
+    else if (field === 'headline') { va = a.headline?.score||0; vb = b.headline?.score||0; }
     else { va = ''; vb = ''; }
     if (va < vb) return -1 * mult;
     if (va > vb) return 1 * mult;
@@ -3188,7 +3519,10 @@ function renderReviewRows(results) {
       <td>${v.score} <span style="color:#8899a6;font-size:0.8em">${v.level||''}</span>${(v.triggers||[]).length?'<div style="margin-top:2px;display:flex;flex-wrap:wrap;gap:2px">'+v.triggers.map(t=>{const c=t.weight>=40?'#e0245e':t.weight>=20?'#ffad1f':'#1da1f2';return `<span style="font-size:0.7em;padding:1px 5px;background:${c}18;border-radius:8px;color:${c}" title="+${t.weight}">${t.label}</span>`;}).join('')+'</div>':''}</td>
       <td style="color:${sentColor}">${sent.score||0} ${sent.label||''}</td>
       <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis">${tags}</td>
-      <td><b style="color:${r.total_score>=60?'#17bf63':r.total_score>=30?'#ffad1f':'#e0245e'}">${r.total_score}</b></td>
+      <td style="font-size:0.78em;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${((r.entities||{}).games||[]).concat((r.entities||{}).studios||[]).join(', ')}">${((r.entities||{}).games||[]).slice(0,2).concat((r.entities||{}).studios||[]).slice(0,1).join(', ')||'-'}</td>
+      <td style="color:${(r.headline||{}).score>=70?'#17bf63':(r.headline||{}).score>=50?'#ffad1f':'#e0245e'}">${(r.headline||{}).score||'-'}</td>
+      <td style="font-size:0.8em">${(r.momentum||{}).level||'-'} <span style="color:#8899a6">${(r.momentum||{}).sources_24h||0}src</span></td>
+      <td><b style="color:${r.total_score>=60?'#17bf63':r.total_score>=30?'#ffad1f':'#e0245e'}">${r.total_score}</b><span style="font-size:0.7em;color:#8899a6;margin-left:2px">x${r.source_weight||'1'}</span></td>
       <td>${passIcon}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-sm btn-success" onclick="approveOne('${r.id}')">&#10004;</button>
@@ -4352,6 +4686,136 @@ async function saveRewriteAsArticle() {
   } else toast(r.message, true);
 }
 
+// ---- Analytics ----
+async function loadAnalytics() {
+  const r = await api('/api/analytics');
+  if (r.status !== 'ok') return;
+
+  // Summary cards
+  document.getElementById('analytics-summary').innerHTML = `
+    <div class="card" style="text-align:center">
+      <div style="font-size:2em;font-weight:700;color:#1da1f2">${r.total_news||0}</div>
+      <div style="font-size:0.82em;color:#8899a6">Всего новостей</div>
+      <div style="font-size:0.82em;color:#17bf63;margin-top:4px">Конверсия: ${r.approval_rate||0}%</div>
+    </div>
+    <div class="card" style="text-align:center">
+      <div style="font-size:2em;font-weight:700;color:#17bf63">${r.total_articles||0}</div>
+      <div style="font-size:0.82em;color:#8899a6">Статей</div>
+      <div style="font-size:0.82em;color:#8899a6;margin-top:4px">${Object.entries(r.article_stats||{}).map(([k,v])=>k+':'+v).join(' | ')}</div>
+    </div>
+  `;
+
+  // Top sources
+  const maxSrc = Math.max(...(r.top_sources||[]).map(s=>s.count), 1);
+  document.getElementById('analytics-top-sources').innerHTML = (r.top_sources||[]).map(s =>
+    `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <span style="width:100px;font-size:0.82em;text-align:right">${s.source}</span>
+      <div style="flex:1;background:#22303c;border-radius:4px;height:18px;overflow:hidden">
+        <div style="width:${s.count/maxSrc*100}%;background:#1da1f2;height:100%;border-radius:4px;transition:width .3s"></div>
+      </div>
+      <span style="font-size:0.82em;color:#8899a6;width:40px">${s.count}</span>
+    </div>`
+  ).join('');
+
+  // Daily chart
+  const maxD = Math.max(...(r.daily||[]).map(d=>d.count), 1);
+  document.getElementById('analytics-daily').innerHTML = (r.daily||[]).map(d => {
+    const h = Math.max(4, d.count/maxD*110);
+    const day = d.date ? d.date.slice(5) : '';
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px">
+      <span style="font-size:0.7em;color:#8899a6">${d.count}</span>
+      <div style="width:100%;height:${h}px;background:#1da1f2;border-radius:3px 3px 0 0"></div>
+      <span style="font-size:0.65em;color:#657786">${day}</span>
+    </div>`;
+  }).join('');
+
+  // Peak hours
+  document.getElementById('analytics-peak-hours').innerHTML = (r.peak_hours||[]).map((h,i) =>
+    `<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+      <span style="font-size:0.85em;font-weight:${i===0?'700':'400'};color:${i===0?'#ffad1f':'#e1e8ed'}">${h.hour}:00</span>
+      <span style="font-size:0.82em;color:#8899a6">${h.count} новостей</span>
+    </div>`
+  ).join('');
+
+  // Bigrams
+  document.getElementById('analytics-bigrams').innerHTML = (r.top_bigrams||[]).map(([term, cnt]) =>
+    `<span style="padding:3px 8px;background:#1da1f218;border:1px solid #1da1f2;border-radius:12px;font-size:0.78em;color:#1da1f2">${term} <span style="color:#8899a6">${cnt}</span></span>`
+  ).join('');
+
+  // Source weights
+  document.getElementById('analytics-source-weights').innerHTML = (r.source_stats||[]).map(s => {
+    const rate = s.approval_rate||0;
+    const rateColor = rate>=70?'#17bf63':rate>=40?'#ffad1f':'#e0245e';
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;font-size:0.82em">
+      <span style="width:100px">${s.source}</span>
+      <span style="color:#8899a6">${s.total} шт</span>
+      <span style="color:${rateColor}">${rate}% одобр.</span>
+      <span style="color:#1da1f2;font-weight:500">x${s.weight}</span>
+    </div>`;
+  }).join('') || '<span style="color:#8899a6;font-size:0.82em">Нет данных</span>';
+
+  // Load prompt versions
+  loadPromptVersions();
+}
+
+async function loadPromptVersions() {
+  const r = await api('/api/prompt_versions');
+  if (r.status !== 'ok') return;
+  const el = document.getElementById('analytics-prompts');
+  if (!r.versions || !r.versions.length) {
+    el.innerHTML = '<span style="color:#8899a6;font-size:0.82em">Нет сохранённых версий</span>';
+    return;
+  }
+  el.innerHTML = r.versions.map(v =>
+    `<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;font-size:0.82em;padding:4px 8px;background:${v.is_active?'#17bf6318':'transparent'};border-radius:6px">
+      <span style="font-weight:500">${v.prompt_name}</span>
+      <span style="color:#8899a6">v${v.version}</span>
+      <span style="color:#8899a6">${v.notes||''}</span>
+      ${v.is_active ? '<span style="color:#17bf63">ACTIVE</span>' : `<button class="btn btn-sm" style="padding:1px 6px;font-size:0.8em" onclick="activatePromptVersion('${v.id}')">Активировать</button>`}
+    </div>`
+  ).join('');
+}
+
+async function saveCurrentPromptVersion() {
+  const name = document.getElementById('prompt-name-select').value;
+  const notes = prompt('Заметка к версии (необязательно):') || '';
+  // Get current prompt content
+  const prompts = await api('/api/prompts');
+  const content = prompts[name] || '';
+  if (!content) { toast('Промпт не найден', true); return; }
+  const r = await api('/api/prompt_versions/save', {prompt_name: name, content, notes});
+  if (r.status === 'ok') { toast('Версия v' + r.version + ' сохранена'); loadPromptVersions(); }
+  else toast(r.message, true);
+}
+
+async function activatePromptVersion(id) {
+  const r = await api('/api/prompt_versions/activate', {id});
+  if (r.status === 'ok') { toast('Активировано'); loadPromptVersions(); }
+  else toast(r.message, true);
+}
+
+async function generateDigest(period) {
+  if (!confirm(`$ Сгенерировать дайджест за ${period === 'week' ? 'неделю' : 'день'}? Это вызов LLM API.`)) return;
+  toast('Генерация дайджеста...');
+  const r = await api('/api/generate_digest', {period});
+  const el = document.getElementById('digest-result');
+  const content = document.getElementById('digest-content');
+  if (r.status === 'ok' && r.digest) {
+    el.style.display = 'block';
+    const d = r.digest;
+    content.innerHTML = `
+      <div style="font-size:1.1em;font-weight:600;color:#1da1f2;margin-bottom:8px">${d.title||'Дайджест'}</div>
+      <div style="margin-bottom:10px;line-height:1.6">${d.summary||''}</div>
+      ${d.top_news ? '<div style="margin-bottom:8px"><b>Главные новости:</b><ul style="margin:4px 0">' + d.top_news.map(n=>'<li>'+n+'</li>').join('') + '</ul></div>' : ''}
+      ${d.trends ? '<div><b>Тренды:</b> ' + d.trends.join(', ') + '</div>' : ''}
+      <div style="margin-top:8px;font-size:0.82em;color:#8899a6">Использовано ${r.news_count} новостей</div>
+    `;
+  } else {
+    el.style.display = 'block';
+    content.innerHTML = '<span style="color:#e0245e">' + (r.message||'Ошибка') + '</span>';
+  }
+}
+
 // ---- Queue ----
 let _queueTasks = [];
 
@@ -4467,6 +4931,7 @@ loadHealth();
 loadDbInfo();
 loadArticles();
 loadQueue();
+loadAnalytics();
 setInterval(loadAll, 30000);
 setInterval(loadHealth, 60000);
 setInterval(loadQueue, 15000);

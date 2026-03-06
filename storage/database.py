@@ -75,6 +75,33 @@ def init_db():
         )
     """
 
+    feedback_sql = """
+        CREATE TABLE IF NOT EXISTS feedback_stats (
+            id TEXT PRIMARY KEY,
+            stat_type TEXT,
+            stat_key TEXT,
+            approved INTEGER DEFAULT 0,
+            rejected INTEGER DEFAULT 0,
+            total INTEGER DEFAULT 0,
+            weight_adjustment REAL DEFAULT 0.0,
+            updated_at TEXT
+        )
+    """
+
+    prompt_versions_sql = """
+        CREATE TABLE IF NOT EXISTS prompt_versions (
+            id TEXT PRIMARY KEY,
+            prompt_name TEXT,
+            version INTEGER,
+            content TEXT,
+            avg_score REAL DEFAULT 0.0,
+            usage_count INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 0,
+            created_at TEXT,
+            notes TEXT
+        )
+    """
+
     if _is_postgres():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS news (
@@ -106,6 +133,8 @@ def init_db():
         """)
         cur.execute(articles_sql)
         cur.execute(task_queue_sql)
+        cur.execute(feedback_sql)
+        cur.execute(prompt_versions_sql)
     else:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS news (
@@ -137,6 +166,8 @@ def init_db():
         """)
         cur.execute(articles_sql)
         cur.execute(task_queue_sql)
+        cur.execute(feedback_sql)
+        cur.execute(prompt_versions_sql)
         conn.commit()
 
     logger.info("Database initialized")
