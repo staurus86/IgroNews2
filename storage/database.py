@@ -144,7 +144,7 @@ def insert_news(source: str, url: str, title: str, h1: str = "",
 def get_unprocessed_news(limit: int = 20):
     conn = get_connection()
     cur = conn.cursor()
-    q = "SELECT * FROM news WHERE status = 'new' ORDER BY parsed_at DESC"
+    q = "SELECT * FROM news WHERE status = 'approved' ORDER BY parsed_at DESC"
     if _is_postgres():
         cur.execute(q + " LIMIT %s", (limit,))
         columns = [desc[0] for desc in cur.description]
