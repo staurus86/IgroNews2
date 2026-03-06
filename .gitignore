@@ -11,4 +11,3 @@ venv/
 .idea/
 .vscode/
 *.json
-!railway.toml
