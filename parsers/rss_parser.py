@@ -17,8 +17,8 @@ HEADERS = {
 }
 
 
-def fetch_full_text(url: str) -> tuple[str, str, str]:
-    """Загружает страницу и извлекает h1, description, plain_text."""
+def fetch_full_text(url: str) -> tuple[str, str, str, str]:
+    """Загружает страницу и извлекает h1, description, plain_text, published_at."""
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
@@ -34,6 +34,10 @@ def fetch_full_text(url: str) -> tuple[str, str, str]:
         if meta_desc:
             description = meta_desc.get("content", "")
 
+        # Извлекаем дату публикации
+        from parsers.html_parser import _extract_publish_date
+        published_at = _extract_publish_date(soup)
+
         # Извлекаем основной текст из article или body
         article = soup.find("article") or soup.find("div", class_="article") or soup.body
         plain_text = ""
@@ -42,10 +46,10 @@ def fetch_full_text(url: str) -> tuple[str, str, str]:
                 tag.decompose()
             plain_text = article.get_text(separator=" ", strip=True)[:5000]
 
-        return h1, description, plain_text
+        return h1, description, plain_text, published_at
     except Exception as e:
         logger.warning("Failed to fetch full text from %s: %s", url, e)
-        return "", "", ""
+        return "", "", "", ""
 
 
 def parse_rss_source(source: dict) -> int:
@@ -84,10 +88,13 @@ def parse_rss_source(source: dict) -> int:
 
             # Загружаем полный текст страницы (с задержкой чтобы не перегружать)
             time.sleep(1)
-            h1, description, plain_text = fetch_full_text(link)
+            h1, description, plain_text, page_date = fetch_full_text(link)
 
             if not description:
                 description = summary
+
+            # Приоритет: дата из RSS, иначе из HTML страницы
+            final_date = published or page_date
 
             news_id = insert_news(
                 source=name,
@@ -96,7 +103,7 @@ def parse_rss_source(source: dict) -> int:
                 h1=h1,
                 description=description,
                 plain_text=plain_text,
-                published_at=published,
+                published_at=final_date,
             )
             if news_id:
                 count += 1

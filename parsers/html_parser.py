@@ -84,7 +84,7 @@ def parse_html_source(source: dict) -> int:
                 continue
 
             time.sleep(1)
-            h1, description, plain_text = _fetch_article(link)
+            h1, description, plain_text, published_at = _fetch_article(link)
 
             news_id = insert_news(
                 source=name,
@@ -93,6 +93,7 @@ def parse_html_source(source: dict) -> int:
                 h1=h1,
                 description=description,
                 plain_text=plain_text,
+                published_at=published_at,
             )
             if news_id:
                 count += 1
@@ -133,9 +134,10 @@ def _parse_dtf(source: dict) -> int:
                 if news_exists(link):
                     continue
                 time.sleep(1)
-                h1, description, plain_text = _fetch_article(link)
+                h1, description, plain_text, published_at = _fetch_article(link)
                 nid = insert_news(source=name, url=link, title=title, h1=h1,
-                                  description=description, plain_text=plain_text)
+                                  description=description, plain_text=plain_text,
+                                  published_at=published_at)
                 if nid:
                     count += 1
             logger.info("Parsed %s (DTF HTML fallback): %d new articles", name, count)
@@ -287,15 +289,18 @@ def _parse_single_sitemap_from_root(name: str, root, ns: dict, url_filter: str, 
             continue
 
         time.sleep(1)
-        h1, description, plain_text = _fetch_article(link)
+        h1, description, plain_text, page_date = _fetch_article(link)
 
         if not h1 or len(h1) < 10:
             continue
 
+        # Приоритет: дата из sitemap, иначе из HTML страницы
+        final_date = published_at or page_date
+
         nid = insert_news(
             source=name, url=link, title=h1,
             h1=h1, description=description,
-            plain_text=plain_text, published_at=published_at,
+            plain_text=plain_text, published_at=final_date,
         )
         if nid:
             count += 1
@@ -303,8 +308,43 @@ def _parse_single_sitemap_from_root(name: str, root, ns: dict, url_filter: str, 
     return count
 
 
-def _fetch_article(url: str) -> tuple[str, str, str]:
-    """Загружает статью и извлекает h1, description, plain_text."""
+def _extract_publish_date(soup) -> str:
+    """Извлекает дату публикации из HTML разными способами."""
+    # 1. JSON-LD (schema.org) — самый надёжный
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+            if isinstance(data, list):
+                data = data[0]
+            for key in ("datePublished", "dateCreated", "uploadDate"):
+                if key in data:
+                    return data[key]
+        except Exception:
+            pass
+
+    # 2. Meta теги
+    for meta_name in ("article:published_time", "og:article:published_time",
+                      "date", "pubdate", "DC.date.issued", "sailthru.date"):
+        tag = soup.find("meta", attrs={"property": meta_name}) or \
+              soup.find("meta", attrs={"name": meta_name})
+        if tag and tag.get("content"):
+            return tag["content"]
+
+    # 3. <time> тег с datetime
+    time_tag = soup.find("time", attrs={"datetime": True})
+    if time_tag:
+        return time_tag["datetime"]
+
+    # 4. <time> тег с текстом
+    time_tag = soup.find("time")
+    if time_tag and time_tag.get_text(strip=True):
+        return time_tag.get_text(strip=True)
+
+    return ""
+
+
+def _fetch_article(url: str) -> tuple[str, str, str, str]:
+    """Загружает статью и извлекает h1, description, plain_text, published_at."""
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
@@ -320,6 +360,8 @@ def _fetch_article(url: str) -> tuple[str, str, str]:
         if meta_desc:
             description = meta_desc.get("content", "")
 
+        published_at = _extract_publish_date(soup)
+
         article = soup.find("article") or soup.body
         plain_text = ""
         if article:
@@ -327,7 +369,7 @@ def _fetch_article(url: str) -> tuple[str, str, str]:
                 tag.decompose()
             plain_text = article.get_text(separator=" ", strip=True)[:5000]
 
-        return h1, description, plain_text
+        return h1, description, plain_text, published_at
     except Exception as e:
         logger.warning("Failed to fetch article %s: %s", url, e)
-        return "", "", ""
+        return "", "", "", ""
