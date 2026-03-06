@@ -23,7 +23,7 @@ def parse_sources(interval_min: int):
     for source in sources:
         if source["type"] == "rss":
             total += parse_rss_source(source)
-        elif source["type"] == "html":
+        elif source["type"] in ("html", "dtf"):
             total += parse_html_source(source)
     logger.info("[%dmin] Total new articles: %d", interval_min, total)
 

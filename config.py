@@ -38,9 +38,9 @@ SOURCES = [
     {"name": "Playground",       "type": "rss",  "url": "https://www.playground.ru/rss/news.xml",      "interval": 15},
     # HTML
     {"name": "Metacritic",       "type": "html", "url": "https://www.metacritic.com/news/",            "interval": 30, "selector": "article"},
-    {"name": "DTF",              "type": "html", "url": "https://dtf.ru/games",                        "interval": 5,  "selector": ".content-list__item"},
-    {"name": "iXBT.games",       "type": "html", "url": "https://www.ixbt.com/live/games/",            "interval": 30, "selector": ".item-live"},
-    {"name": "VGTimes",          "type": "html", "url": "https://vgtimes.ru/news/",                    "interval": 30, "selector": ".news-item"},
+    {"name": "DTF",              "type": "dtf",  "url": "https://dtf.ru/games",                        "interval": 5},
+    {"name": "iXBT.games",       "type": "html", "url": "https://ixbt.games/news",                    "interval": 30, "selector": "a[href*='/news/']", "title_selector": "h3"},
+    {"name": "VGTimes",          "type": "html", "url": "https://vgtimes.ru/news/",                    "interval": 30, "selector": ".news-item", "title_selector": "h3 a"},
 ]
 
 # Keys.so
