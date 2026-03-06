@@ -11,10 +11,14 @@ from storage.database import init_db
 from storage.sheets import setup_headers
 from scheduler import start_scheduler
 from web import start_web
+from apis.cache import setup_dashboard_logging
 
 
 def main():
     logging.info("IgroNews starting...")
+
+    # Подключаем логи для дашборда
+    setup_dashboard_logging()
 
     # Инициализация БД
     init_db()

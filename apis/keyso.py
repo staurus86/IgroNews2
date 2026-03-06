@@ -23,25 +23,45 @@ def _make_request(endpoint: str, params: dict) -> dict | None:
 
 
 def get_keyword_info(keyword: str) -> dict:
-    """Получает частотность ключевого слова."""
+    """Получает частотность ключевого слова (с кэшем 24ч)."""
+    from apis.cache import cache_get, cache_set, cache_key, rate_check, rate_increment
+    ck = cache_key("keyso_info", keyword)
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+    if not rate_check("keyso"):
+        logger.warning("Keys.so rate limit exceeded")
+        return {"ws": 0, "wsk": 0}
+    rate_increment("keyso")
     data = _make_request("/report/simple/keyword_dashboard", {"keyword": keyword})
     if not data:
         return {"ws": 0, "wsk": 0}
-    return {
+    result = {
         "ws": data.get("ws", 0),
         "wsk": data.get("wsk", 0),
     }
+    cache_set(ck, result)
+    return result
 
 
 def get_similar_keywords(keyword: str, limit: int = 10) -> list[dict]:
-    """Получает похожие поисковые запросы."""
+    """Получает похожие поисковые запросы (с кэшем 24ч)."""
+    from apis.cache import cache_get, cache_set, cache_key, rate_check, rate_increment
+    ck = cache_key("keyso_similar", keyword, limit)
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+    if not rate_check("keyso"):
+        logger.warning("Keys.so rate limit exceeded")
+        return []
+    rate_increment("keyso")
     data = _make_request("/report/simple/similarkeys", {
         "keyword": keyword,
         "per_page": limit,
     })
     if not data or "data" not in data:
         return []
-    return [
+    result = [
         {
             "word": item.get("word", ""),
             "ws": item.get("ws", 0),
@@ -50,6 +70,8 @@ def get_similar_keywords(keyword: str, limit: int = 10) -> list[dict]:
         }
         for item in data["data"][:limit]
     ]
+    cache_set(ck, result)
+    return result
 
 
 def check_keywords_bulk(keywords: list[str]) -> dict:

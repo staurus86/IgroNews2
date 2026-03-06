@@ -105,6 +105,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/queue": lambda: self._json(self._get_queue()),
             "/api/analytics": lambda: self._json(self._get_analytics()),
             "/api/prompt_versions": lambda: self._json(self._get_prompt_versions()),
+            "/api/logs": lambda: self._json(self._get_logs()),
+            "/api/rate_stats": lambda: self._json(self._get_rate_stats()),
+            "/api/cache_stats": lambda: self._json(self._get_cache_stats()),
         }
 
         # DOCX download (GET with query param)
@@ -192,6 +195,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/queue/clear_done": lambda: self._clear_done_queue(body),
             "/api/queue/rewrite": lambda: self._queue_batch_rewrite(body),
             "/api/queue/sheets": lambda: self._queue_sheets_export(body),
+            "/api/translate_title": lambda: self._translate_title(body),
+            "/api/ai_recommend": lambda: self._ai_recommend(body),
+            "/api/cache/clear": lambda: self._clear_cache(body),
         }
         handler = routes.get(path)
         if handler:
@@ -328,8 +334,11 @@ async function login() {
         cur = conn.cursor()
         qs = parse_qs(urlparse(self.path).query)
         limit = int(qs.get("limit", [100])[0])
+        offset = int(qs.get("offset", [0])[0])
         status_filter = qs.get("status", [None])[0]
         source_filter = qs.get("source", [None])[0]
+        date_from = qs.get("date_from", [None])[0]
+        date_to = qs.get("date_to", [None])[0]
 
         ph = "%s" if _is_postgres() else "?"
         conditions = []
@@ -340,8 +349,19 @@ async function login() {
         if source_filter:
             conditions.append(f"n.source = {ph}")
             params.append(source_filter)
+        if date_from:
+            conditions.append(f"n.parsed_at >= {ph}")
+            params.append(date_from)
+        if date_to:
+            conditions.append(f"n.parsed_at <= {ph}")
+            params.append(date_to + "T23:59:59")
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+        # Count total matching
+        cur.execute(f"SELECT COUNT(*) FROM news n {where}", params[:])
+        total_count = cur.fetchone()[0]
+
         query = f"""
             SELECT n.id, n.source, n.title, n.url, n.h1, n.description,
                    n.published_at, n.parsed_at, n.status,
@@ -350,16 +370,19 @@ async function login() {
             FROM news n
             LEFT JOIN news_analysis a ON n.id = a.news_id
             {where}
-            ORDER BY n.parsed_at DESC LIMIT {ph}
+            ORDER BY n.parsed_at DESC LIMIT {ph} OFFSET {ph}
         """
         params.append(limit)
+        params.append(offset)
         cur.execute(query, params)
 
         if _is_postgres():
             columns = [desc[0] for desc in cur.description]
-            return [dict(zip(columns, row)) for row in cur.fetchall()]
+            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
         else:
-            return [dict(row) for row in cur.fetchall()]
+            rows = [dict(row) for row in cur.fetchall()]
+
+        return {"news": rows, "total": total_count, "limit": limit, "offset": offset}
 
     def _get_sources(self):
         import config
@@ -2085,6 +2108,96 @@ async function login() {
         self.end_headers()
         self.wfile.write(data)
 
+    # --- Logs, Cache, Rate, Translate, AI ---
+
+    def _get_logs(self):
+        qs = parse_qs(urlparse(self.path).query)
+        limit = int(qs.get("limit", [100])[0])
+        level = qs.get("level", [""])[0]
+        from apis.cache import get_logs
+        return {"logs": get_logs(limit=limit, level=level)}
+
+    def _get_rate_stats(self):
+        from apis.cache import get_rate_stats
+        return get_rate_stats()
+
+    def _get_cache_stats(self):
+        from apis.cache import get_cache_stats
+        return get_cache_stats()
+
+    def _clear_cache(self, body):
+        from apis.cache import clear_cache
+        clear_cache()
+        self._json({"status": "ok"})
+
+    def _translate_title(self, body):
+        news_id = body.get("news_id", "")
+        if not news_id:
+            self._json({"status": "error", "message": "news_id required"})
+            return
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        cur.execute(f"SELECT title FROM news WHERE id = {ph}", (news_id,))
+        row = cur.fetchone()
+        if not row:
+            self._json({"status": "error", "message": "not found"})
+            return
+        title = row[0] if _is_postgres() else row["title"]
+        from apis.llm import translate_title
+        result = translate_title(title)
+        if result:
+            # Save translated title as h1 if not Russian
+            if not result.get("is_russian") and result.get("translated"):
+                cur.execute(f"UPDATE news SET h1 = {ph} WHERE id = {ph}", (result["translated"], news_id))
+                if not _is_postgres():
+                    conn.commit()
+            self._json({"status": "ok", **result})
+        else:
+            self._json({"status": "error", "message": "Translation failed"})
+
+    def _ai_recommend(self, body):
+        news_id = body.get("news_id", "")
+        if not news_id:
+            self._json({"status": "error", "message": "news_id required"})
+            return
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
+        row = cur.fetchone()
+        if not row:
+            self._json({"status": "error", "message": "not found"})
+            return
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            news = dict(zip(columns, row))
+        else:
+            news = dict(row)
+
+        # Run checks for context
+        from checks.quality import check_quality
+        from checks.relevance import check_relevance
+        from checks.freshness import check_freshness
+        from checks.viral_score import viral_score
+        checks = {
+            "quality": check_quality(news),
+            "relevance": check_relevance(news),
+            "freshness": check_freshness(news),
+            "viral": viral_score(news),
+        }
+        from apis.llm import ai_recommendation
+        result = ai_recommendation(
+            title=news.get("title", ""),
+            text=news.get("plain_text", "") or news.get("description", ""),
+            source=news.get("source", ""),
+            checks=checks,
+        )
+        if result:
+            self._json({"status": "ok", "recommendation": result, "checks": {k: v.get("score", 0) for k, v in checks.items()}})
+        else:
+            self._json({"status": "error", "message": "AI recommendation failed"})
+
     # --- Dashboard HTML ---
     def _serve_dashboard(self):
         html = DASHBOARD_HTML
@@ -2294,6 +2407,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div class="tab" data-tab="queue">Очередь <span id="queue-badge" class="badge badge-new" style="display:none">0</span></div>
     <div class="tab" data-tab="analytics">Аналитика</div>
     <div class="tab" data-tab="health">Здоровье</div>
+    <div class="tab" data-tab="logs">Логи</div>
     <div class="tab" data-tab="settings">Настройки</div>
     <div class="tab" data-tab="users">Пользователи</div>
     <div style="margin-left:auto"><a href="/logout" class="btn btn-secondary btn-sm">Выйти</a></div>
@@ -2342,6 +2456,10 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <input type="date" id="dash-date-from" onchange="applyDashFilters()">
       <span class="filter-label">По:</span>
       <input type="date" id="dash-date-to" onchange="applyDashFilters()">
+      <span class="filter-sep"></span>
+      <button class="btn btn-sm btn-secondary" onclick="setDashDateRange('today')">Сегодня</button>
+      <button class="btn btn-sm btn-secondary" onclick="setDashDateRange('week')">Неделя</button>
+      <button class="btn btn-sm btn-secondary" onclick="setDashDateRange('month')">Месяц</button>
       <button class="btn btn-sm btn-secondary" onclick="resetDashFilters()">Сбросить</button>
     </div>
     <div class="active-filters" id="active-filters"></div>
@@ -2904,7 +3022,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <input type="search" id="news-search" placeholder="По заголовку..." oninput="filterNewsTable()" autocomplete="off" name="news-search-nologin">
       <span class="filter-sep"></span>
       <span class="filter-label">Статус:</span>
-      <select id="filter-status" onchange="loadNews()">
+      <select id="filter-status" onchange="loadNewsPage(0)">
         <option value="">Все статусы</option>
         <option value="new">Новые</option>
         <option value="in_review">На проверке</option>
@@ -2916,15 +3034,26 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       </select>
       <span class="filter-sep"></span>
       <span class="filter-label">Источник:</span>
-      <select id="filter-source" onchange="loadNews()">
+      <select id="filter-source" onchange="loadNewsPage(0)">
         <option value="">Все источники</option>
       </select>
       <span class="filter-sep"></span>
       <span class="filter-label">Кол-во:</span>
-      <input type="number" id="filter-limit" value="100" min="10" max="500" style="width:80px" onchange="loadNews()" autocomplete="off">
+      <input type="number" id="filter-limit" value="100" min="10" max="500" style="width:80px" onchange="loadNewsPage(0)" autocomplete="off">
+      <span class="filter-sep"></span>
+      <span class="filter-label">С:</span>
+      <input type="date" id="news-date-from" onchange="loadNewsPage(0)">
+      <span class="filter-label">По:</span>
+      <input type="date" id="news-date-to" onchange="loadNewsPage(0)">
+      <span class="filter-sep"></span>
+      <button class="btn btn-sm btn-secondary" onclick="setNewsDateRange('today')">Сегодня</button>
+      <button class="btn btn-sm btn-secondary" onclick="setNewsDateRange('yesterday')">Вчера</button>
+      <button class="btn btn-sm btn-secondary" onclick="setNewsDateRange('week')">Неделя</button>
+      <button class="btn btn-sm btn-secondary" onclick="setNewsDateRange('month')">Месяц</button>
+      <button class="btn btn-sm btn-secondary" onclick="setNewsDateRange('')">Все</button>
     </div>
     <div class="btn-group">
-      <button class="btn btn-secondary btn-sm" onclick="loadNews()">Обновить</button>
+      <button class="btn btn-secondary btn-sm" onclick="loadNewsPage(0)">Обновить</button>
       <button class="btn btn-warning btn-sm" onclick="bulkStatusChange('approved')">Одобрить выбранные</button>
       <button class="btn btn-danger btn-sm" onclick="bulkStatusChange('rejected')">Отклонить выбранные</button>
       <button class="btn btn-danger btn-sm" onclick="deleteSelectedNews()" style="margin-left:4px">Удалить выбранные</button>
@@ -2951,6 +3080,30 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       </tr></thead>
       <tbody id="news-table"></tbody>
     </table>
+    <div id="news-pagination"></div>
+  </div>
+
+  <!-- LOGS -->
+  <div class="panel" id="panel-logs">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <h2>Логи системы</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="log-level" onchange="loadLogs()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+          <option value="">Все уровни</option>
+          <option value="ERROR">Ошибки</option>
+          <option value="WARNING">Предупреждения</option>
+          <option value="INFO">Информация</option>
+        </select>
+        <button class="btn btn-sm btn-secondary" onclick="loadLogs()">Обновить</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:16px;margin-bottom:12px" id="api-stats"></div>
+    <div style="background:#192734;border-radius:10px;overflow:hidden;max-height:600px;overflow-y:auto">
+      <table>
+        <thead><tr><th style="width:160px">Время</th><th style="width:70px">Уровень</th><th style="width:140px">Модуль</th><th>Сообщение</th></tr></thead>
+        <tbody id="logs-table"></tbody>
+      </table>
+    </div>
   </div>
 
   <!-- SOURCES -->
@@ -3228,11 +3381,17 @@ function selectGroup() {
 // News
 let _allNews = []; // full news array for client-side filtering
 
+let _newsTotal = 0;
+let _newsOffset = 0;
+let _newsPageSize = 100;
+
 async function loadNews() {
   let url = `/api/news?limit=500`;
 
-  const news = await api(url);
+  const resp = await api(url);
+  const news = resp.news || resp;  // backward compat
   _allNews = news;
+  _newsTotal = resp.total || news.length;
 
   // Populate source filters
   const sources = [...new Set(news.map(n => n.source))].sort();
@@ -3248,6 +3407,41 @@ async function loadNews() {
   applyDashFilters();
   renderNewsTab(news);
   initEditorSourceFilter();
+}
+
+async function loadNewsPage(offset) {
+  _newsOffset = offset || 0;
+  const limit = parseInt(document.getElementById('filter-limit')?.value) || 100;
+  const status = document.getElementById('filter-status')?.value || '';
+  const source = document.getElementById('filter-source')?.value || '';
+  const dateFrom = document.getElementById('news-date-from')?.value || '';
+  const dateTo = document.getElementById('news-date-to')?.value || '';
+  let url = `/api/news?limit=${limit}&offset=${_newsOffset}`;
+  if (status) url += `&status=${status}`;
+  if (source) url += `&source=${encodeURIComponent(source)}`;
+  if (dateFrom) url += `&date_from=${dateFrom}`;
+  if (dateTo) url += `&date_to=${dateTo}`;
+  const resp = await api(url);
+  const news = resp.news || resp;
+  _allNews = news;
+  _newsTotal = resp.total || news.length;
+  _newsPageSize = limit;
+  renderNewsFiltered();
+  renderNewsPagination();
+}
+
+function renderNewsPagination() {
+  let el = document.getElementById('news-pagination');
+  if (!el) return;
+  const totalPages = Math.ceil(_newsTotal / _newsPageSize);
+  const currentPage = Math.floor(_newsOffset / _newsPageSize) + 1;
+  if (totalPages <= 1) { el.innerHTML = ''; return; }
+  let html = '<div style="display:flex;gap:4px;align-items:center;margin-top:10px;justify-content:center">';
+  if (currentPage > 1) html += `<button class="btn btn-sm btn-secondary" onclick="loadNewsPage(${(_newsOffset - _newsPageSize)})">&#9664; Назад</button>`;
+  html += `<span style="color:#8899a6;font-size:0.85em;margin:0 8px">Стр. ${currentPage} из ${totalPages} (всего ${_newsTotal})</span>`;
+  if (currentPage < totalPages) html += `<button class="btn btn-sm btn-secondary" onclick="loadNewsPage(${(_newsOffset + _newsPageSize)})">Далее &#9654;</button>`;
+  html += '</div>';
+  el.innerHTML = html;
 }
 
 function applyDashFilters() {
@@ -3417,6 +3611,8 @@ function renderDashboardRows(news) {
       <td style="white-space:nowrap">
         <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')" title="Анализ">&#9654;</button>
         <button class="btn btn-sm btn-success" onclick="exportOne('${n.id}')" title="В Google Sheets">&#9776;</button>
+        <button class="btn btn-sm btn-secondary" onclick="translateTitle('${n.id}')" title="Перевод" style="padding:4px 6px">&#127760;</button>
+        <button class="btn btn-sm btn-warning" onclick="aiRecommend('${n.id}')" title="AI рекомендация" style="padding:4px 6px">AI</button>
       </td>
     </tr>`;
   }).join('');
@@ -3970,7 +4166,7 @@ function renderNewsFiltered() {
     return `<tr>
       <td><input type="checkbox" class="news-tab-check" data-id="${n.id}" onchange="updateNewsSelectedCount()"></td>
       <td>${n.source}</td>
-      <td class="td-title"><a href="${n.url}" target="_blank" title="${esc(n.description||'')}">${esc(n.title||'')}</a></td>
+      <td class="td-title"><a href="${n.url}" target="_blank" title="${esc(n.description||'')}">${esc(n.title||'')}</a>${n.h1 && n.h1 !== n.title ? `<div style="font-size:0.8em;color:#1da1f2;margin-top:2px">&#127760; ${esc(n.h1)}</div>` : ''}</td>
       <td>${fmtDate(n.published_at)}</td>
       <td><span class="badge badge-${n.status}">${statusLabel}</span></td>
       <td title="${esc(bigrams)}" style="max-width:160px;font-size:0.82em">${bigrams.slice(0,50)||'-'}</td>
@@ -3983,6 +4179,7 @@ function renderNewsFiltered() {
       <td style="white-space:nowrap">
         <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')" title="Анализ API">&#9654;</button>
         <button class="btn btn-sm btn-success" onclick="exportOne('${n.id}')" title="В Google Sheets">&#9776;</button>
+        <button class="btn btn-sm btn-secondary" onclick="translateTitle('${n.id}')" title="Перевод" style="padding:4px 6px">&#127760;</button>
       </td>
     </tr>`;
   }).join('');
@@ -4997,6 +5194,113 @@ function updateQueueSelectedCount() {
 }
 document.addEventListener('change', e => { if (e.target.classList.contains('queue-check')) updateQueueSelectedCount(); });
 
+// Date range quick filters (News tab)
+function setNewsDateRange(range) {
+  const fromEl = document.getElementById('news-date-from');
+  const toEl = document.getElementById('news-date-to');
+  if (!range) { fromEl.value = ''; toEl.value = ''; loadNewsPage(0); return; }
+  const now = new Date();
+  const fmt = d => d.toISOString().slice(0,10);
+  toEl.value = fmt(now);
+  if (range === 'today') fromEl.value = fmt(now);
+  else if (range === 'yesterday') { const y = new Date(now); y.setDate(y.getDate()-1); fromEl.value = fmt(y); toEl.value = fmt(y); }
+  else if (range === 'week') { const w = new Date(now); w.setDate(w.getDate()-7); fromEl.value = fmt(w); }
+  else if (range === 'month') { const m = new Date(now); m.setMonth(m.getMonth()-1); fromEl.value = fmt(m); }
+  loadNewsPage(0);
+}
+
+// Quick date buttons (Dashboard)
+function setDashDateRange(range) {
+  const fromEl = document.getElementById('dash-date-from');
+  const toEl = document.getElementById('dash-date-to');
+  if (!range) { fromEl.value = ''; toEl.value = ''; applyDashFilters(); return; }
+  const now = new Date();
+  const fmt = d => d.toISOString().slice(0,10);
+  toEl.value = fmt(now);
+  if (range === 'today') fromEl.value = fmt(now);
+  else if (range === 'yesterday') { const y = new Date(now); y.setDate(y.getDate()-1); fromEl.value = fmt(y); toEl.value = fmt(y); }
+  else if (range === 'week') { const w = new Date(now); w.setDate(w.getDate()-7); fromEl.value = fmt(w); }
+  else if (range === 'month') { const m = new Date(now); m.setMonth(m.getMonth()-1); fromEl.value = fmt(m); }
+  applyDashFilters();
+}
+
+// Logs
+async function loadLogs() {
+  const level = document.getElementById('log-level')?.value || '';
+  const resp = await api(`/api/logs?limit=200&level=${level}`);
+  const logs = resp.logs || [];
+  const tb = document.getElementById('logs-table');
+  if (!tb) return;
+  const levelColors = {ERROR:'#e0245e', WARNING:'#ffad1f', INFO:'#17bf63', DEBUG:'#8899a6'};
+  tb.innerHTML = logs.reverse().map(l => `<tr>
+    <td style="font-size:0.8em;color:#8899a6;white-space:nowrap">${(l.time||'').replace('T',' ').slice(0,19)}</td>
+    <td style="font-size:0.78em;font-weight:600;color:${levelColors[l.level]||'#8899a6'}">${l.level}</td>
+    <td style="font-size:0.78em;color:#8899a6">${esc(l.logger||'')}</td>
+    <td style="font-size:0.82em;white-space:pre-wrap;word-break:break-word">${esc(l.message||'')}</td>
+  </tr>`).join('');
+
+  // API stats
+  const rates = await api('/api/rate_stats');
+  const cache = await api('/api/cache_stats');
+  const statsEl = document.getElementById('api-stats');
+  if (statsEl) {
+    let html = '';
+    for (const [svc, data] of Object.entries(rates)) {
+      const pct = data.limit > 0 ? Math.round(data.used / data.limit * 100) : 0;
+      const color = pct > 80 ? '#e0245e' : pct > 50 ? '#ffad1f' : '#17bf63';
+      html += `<div style="background:#192734;border-radius:8px;padding:10px 14px;min-width:120px">
+        <div style="font-size:0.78em;color:#8899a6;text-transform:uppercase">${svc}</div>
+        <div style="font-size:1.3em;font-weight:bold;color:${color}">${data.used}<span style="font-size:0.5em;color:#8899a6">/${data.limit}</span></div>
+        <div style="font-size:0.75em;color:#8899a6">осталось: ${data.remaining}</div>
+      </div>`;
+    }
+    html += `<div style="background:#192734;border-radius:8px;padding:10px 14px;min-width:120px">
+      <div style="font-size:0.78em;color:#8899a6;text-transform:uppercase">Cache</div>
+      <div style="font-size:1.3em;font-weight:bold;color:#1da1f2">${cache.alive||0}<span style="font-size:0.5em;color:#8899a6">/${cache.max||0}</span></div>
+      <div style="font-size:0.75em"><button class="btn btn-sm btn-secondary" onclick="clearApiCache()" style="padding:2px 8px;font-size:0.85em">Очистить</button></div>
+    </div>`;
+    statsEl.innerHTML = html;
+  }
+}
+
+async function clearApiCache() {
+  await api('/api/cache/clear', {});
+  toast('Кэш очищен');
+  loadLogs();
+}
+
+// Translate title
+async function translateTitle(newsId) {
+  toast('Перевод...');
+  const r = await api('/api/translate_title', {news_id: newsId});
+  if (r.status === 'ok') {
+    if (r.is_russian) { toast('Заголовок уже на русском'); return; }
+    toast(`Переведено с ${r.source_lang}: ${r.translated}`);
+    loadAll();
+  } else toast(r.message, true);
+}
+
+// AI recommendation
+async function aiRecommend(newsId) {
+  toast('AI анализирует...');
+  const r = await api('/api/ai_recommend', {news_id: newsId});
+  if (r.status === 'ok') {
+    const rec = r.recommendation;
+    const verdictColors = {publish:'#17bf63', rewrite:'#ffad1f', skip:'#e0245e'};
+    const verdictLabels = {publish:'Публиковать', rewrite:'Переписать', skip:'Пропустить'};
+    const html = `<div style="padding:15px;background:#192734;border-radius:10px;border-left:4px solid ${verdictColors[rec.verdict]||'#8899a6'}">
+      <div style="font-size:1.1em;font-weight:bold;color:${verdictColors[rec.verdict]||'#8899a6'};margin-bottom:6px">${verdictLabels[rec.verdict]||rec.verdict} <span style="font-size:0.7em;color:#8899a6">(${Math.round((rec.confidence||0)*100)}%)</span></div>
+      <div style="margin-bottom:6px">${esc(rec.reason||'')}</div>
+      ${rec.suggested_angle ? `<div style="color:#1da1f2;font-size:0.9em">Ракурс: ${esc(rec.suggested_angle)}</div>` : ''}
+      <div style="margin-top:6px;font-size:0.8em;color:#8899a6">Приоритет: ${rec.priority || '-'}</div>
+    </div>`;
+    // Show in a toast-like popup
+    let popup = document.getElementById('ai-rec-popup');
+    if (!popup) { popup = document.createElement('div'); popup.id = 'ai-rec-popup'; popup.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:200;max-width:460px;width:90vw;box-shadow:0 12px 40px rgba(0,0,0,0.6);border-radius:12px;background:#192734;padding:20px'; document.body.appendChild(popup); }
+    popup.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3 style="color:#1da1f2;margin:0;font-size:1em">AI Рекомендация</h3><button onclick="this.parentElement.parentElement.remove()" style="background:none;border:none;color:#8899a6;font-size:1.3em;cursor:pointer">&times;</button></div>${html}`;
+  } else toast(r.message, true);
+}
+
 // Init
 function loadAll() { loadStats(); loadNews(); }
 loadAll();
@@ -5009,6 +5313,7 @@ loadDbInfo();
 loadArticles();
 loadQueue();
 loadAnalytics();
+loadLogs();
 setInterval(loadAll, 30000);
 setInterval(loadHealth, 60000);
 setInterval(loadQueue, 15000);

@@ -91,30 +91,36 @@ PROMPT_KEYSO_QUERIES = """
 """
 
 
+def _call_llm_raw(prompt: str, key_index: int = 0) -> dict | None:
+    """Один вызов LLM с конкретным ключом."""
+    key = _API_KEYS[key_index] if key_index < len(_API_KEYS) else _API_KEYS[0]
+    c = OpenAI(api_key=key, base_url=config.OPENAI_BASE_URL)
+    response = c.chat.completions.create(
+        model=config.LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+    )
+    text = response.choices[0].message.content
+    logger.info("LLM response (key %d): %s", key_index + 1, text[:200])
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = "\n".join(cleaned.split("\n")[1:])
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+    return json.loads(cleaned)
+
+
 def _call_llm(prompt: str) -> dict | None:
-    """Вызывает LLM через OpenRouter с fallback на второй ключ."""
-    global client
-    for i, key in enumerate(_API_KEYS):
-        try:
-            c = OpenAI(api_key=key, base_url=config.OPENAI_BASE_URL)
-            response = c.chat.completions.create(
-                model=config.LLM_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-            )
-            text = response.choices[0].message.content
-            logger.info("LLM response (key %d): %s", i + 1, text[:200])
-            # Try to parse as JSON (strip markdown fences if present)
-            cleaned = text.strip()
-            if cleaned.startswith("```"):
-                cleaned = "\n".join(cleaned.split("\n")[1:])
-                if cleaned.endswith("```"):
-                    cleaned = cleaned[:-3]
-                cleaned = cleaned.strip()
-            return json.loads(cleaned)
-        except Exception as e:
-            logger.warning("LLM key %d failed: %s", i + 1, e)
-            continue
+    """Вызывает LLM с retry, fallback ключами и rate limiting."""
+    from apis.cache import retry_call, rate_check
+    if not rate_check("llm"):
+        logger.warning("LLM rate limit exceeded")
+        return None
+    for i in range(len(_API_KEYS)):
+        result = retry_call(_call_llm_raw, prompt, i, max_retries=2, base_delay=3.0, service="llm")
+        if result is not None:
+            return result
     logger.error("All LLM keys failed")
     return None
 
@@ -254,6 +260,72 @@ def rewrite_news(title: str, text: str, style: str = "news", language: str = "р
         language=language,
     )
     return _call_llm(prompt)
+
+
+def translate_title(title: str, source_lang: str = "auto") -> dict | None:
+    """Автоперевод заголовка на русский с определением языка."""
+    from apis.cache import cache_get, cache_set, cache_key
+    ck = cache_key("translate", title)
+    cached = cache_get(ck)
+    if cached:
+        return cached
+    prompt = f"""Определи язык заголовка и переведи его на русский. Если заголовок уже на русском — верни как есть.
+
+Заголовок: {title}
+
+Ответь строго JSON без markdown:
+{{
+  "original": "оригинальный заголовок",
+  "translated": "перевод на русский",
+  "source_lang": "en/ru/de/fr/etc",
+  "is_russian": true/false
+}}"""
+    result = _call_llm(prompt)
+    if result:
+        cache_set(ck, result, ttl=86400 * 7)
+    return result
+
+
+def ai_recommendation(title: str, text: str, source: str, checks: dict) -> dict | None:
+    """AI-рекомендация: публиковать или нет, с обоснованием."""
+    from apis.cache import cache_get, cache_set, cache_key
+    ck = cache_key("ai_rec", title)
+    cached = cache_get(ck)
+    if cached:
+        return cached
+
+    checks_summary = ""
+    for name, data in checks.items():
+        if isinstance(data, dict) and "score" in data:
+            checks_summary += f"- {name}: {data['score']}/100 ({'pass' if data.get('pass') else 'fail'})\n"
+
+    prompt = f"""Ты — главный редактор игрового портала. Оцени новость и дай рекомендацию.
+
+Заголовок: {title}
+Источник: {source}
+Текст (фрагмент): {text[:1500]}
+
+Результаты автопроверок:
+{checks_summary}
+
+Оцени по критериям:
+1. Интересна ли тема аудитории игрового портала?
+2. Достаточно ли информации для полноценной публикации?
+3. Есть ли эксклюзивность или уникальный ракурс?
+4. Актуальна ли новость (не устарела)?
+
+Ответь строго JSON:
+{{
+  "verdict": "publish / rewrite / skip",
+  "confidence": 0.0-1.0,
+  "reason": "краткое обоснование в 1-2 предложения",
+  "suggested_angle": "предложи ракурс подачи если verdict=rewrite",
+  "priority": "high / medium / low"
+}}"""
+    result = _call_llm(prompt)
+    if result:
+        cache_set(ck, result, ttl=3600)
+    return result
 
 
 def suggest_keyso_queries(title: str, bigrams: list, region: str = "RU") -> list[str]:

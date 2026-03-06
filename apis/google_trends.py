@@ -6,11 +6,21 @@ logger = logging.getLogger(__name__)
 
 
 def get_trends_for_keyword(keyword: str) -> dict:
-    """Проверяет популярность ключевого слова в Google Trends по регионам."""
+    """Проверяет популярность ключевого слова в Google Trends по регионам (кэш 6ч)."""
+    from apis.cache import cache_get, cache_set, cache_key, rate_check, rate_increment
+    ck = cache_key("trends", keyword)
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+    if not rate_check("trends"):
+        logger.warning("Google Trends rate limit exceeded")
+        return {r: 0 for r in config.REGIONS}
+
     result = {}
     try:
         pytrends = TrendReq(hl="ru-RU", tz=180)
         for region in config.REGIONS:
+            rate_increment("trends")
             try:
                 pytrends.build_payload([keyword], cat=0, timeframe="now 1-d", geo=region)
                 data = pytrends.interest_over_time()
@@ -25,4 +35,5 @@ def get_trends_for_keyword(keyword: str) -> dict:
         logger.error("Google Trends init error: %s", e)
         result = {r: 0 for r in config.REGIONS}
 
+    cache_set(ck, result, ttl=21600)  # 6 hours
     return result
