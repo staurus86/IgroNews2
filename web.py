@@ -1690,6 +1690,15 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <option value="negative">Негативная</option>
       </select>
       <span class="filter-sep"></span>
+      <span class="filter-label">Виральность:</span>
+      <select id="rev-viral" onchange="filterReviewTable()">
+        <option value="">Все</option>
+        <option value="high">High (70+)</option>
+        <option value="medium">Medium (40+)</option>
+        <option value="low">Low (20+)</option>
+        <option value="none">None (0-19)</option>
+      </select>
+      <span class="filter-sep"></span>
       <span class="filter-label">Мин. скор:</span>
       <input type="number" id="rev-min-score" placeholder="0" min="0" max="100" style="width:70px" oninput="filterReviewTable()" autocomplete="off">
       <span id="rev-loading" style="color:#8899a6;font-size:0.85em;margin-left:8px"></span>
@@ -3023,10 +3032,12 @@ async function loadHealth() {
 function filterReviewTable() {
   const search = (document.getElementById('rev-search')?.value || '').toLowerCase();
   const sentiment = document.getElementById('rev-sentiment')?.value || '';
+  const viral = document.getElementById('rev-viral')?.value || '';
   const minScore = parseInt(document.getElementById('rev-min-score')?.value) || 0;
   let filtered = _reviewResults;
   if (search) filtered = filtered.filter(r => (r.title||'').toLowerCase().includes(search));
   if (sentiment) filtered = filtered.filter(r => (r.sentiment?.label||'') === sentiment);
+  if (viral) filtered = filtered.filter(r => (r.checks?.viral?.level||'none') === viral);
   if (minScore > 0) filtered = filtered.filter(r => (r.total_score||0) >= minScore);
   const sorted = sortReviewData(filtered, _revSortField, _revSortDir);
   renderReviewRows(sorted);
