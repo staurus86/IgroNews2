@@ -105,6 +105,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/queue": lambda: self._json(self._get_queue()),
             "/api/analytics": lambda: self._json(self._get_analytics()),
             "/api/prompt_versions": lambda: self._json(self._get_prompt_versions()),
+            "/api/viral": lambda: self._json(self._get_viral()),
             "/api/logs": lambda: self._json(self._get_logs()),
             "/api/rate_stats": lambda: self._json(self._get_rate_stats()),
             "/api/cache_stats": lambda: self._json(self._get_cache_stats()),
@@ -2115,6 +2116,172 @@ async function login() {
 
     # --- Logs, Cache, Rate, Translate, AI ---
 
+    def _get_viral(self):
+        """Анализ виральности: прогоняет все новости через viral_score + sentiment + momentum."""
+        from checks.viral_score import viral_score, VIRAL_TRIGGERS, get_calendar_boost
+        from checks.sentiment import analyze_sentiment
+        from checks.tags import auto_tag
+        from apis.cache import cache_get, cache_set, cache_key
+
+        qs = parse_qs(urlparse(self.path).query)
+        limit = int(qs.get("limit", [200])[0])
+        level_filter = qs.get("level", [None])[0]
+        category_filter = qs.get("category", [None])[0]
+        sentiment_filter = qs.get("sentiment", [None])[0]
+        source_filter = qs.get("source", [None])[0]
+        date_from = qs.get("date_from", [None])[0]
+        date_to = qs.get("date_to", [None])[0]
+        trigger_filter = qs.get("trigger", [None])[0]
+        min_score = int(qs.get("min_score", [0])[0])
+
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+
+        conditions = []
+        params = []
+        if source_filter:
+            conditions.append(f"n.source = {ph}")
+            params.append(source_filter)
+        if date_from:
+            conditions.append(f"n.parsed_at >= {ph}")
+            params.append(date_from)
+        if date_to:
+            conditions.append(f"n.parsed_at <= {ph}")
+            params.append(date_to + "T23:59:59")
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+        cur.execute(f"""
+            SELECT n.id, n.source, n.title, n.url, n.description, n.plain_text,
+                   n.published_at, n.parsed_at, n.status
+            FROM news n {where}
+            ORDER BY n.parsed_at DESC LIMIT {ph}
+        """, params + [limit])
+
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            rows = [dict(row) for row in cur.fetchall()]
+
+        items = []
+        stats = {"total": 0, "high": 0, "medium": 0, "low": 0, "none": 0}
+        trigger_counts = {}
+        category_counts = {}
+        sentiment_counts = {"positive": 0, "negative": 0, "neutral": 0}
+        source_scores = {}
+
+        # Category mapping from trigger_id prefix
+        CATEGORY_MAP = {
+            "scandal": "Скандалы", "leak": "Утечки", "shadow": "Shadow Drops",
+            "bad": "Плохие релизы", "ai": "AI", "major_event": "Ивенты",
+            "event": "Ивенты", "money": "Деньги", "culture": "Культура",
+            "person": "Персоны", "speed": "Скорость",
+            "sequel": "Базовые", "free_content": "Базовые", "delay": "Базовые",
+            "canceled": "Базовые", "award": "Базовые", "next_gen": "Базовые",
+            "big_update": "Базовые", "release_date": "Базовые",
+            "trailer": "Базовые", "record": "Базовые", "digest": "Базовые",
+        }
+
+        for row in rows:
+            ck = cache_key("viral_tab", row["id"])
+            cached = cache_get(ck)
+            if cached:
+                vr = cached["viral"]
+                sent = cached["sentiment"]
+                tags = cached["tags"]
+            else:
+                vr = viral_score(row)
+                sent = analyze_sentiment(row)
+                tags = auto_tag(row)
+                cache_set(ck, {"viral": vr, "sentiment": sent, "tags": tags}, ttl=3600)
+
+            # Determine categories of triggers
+            trigger_categories = set()
+            for t in vr["triggers"]:
+                tid = t["id"]
+                prefix = tid.split("_")[0]
+                cat = CATEGORY_MAP.get(tid, CATEGORY_MAP.get(prefix, "Прочее"))
+                trigger_categories.add(cat)
+
+            # Apply filters
+            if level_filter and vr["level"] != level_filter:
+                continue
+            if min_score and vr["score"] < min_score:
+                continue
+            if sentiment_filter and sent["label"] != sentiment_filter:
+                continue
+            if trigger_filter:
+                if not any(t["id"] == trigger_filter for t in vr["triggers"]):
+                    continue
+            if category_filter:
+                if category_filter not in trigger_categories:
+                    continue
+
+            item = {
+                "id": row["id"],
+                "source": row["source"],
+                "title": row["title"],
+                "url": row["url"],
+                "published_at": row["published_at"],
+                "parsed_at": row["parsed_at"],
+                "status": row["status"],
+                "viral_score": vr["score"],
+                "viral_level": vr["level"],
+                "triggers": vr["triggers"],
+                "sentiment": sent["label"],
+                "sentiment_score": sent["score"],
+                "tags": [{"id": t["id"], "label": t["label"]} for t in tags[:3]],
+            }
+            items.append(item)
+
+            # Aggregate stats
+            stats["total"] += 1
+            stats[vr["level"]] = stats.get(vr["level"], 0) + 1
+            sentiment_counts[sent["label"]] = sentiment_counts.get(sent["label"], 0) + 1
+            for t in vr["triggers"]:
+                trigger_counts[t["label"]] = trigger_counts.get(t["label"], 0) + 1
+                prefix = t["id"].split("_")[0]
+                cat = CATEGORY_MAP.get(t["id"], CATEGORY_MAP.get(prefix, "Прочее"))
+                category_counts[cat] = category_counts.get(cat, 0) + 1
+            src = row["source"]
+            if src not in source_scores:
+                source_scores[src] = {"total": 0, "sum": 0}
+            source_scores[src]["total"] += 1
+            source_scores[src]["sum"] += vr["score"]
+
+        # Sort by viral_score desc
+        items.sort(key=lambda x: x["viral_score"], reverse=True)
+
+        # Top triggers sorted
+        top_triggers = sorted(trigger_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+
+        # Top categories sorted
+        top_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)
+
+        # Source avg scores
+        source_avg = []
+        for src, data in source_scores.items():
+            source_avg.append({"source": src, "avg": round(data["sum"] / data["total"], 1), "count": data["total"]})
+        source_avg.sort(key=lambda x: x["avg"], reverse=True)
+
+        # Calendar event
+        cal_boost, cal_event = get_calendar_boost()
+
+        # Available triggers for filter
+        all_triggers = [{"id": k, "label": v["label"], "category": CATEGORY_MAP.get(k, CATEGORY_MAP.get(k.split("_")[0], "Прочее"))} for k, v in VIRAL_TRIGGERS.items()]
+
+        return {
+            "items": items,
+            "stats": stats,
+            "sentiment": sentiment_counts,
+            "top_triggers": top_triggers,
+            "top_categories": top_categories,
+            "source_avg": source_avg[:15],
+            "calendar": {"boost": cal_boost, "event": cal_event},
+            "all_triggers": all_triggers,
+        }
+
     def _get_logs(self):
         qs = parse_qs(urlparse(self.path).query)
         limit = int(qs.get("limit", [100])[0])
@@ -2414,6 +2581,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div class="tab" data-tab="editor">Редактор</div>
     <div class="tab" data-tab="articles">Статьи <span id="articles-badge" class="badge badge-new" style="display:none">0</span></div>
     <div class="tab" data-tab="queue">Очередь <span id="queue-badge" class="badge badge-new" style="display:none">0</span></div>
+    <div class="tab" data-tab="viral">Виральность</div>
     <div class="tab" data-tab="analytics">Аналитика</div>
     <div class="tab" data-tab="health">Здоровье</div>
     <div class="tab" data-tab="logs">Логи</div>
@@ -2946,6 +3114,115 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   </div>
 
   <!-- ANALYTICS -->
+  <!-- VIRAL -->
+  <div class="panel" id="panel-viral">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <h2>Анализ виральности</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-sm btn-secondary" onclick="loadViral()">Обновить</button>
+      </div>
+    </div>
+
+    <!-- Viral stat cards -->
+    <div class="stats" id="viral-stats"></div>
+
+    <!-- Calendar event banner -->
+    <div id="viral-calendar" style="display:none;margin-bottom:12px;padding:10px 16px;background:linear-gradient(90deg,#1da1f233,#e0245e22);border-radius:10px;border-left:3px solid #ffad1f"></div>
+
+    <!-- Filters -->
+    <div class="dash-filters" style="margin-bottom:12px">
+      <span class="filter-label">Уровень:</span>
+      <select id="viral-level" onchange="loadViral()">
+        <option value="">Все</option>
+        <option value="high">High (70+)</option>
+        <option value="medium">Medium (40-69)</option>
+        <option value="low">Low (20-39)</option>
+        <option value="none">None (&lt;20)</option>
+      </select>
+      <span class="filter-sep"></span>
+      <span class="filter-label">Категория:</span>
+      <select id="viral-category" onchange="loadViral()">
+        <option value="">Все</option>
+        <option value="Скандалы">Скандалы</option>
+        <option value="Утечки">Утечки</option>
+        <option value="Shadow Drops">Shadow Drops</option>
+        <option value="Плохие релизы">Плохие релизы</option>
+        <option value="AI">AI</option>
+        <option value="Ивенты">Ивенты</option>
+        <option value="Деньги">Деньги</option>
+        <option value="Культура">Культура</option>
+        <option value="Персоны">Персоны</option>
+        <option value="Скорость">Скорость</option>
+        <option value="Базовые">Базовые</option>
+      </select>
+      <span class="filter-sep"></span>
+      <span class="filter-label">Тональность:</span>
+      <select id="viral-sentiment" onchange="loadViral()">
+        <option value="">Все</option>
+        <option value="positive">Позитив</option>
+        <option value="neutral">Нейтрал</option>
+        <option value="negative">Негатив</option>
+      </select>
+      <span class="filter-sep"></span>
+      <span class="filter-label">Источник:</span>
+      <select id="viral-source" onchange="loadViral()">
+        <option value="">Все</option>
+      </select>
+      <span class="filter-sep"></span>
+      <span class="filter-label">Мин. скор:</span>
+      <input type="number" id="viral-min-score" value="0" min="0" max="100" style="width:60px" onchange="loadViral()" autocomplete="off">
+      <span class="filter-sep"></span>
+      <span class="filter-label">С:</span>
+      <input type="date" id="viral-date-from" onchange="loadViral()">
+      <span class="filter-sep"></span>
+      <span class="filter-label">По:</span>
+      <input type="date" id="viral-date-to" onchange="loadViral()">
+    </div>
+
+    <!-- Charts row -->
+    <div class="grid-2" style="gap:12px;margin-bottom:16px">
+      <div class="card">
+        <h3 style="font-size:0.95em;margin-bottom:10px">Топ триггеры</h3>
+        <div id="viral-top-triggers"></div>
+      </div>
+      <div class="card">
+        <h3 style="font-size:0.95em;margin-bottom:10px">Категории триггеров</h3>
+        <div id="viral-categories"></div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="gap:12px;margin-bottom:16px">
+      <div class="card">
+        <h3 style="font-size:0.95em;margin-bottom:10px">Тональность</h3>
+        <div id="viral-sentiment-chart" style="display:flex;gap:8px;align-items:center;height:30px"></div>
+      </div>
+      <div class="card">
+        <h3 style="font-size:0.95em;margin-bottom:10px">Средний скор по источникам</h3>
+        <div id="viral-source-avg"></div>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+      <span id="viral-count" style="color:#8899a6;font-size:0.85em"></span>
+    </div>
+    <table>
+      <thead><tr>
+        <th class="sortable" data-sort="viral_score" onclick="sortViralTab('viral_score')">Скор <span class="sort-arrow">&#9660;</span></th>
+        <th>Уровень</th>
+        <th>Тональн.</th>
+        <th class="sortable" data-sort="source" onclick="sortViralTab('source')">Источник <span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort="title" onclick="sortViralTab('title')">Заголовок <span class="sort-arrow">&#9650;</span></th>
+        <th>Триггеры</th>
+        <th>Теги</th>
+        <th class="sortable" data-sort="parsed_at" onclick="sortViralTab('parsed_at')">Дата <span class="sort-arrow">&#9650;</span></th>
+        <th>Статус</th>
+      </tr></thead>
+      <tbody id="viral-table"></tbody>
+    </table>
+    <div id="viral-empty" style="display:none;text-align:center;padding:40px;color:#8899a6">Нет данных. Нажмите &laquo;Обновить&raquo;</div>
+  </div>
+
   <div class="panel" id="panel-analytics">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <h2>Аналитика</h2>
@@ -3287,6 +3564,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   // Refresh data when switching to key tabs
   if (t.dataset.tab === 'dashboard') { loadStats(); loadNews(); }
   if (t.dataset.tab === 'news') { loadNewsPage(0); }
+  if (t.dataset.tab === 'viral') { loadViral(); }
 }));
 
 function toast(msg, isError) {
@@ -5342,6 +5620,185 @@ async function aiRecommend(newsId) {
 
 // Init
 function loadAll() { loadStats(); loadNews(); }
+
+// ===== VIRAL TAB =====
+let _viralData = [];
+let _viralSortField = 'viral_score';
+let _viralSortDir = 'desc';
+
+async function loadViral() {
+  const level = document.getElementById('viral-level')?.value || '';
+  const category = document.getElementById('viral-category')?.value || '';
+  const sentiment = document.getElementById('viral-sentiment')?.value || '';
+  const source = document.getElementById('viral-source')?.value || '';
+  const minScore = document.getElementById('viral-min-score')?.value || '0';
+  const dateFrom = document.getElementById('viral-date-from')?.value || '';
+  const dateTo = document.getElementById('viral-date-to')?.value || '';
+  let url = '/api/viral?limit=200';
+  if (level) url += '&level=' + level;
+  if (category) url += '&category=' + encodeURIComponent(category);
+  if (sentiment) url += '&sentiment=' + sentiment;
+  if (source) url += '&source=' + encodeURIComponent(source);
+  if (parseInt(minScore) > 0) url += '&min_score=' + minScore;
+  if (dateFrom) url += '&date_from=' + dateFrom;
+  if (dateTo) url += '&date_to=' + dateTo;
+
+  const r = await api(url);
+  _viralData = r.items || [];
+
+  // Stat cards
+  const s = r.stats || {};
+  const statItems = [
+    {num: s.total||0, lbl: 'Всего', cls: ''},
+    {num: s.high||0, lbl: 'High', cls: 'high', color: '#e0245e'},
+    {num: s.medium||0, lbl: 'Medium', cls: 'med', color: '#ffad1f'},
+    {num: s.low||0, lbl: 'Low', cls: 'low', color: '#1da1f2'},
+    {num: s.none||0, lbl: 'None', cls: 'none', color: '#38444d'},
+  ];
+  document.getElementById('viral-stats').innerHTML = statItems.map(i =>
+    `<div class="stat" style="${i.color ? 'border-bottom:3px solid '+i.color : ''}" onclick="document.getElementById('viral-level').value='${i.cls==='high'?'high':i.cls==='med'?'medium':i.cls==='low'?'low':i.cls==='none'?'none':''}';loadViral()">
+      <div class="num">${i.num}</div><div class="lbl">${i.lbl}</div>
+    </div>`
+  ).join('');
+
+  // Calendar banner
+  const calEl = document.getElementById('viral-calendar');
+  if (r.calendar && r.calendar.event) {
+    calEl.innerHTML = '<span style="font-size:1.1em;margin-right:8px">&#128197;</span> <b>' + esc(r.calendar.event) + '</b> <span style="color:#8899a6;margin-left:8px">(+' + r.calendar.boost + ' ко всем скорам)</span>';
+    calEl.style.display = 'block';
+  } else {
+    calEl.style.display = 'none';
+  }
+
+  // Populate source filter
+  const srcSel = document.getElementById('viral-source');
+  if (srcSel && srcSel.options.length <= 1 && r.source_avg) {
+    r.source_avg.forEach(s => { const o = document.createElement('option'); o.value = s.source; o.textContent = s.source; srcSel.appendChild(o); });
+  }
+
+  // Top triggers bar chart
+  const tt = r.top_triggers || [];
+  const maxTrig = tt.length ? tt[0][1] : 1;
+  document.getElementById('viral-top-triggers').innerHTML = tt.slice(0,12).map(([label, count]) =>
+    `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <span style="min-width:140px;font-size:0.82em;color:#8899a6;text-align:right">${esc(label)}</span>
+      <div style="flex:1;background:#192734;border-radius:4px;height:18px;overflow:hidden">
+        <div style="width:${(count/maxTrig*100).toFixed(1)}%;height:100%;background:linear-gradient(90deg,#e0245e,#ffad1f);border-radius:4px;transition:width .3s"></div>
+      </div>
+      <span style="font-size:0.82em;color:#e1e8ed;min-width:24px">${count}</span>
+    </div>`
+  ).join('') || '<span style="color:#38444d">Нет триггеров</span>';
+
+  // Categories chart
+  const cats = r.top_categories || [];
+  const maxCat = cats.length ? cats[0][1] : 1;
+  const catColors = {'Скандалы':'#e0245e','Утечки':'#794bc4','Shadow Drops':'#17bf63','Плохие релизы':'#ff6300','AI':'#1da1f2','Ивенты':'#ffad1f','Деньги':'#00bcd4','Культура':'#e8598b','Персоны':'#8bc34a','Скорость':'#ff9800','Базовые':'#38444d','Прочее':'#455a64'};
+  document.getElementById('viral-categories').innerHTML = cats.map(([cat, count]) =>
+    `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <span style="min-width:120px;font-size:0.82em;color:${catColors[cat]||'#8899a6'};text-align:right;font-weight:500">${esc(cat)}</span>
+      <div style="flex:1;background:#192734;border-radius:4px;height:18px;overflow:hidden">
+        <div style="width:${(count/maxCat*100).toFixed(1)}%;height:100%;background:${catColors[cat]||'#38444d'};border-radius:4px;opacity:0.7"></div>
+      </div>
+      <span style="font-size:0.82em;color:#e1e8ed;min-width:24px">${count}</span>
+    </div>`
+  ).join('') || '<span style="color:#38444d">Нет данных</span>';
+
+  // Sentiment bar
+  const sent = r.sentiment || {};
+  const sentTotal = (sent.positive||0) + (sent.neutral||0) + (sent.negative||0) || 1;
+  const pPct = ((sent.positive||0)/sentTotal*100).toFixed(1);
+  const nPct = ((sent.neutral||0)/sentTotal*100).toFixed(1);
+  const negPct = ((sent.negative||0)/sentTotal*100).toFixed(1);
+  document.getElementById('viral-sentiment-chart').innerHTML =
+    `<div style="flex:1;display:flex;height:24px;border-radius:6px;overflow:hidden">
+      <div style="width:${pPct}%;background:#17bf63" title="Позитив: ${sent.positive||0} (${pPct}%)"></div>
+      <div style="width:${nPct}%;background:#8899a6" title="Нейтрал: ${sent.neutral||0} (${nPct}%)"></div>
+      <div style="width:${negPct}%;background:#e0245e" title="Негатив: ${sent.negative||0} (${negPct}%)"></div>
+    </div>
+    <div style="font-size:0.8em;color:#8899a6;min-width:200px;text-align:right">
+      <span style="color:#17bf63">&#9679; ${sent.positive||0}</span>
+      <span style="margin:0 6px">&#9679; ${sent.neutral||0}</span>
+      <span style="color:#e0245e">&#9679; ${sent.negative||0}</span>
+    </div>`;
+
+  // Source avg scores
+  const srcAvg = r.source_avg || [];
+  const maxAvg = srcAvg.length ? srcAvg[0].avg : 1;
+  document.getElementById('viral-source-avg').innerHTML = srcAvg.slice(0,10).map(s =>
+    `<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+      <span style="min-width:100px;font-size:0.82em;color:#8899a6;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.source)}</span>
+      <div style="flex:1;background:#192734;border-radius:4px;height:16px;overflow:hidden">
+        <div style="width:${(s.avg/100*100).toFixed(1)}%;height:100%;background:${s.avg>=50?'#e0245e':s.avg>=25?'#ffad1f':'#1da1f2'};border-radius:4px;opacity:0.7"></div>
+      </div>
+      <span style="font-size:0.82em;color:#e1e8ed;min-width:50px">${s.avg} (${s.count})</span>
+    </div>`
+  ).join('') || '<span style="color:#38444d">Нет данных</span>';
+
+  renderViralTable();
+}
+
+function renderViralTable() {
+  const items = sortNews(_viralData, _viralSortField, _viralSortDir);
+  const tb = document.getElementById('viral-table');
+  const emptyEl = document.getElementById('viral-empty');
+  const countEl = document.getElementById('viral-count');
+
+  if (!items.length) {
+    tb.innerHTML = '';
+    emptyEl.style.display = 'block';
+    countEl.textContent = '';
+    return;
+  }
+  emptyEl.style.display = 'none';
+  countEl.textContent = items.length + ' новостей';
+
+  const levelColors = {high:'#e0245e',medium:'#ffad1f',low:'#1da1f2',none:'#38444d'};
+  const levelLabels = {high:'HIGH',medium:'MED',low:'LOW',none:'-'};
+  const sentIcons = {positive:'&#9650;',negative:'&#9660;',neutral:'&#9679;'};
+  const sentColors = {positive:'#17bf63',negative:'#e0245e',neutral:'#8899a6'};
+
+  tb.innerHTML = items.map(n => {
+    const triggers = (n.triggers||[]).map(t =>
+      `<span style="display:inline-block;background:#192734;border:1px solid ${levelColors[n.viral_level]||'#38444d'}33;border-radius:4px;padding:1px 5px;font-size:0.75em;margin:1px;color:${levelColors[n.viral_level]||'#8899a6'}" title="Вес: ${t.weight}">${esc(t.label)}</span>`
+    ).join('');
+    const tags = (n.tags||[]).map(t =>
+      `<span class="tag tag-${t.id}">${t.label}</span>`
+    ).join('');
+    const statusLabel = STATUS_LABELS[n.status] || n.status;
+    return `<tr>
+      <td style="text-align:center"><span style="font-weight:700;font-size:1.1em;color:${levelColors[n.viral_level]||'#8899a6'}">${n.viral_score}</span></td>
+      <td><span style="padding:2px 8px;border-radius:4px;font-size:0.8em;font-weight:600;background:${levelColors[n.viral_level]||'#38444d'}22;color:${levelColors[n.viral_level]||'#8899a6'}">${levelLabels[n.viral_level]||'-'}</span></td>
+      <td style="text-align:center"><span style="color:${sentColors[n.sentiment]||'#8899a6'};font-size:1.1em" title="${n.sentiment} (${n.sentiment_score})">${sentIcons[n.sentiment]||''}</span></td>
+      <td style="font-size:0.85em">${esc(n.source)}</td>
+      <td class="td-title"><a href="${n.url}" target="_blank">${esc(n.title||'')}</a></td>
+      <td style="max-width:250px">${triggers || '<span style="color:#38444d">-</span>'}</td>
+      <td>${tags || '-'}</td>
+      <td style="font-size:0.82em;white-space:nowrap">${fmtDate(n.parsed_at)}</td>
+      <td><span class="badge badge-${n.status}">${statusLabel}</span></td>
+    </tr>`;
+  }).join('');
+}
+
+function sortViralTab(field) {
+  if (_viralSortField === field) {
+    _viralSortDir = _viralSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _viralSortField = field;
+    _viralSortDir = field === 'viral_score' ? 'desc' : 'asc';
+  }
+  // Update arrows
+  document.querySelectorAll('#panel-viral .sortable').forEach(th => {
+    const arrow = th.querySelector('.sort-arrow');
+    if (th.dataset.sort === _viralSortField) {
+      th.classList.add('sort-active');
+      arrow.innerHTML = _viralSortDir === 'asc' ? '&#9650;' : '&#9660;';
+    } else {
+      th.classList.remove('sort-active');
+      arrow.innerHTML = '&#9650;';
+    }
+  });
+  renderViralTable();
+}
 loadAll();
 loadSources();
 loadPrompts();
