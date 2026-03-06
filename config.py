@@ -10,7 +10,7 @@ KEYSO_API_KEY = os.getenv("KEYSO_API_KEY", "")
 # Google Sheets
 GOOGLE_SHEETS_ID = os.getenv("GOOGLE_SHEETS_ID", "")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-SHEETS_TAB = "Новости"
+SHEETS_TAB = "Лист1"
 
 # Database
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///news.db")

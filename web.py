@@ -95,6 +95,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/test_keyso": lambda: self._test_keyso(body),
             "/api/reparse": lambda: self._reparse_source(body),
             "/api/test_sheets": lambda: self._test_sheets(body),
+            "/api/review": lambda: self._run_review(body),
+            "/api/approve": lambda: self._approve_news(body),
             "/api/users/add": lambda: self._add_user(body),
             "/api/users/delete": lambda: self._delete_user(body),
         }
@@ -216,7 +218,7 @@ async function login() {
         cur = conn.cursor()
         ph = "%s" if _is_postgres() else "?"
         stats = {}
-        for status in ["new", "processed", "approved", "rejected"]:
+        for status in ["new", "in_review", "duplicate", "approved", "processed", "rejected", "ready"]:
             cur.execute(f"SELECT COUNT(*) FROM news WHERE status = {ph}", (status,))
             stats[status] = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM news")
@@ -426,6 +428,43 @@ async function login() {
         except Exception as e:
             self._json({"status": "error", "message": str(e), "type": type(e).__name__})
 
+    def _run_review(self, body):
+        """Запускает pipeline проверки для выбранных новостей."""
+        news_ids = body.get("news_ids", [])
+        if not news_ids:
+            self._json({"status": "error", "message": "No news selected"})
+            return
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            ph = "%s" if _is_postgres() else "?"
+            placeholders = ",".join([ph] * len(news_ids))
+            cur.execute(f"SELECT * FROM news WHERE id IN ({placeholders})", news_ids)
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                news_list = [dict(row) for row in cur.fetchall()]
+
+            from checks.pipeline import run_review_pipeline
+            result = run_review_pipeline(news_list)
+            self._json({"status": "ok", **result})
+        except Exception as e:
+            self._json({"status": "error", "message": str(e), "type": type(e).__name__})
+
+    def _approve_news(self, body):
+        """Одобряет новости для обогащения."""
+        news_ids = body.get("news_ids", [])
+        if not news_ids:
+            self._json({"status": "error", "message": "No news selected"})
+            return
+        try:
+            from checks.pipeline import approve_for_enrichment
+            approve_for_enrichment(news_ids)
+            self._json({"status": "ok", "approved": len(news_ids)})
+        except Exception as e:
+            self._json({"status": "error", "message": str(e)})
+
     def _test_sheets(self, body):
         try:
             import config
@@ -585,13 +624,31 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   <div class="panel active" id="panel-dashboard">
     <div class="stats" id="stats"></div>
     <div class="btn-group">
-      <button class="btn btn-primary" onclick="runProcess()">Run Process (Analyze All New)</button>
+      <button class="btn btn-primary" onclick="sendToReview()">Send Selected to Review</button>
+      <button class="btn btn-success" onclick="runProcess()">Enrich Approved</button>
+      <button class="btn btn-secondary" onclick="selectAll()">Select All</button>
+      <button class="btn btn-secondary" onclick="deselectAll()">Deselect All</button>
       <button class="btn btn-secondary" onclick="loadNews()">Refresh</button>
+      <span id="selected-count" style="color:#8899a6;font-size:0.9em;margin-left:10px"></span>
     </div>
     <table>
-      <thead><tr><th>Source</th><th>Title</th><th>Published</th><th>Parsed</th><th>Status</th><th>Score</th><th>Actions</th></tr></thead>
+      <thead><tr><th style="width:30px"><input type="checkbox" id="check-all" onchange="toggleAll(this)"></th><th>Source</th><th>Title</th><th>Published</th><th>Parsed</th><th>Status</th><th>Score</th><th>Actions</th></tr></thead>
       <tbody id="dash-news"></tbody>
     </table>
+
+    <!-- Review Results -->
+    <div id="review-results" style="display:none;margin-top:20px">
+      <h2>Review Results</h2>
+      <div id="review-groups"></div>
+      <table style="margin-top:10px">
+        <thead><tr><th><input type="checkbox" id="approve-all" onchange="toggleApproveAll(this)"></th><th>Title</th><th>Source</th><th>Dedup</th><th>Quality</th><th>Relevance</th><th>Freshness</th><th>Viral</th><th>Total</th><th>Pass</th></tr></thead>
+        <tbody id="review-table"></tbody>
+      </table>
+      <div class="btn-group" style="margin-top:10px">
+        <button class="btn btn-success" onclick="approveSelected()">Approve Selected for Enrichment</button>
+        <button class="btn btn-secondary" onclick="hideReview()">Close</button>
+      </div>
+    </div>
   </div>
 
   <!-- NEWS -->
@@ -600,9 +657,12 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <select id="filter-status" onchange="loadNews()">
         <option value="">All statuses</option>
         <option value="new">New</option>
-        <option value="processed">Processed</option>
+        <option value="in_review">In Review</option>
+        <option value="duplicate">Duplicate</option>
         <option value="approved">Approved</option>
+        <option value="processed">Enriched</option>
         <option value="rejected">Rejected</option>
+        <option value="ready">Ready</option>
       </select>
       <select id="filter-source" onchange="loadNews()">
         <option value="">All sources</option>
@@ -775,9 +835,11 @@ async function loadStats() {
   document.getElementById('stats').innerHTML =
     `<div class="stat"><div class="num">${s.total}</div><div class="lbl">Total</div></div>`+
     `<div class="stat new"><div class="num">${s.new}</div><div class="lbl">New</div></div>`+
-    `<div class="stat proc"><div class="num">${s.processed}</div><div class="lbl">Processed</div></div>`+
-    `<div class="stat"><div class="num">${s.analyzed||0}</div><div class="lbl">Analyzed</div></div>`+
-    `<div class="stat"><div class="num">${s.approved||0}</div><div class="lbl">Approved</div></div>`;
+    `<div class="stat"><div class="num">${s.in_review||0}</div><div class="lbl">In Review</div></div>`+
+    `<div class="stat"><div class="num">${s.duplicate||0}</div><div class="lbl">Duplicate</div></div>`+
+    `<div class="stat"><div class="num">${s.approved||0}</div><div class="lbl">Approved</div></div>`+
+    `<div class="stat proc"><div class="num">${s.processed||0}</div><div class="lbl">Enriched</div></div>`+
+    `<div class="stat"><div class="num">${s.ready||0}</div><div class="lbl">Ready</div></div>`;
 }
 
 // News
@@ -794,14 +856,15 @@ async function loadNews() {
   // Dashboard table
   const dashTb = document.getElementById('dash-news');
   if (dashTb) {
-    dashTb.innerHTML = news.slice(0, 50).map(n => `<tr>
+    dashTb.innerHTML = news.slice(0, 100).map(n => `<tr>
+      <td><input type="checkbox" class="news-check" data-id="${n.id}" onchange="updateSelectedCount()"></td>
       <td>${n.source}</td>
       <td><a href="${n.url}" target="_blank" title="${esc(n.description||'')}">${esc(n.title||'')}</a></td>
       <td>${fmtDate(n.published_at)}</td>
       <td>${fmtDate(n.parsed_at)}</td>
       <td><span class="badge badge-${n.status}">${n.status}</span></td>
       <td>${n.llm_trend_forecast||'-'}</td>
-      <td>
+      <td style="white-space:nowrap">
         <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')">Analyze</button>
         <button class="btn btn-sm btn-success" onclick="exportOne('${n.id}')">Sheets</button>
       </td>
@@ -842,6 +905,73 @@ async function loadNews() {
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function fmtDate(d) { if (!d) return '-'; return d.replace('T',' ').slice(0,16); }
+
+// Selection
+function getSelectedIds() {
+  return [...document.querySelectorAll('.news-check:checked')].map(c => c.dataset.id);
+}
+function updateSelectedCount() {
+  const cnt = getSelectedIds().length;
+  document.getElementById('selected-count').textContent = cnt ? cnt + ' selected' : '';
+}
+function selectAll() { document.querySelectorAll('.news-check').forEach(c => c.checked = true); updateSelectedCount(); }
+function deselectAll() { document.querySelectorAll('.news-check').forEach(c => c.checked = false); updateSelectedCount(); }
+function toggleAll(el) { document.querySelectorAll('.news-check').forEach(c => c.checked = el.checked); updateSelectedCount(); }
+
+// Review
+let _reviewResults = [];
+async function sendToReview() {
+  const ids = getSelectedIds();
+  if (!ids.length) { toast('Select news first', true); return; }
+  toast('Running review pipeline...');
+  const r = await api('/api/review', {news_ids: ids});
+  if (r.status !== 'ok') { toast(r.message, true); return; }
+  _reviewResults = r.results || [];
+
+  // Show groups
+  const groupsHtml = (r.groups||[]).map(g => {
+    const icon = g.status === 'trending' ? '⚡' : g.status === 'popular' ? '🔥' : '🟢';
+    const titles = g.members.map(m => m.title).join(', ');
+    return `<div class="card" style="margin-bottom:8px;padding:10px"><b>${icon} ${g.status.toUpperCase()}</b> (${g.members.length}): ${esc(titles.slice(0,120))}</div>`;
+  }).join('');
+  document.getElementById('review-groups').innerHTML = groupsHtml;
+
+  // Show results table
+  document.getElementById('review-table').innerHTML = _reviewResults.map(r => {
+    const q = r.checks.quality, rel = r.checks.relevance, f = r.checks.freshness, v = r.checks.viral;
+    const passIcon = r.overall_pass ? '✅' : '❌';
+    const dup = r.is_duplicate ? '🔴 DUP' : (r.dedup_status||'unique');
+    return `<tr>
+      <td><input type="checkbox" class="approve-check" data-id="${r.id}" ${r.overall_pass && !r.is_duplicate ? 'checked' : ''}></td>
+      <td>${esc(r.title||'')}</td>
+      <td>${r.source}</td>
+      <td>${dup}</td>
+      <td>${q.score} ${q.pass?'✅':'❌'}</td>
+      <td>${rel.score} ${rel.pass?'✅':'❌'}</td>
+      <td>${f.score} ${f.status||''}</td>
+      <td>${v.score} ${v.level||''}</td>
+      <td><b>${r.total_score}</b></td>
+      <td>${passIcon}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('review-results').style.display = 'block';
+  toast('Review complete: ' + _reviewResults.length + ' checked');
+  loadAll();
+}
+
+function toggleApproveAll(el) { document.querySelectorAll('.approve-check').forEach(c => c.checked = el.checked); }
+function hideReview() { document.getElementById('review-results').style.display = 'none'; }
+
+async function approveSelected() {
+  const ids = [...document.querySelectorAll('.approve-check:checked')].map(c => c.dataset.id);
+  if (!ids.length) { toast('Select news to approve', true); return; }
+  const r = await api('/api/approve', {news_ids: ids});
+  if (r.status === 'ok') toast('Approved ' + r.approved + ' news');
+  else toast(r.message, true);
+  hideReview();
+  loadAll();
+}
 
 // Actions
 async function runProcess() {
