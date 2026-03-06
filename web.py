@@ -66,6 +66,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/settings": lambda: self._json(self._get_settings()),
             "/api/users": lambda: self._json(self._get_users()),
             "/api/health": lambda: self._json(self._get_health()),
+            "/api/dashboard_groups": lambda: self._dashboard_groups(),
         }
         handler = routes.get(path)
         if handler:
@@ -96,6 +97,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/test_keyso": lambda: self._test_keyso(body),
             "/api/reparse": lambda: self._reparse_source(body),
             "/api/test_sheets": lambda: self._test_sheets(body),
+            "/api/quick_tags": lambda: self._quick_tags(body),
             "/api/review": lambda: self._run_review(body),
             "/api/approve": lambda: self._approve_news(body),
             "/api/users/add": lambda: self._add_user(body),
@@ -443,6 +445,144 @@ async function login() {
         except Exception as e:
             self._json({"status": "error", "message": str(e), "type": type(e).__name__})
 
+    def _quick_tags(self, body):
+        """Быстрый расчёт тегов по заголовкам (без полного review)."""
+        news_ids = body.get("news_ids", [])
+        if not news_ids:
+            self._json({"status": "error", "message": "No news_ids"})
+            return
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            ph = "%s" if _is_postgres() else "?"
+            placeholders = ",".join([ph] * len(news_ids))
+            cur.execute(f"SELECT id, title, description, plain_text FROM news WHERE id IN ({placeholders})", news_ids)
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                rows = [dict(row) for row in cur.fetchall()]
+
+            from checks.tags import auto_tag
+            from checks.deduplication import tfidf_similarity
+
+            # Tags per news
+            tags_map = {}
+            for r in rows:
+                tags = auto_tag(r)
+                tags_map[r["id"]] = [{"id": t["id"], "label": t["label"], "hits": t["hits"]} for t in tags[:3]]
+
+            # Similarity groups
+            titles = [r.get("title", "") for r in rows]
+            ids_ordered = [r["id"] for r in rows]
+            pairs = tfidf_similarity(titles)
+
+            # Build groups from pairs
+            from collections import defaultdict
+            graph = defaultdict(set)
+            for i, j, score in pairs:
+                graph[i].add(j)
+                graph[j].add(i)
+            visited = set()
+            groups = []
+            group_idx = 0
+            id_to_group = {}
+            for idx in range(len(rows)):
+                if idx in visited:
+                    continue
+                cluster = set()
+                stack = [idx]
+                while stack:
+                    node = stack.pop()
+                    if node in visited:
+                        continue
+                    visited.add(node)
+                    cluster.add(node)
+                    stack.extend(graph[node] - visited)
+                if len(cluster) >= 2:
+                    group_idx += 1
+                    member_ids = [ids_ordered[i] for i in sorted(cluster)]
+                    member_titles = [titles[i] for i in sorted(cluster)]
+                    for mid in member_ids:
+                        id_to_group[mid] = group_idx
+                    groups.append({
+                        "group": group_idx,
+                        "count": len(member_ids),
+                        "ids": member_ids,
+                        "titles": member_titles,
+                    })
+
+            self._json({"status": "ok", "tags": tags_map, "groups": groups, "id_to_group": id_to_group})
+        except Exception as e:
+            self._json({"status": "error", "message": str(e), "type": type(e).__name__})
+
+    def _dashboard_groups(self):
+        """Возвращает теги и группы для всех new новостей."""
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"SELECT id, title, description, plain_text FROM news WHERE status = {ph} ORDER BY parsed_at DESC LIMIT 200", ("new",))
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                rows = [dict(row) for row in cur.fetchall()]
+
+            if not rows:
+                self._json({"status": "ok", "tags": {}, "groups": [], "id_to_group": {}})
+                return
+
+            from checks.tags import auto_tag
+            from checks.deduplication import tfidf_similarity
+            from collections import defaultdict
+
+            tags_map = {}
+            for r in rows:
+                tags = auto_tag(r)
+                tags_map[r["id"]] = [{"id": t["id"], "label": t["label"], "hits": t["hits"]} for t in tags[:3]]
+
+            titles = [r.get("title", "") for r in rows]
+            ids_ordered = [r["id"] for r in rows]
+            pairs = tfidf_similarity(titles)
+
+            graph = defaultdict(set)
+            for i, j, score in pairs:
+                graph[i].add(j)
+                graph[j].add(i)
+            visited = set()
+            groups = []
+            group_idx = 0
+            id_to_group = {}
+            for idx in range(len(rows)):
+                if idx in visited:
+                    continue
+                cluster = set()
+                stack = [idx]
+                while stack:
+                    node = stack.pop()
+                    if node in visited:
+                        continue
+                    visited.add(node)
+                    cluster.add(node)
+                    stack.extend(graph[node] - visited)
+                if len(cluster) >= 2:
+                    group_idx += 1
+                    member_ids = [ids_ordered[i] for i in sorted(cluster)]
+                    member_titles = [titles[i] for i in sorted(cluster)]
+                    for mid in member_ids:
+                        id_to_group[mid] = group_idx
+                    groups.append({
+                        "group": group_idx,
+                        "count": len(member_ids),
+                        "ids": member_ids,
+                        "titles": member_titles,
+                    })
+
+            self._json({"status": "ok", "tags": tags_map, "groups": groups, "id_to_group": id_to_group})
+        except Exception as e:
+            self._json({"status": "error", "message": str(e), "type": type(e).__name__})
+
     def _run_review(self, body):
         """Запускает pipeline проверки для выбранных новостей."""
         news_ids = body.get("news_ids", [])
@@ -607,6 +747,19 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 .modal h2 { margin-bottom:15px; }
 .modal-buttons { display:flex; gap:10px; margin-top:15px; justify-content:flex-end; }
 
+/* Tags */
+.tag { display:inline-block; padding:1px 6px; border-radius:8px; font-size:0.7em; margin:1px; white-space:nowrap; }
+.tag-release { background:#17bf6333; color:#17bf63; }
+.tag-update { background:#1da1f233; color:#1da1f2; }
+.tag-announcement { background:#794bc433; color:#b48eff; }
+.tag-esports { background:#ff630033; color:#ff6300; }
+.tag-hardware { background:#8899a633; color:#8899a6; }
+.tag-controversy { background:#e0245e33; color:#e0245e; }
+.tag-rumor { background:#ffad1f33; color:#ffad1f; }
+.tag-review { background:#17bf6333; color:#1da1f2; }
+.tag-industry { background:#794bc433; color:#b48eff; }
+.group-marker { display:inline-block; padding:1px 6px; border-radius:8px; font-size:0.7em; font-weight:bold; }
+
 /* Responsive */
 @media(max-width:768px) {
   .grid-2 { grid-template-columns:1fr; }
@@ -625,53 +778,56 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 
 <div class="container">
   <div class="tabs">
-    <div class="tab active" data-tab="dashboard">Dashboard</div>
-    <div class="tab" data-tab="news">News</div>
-    <div class="tab" data-tab="sources">Sources</div>
-    <div class="tab" data-tab="prompts">Prompts</div>
-    <div class="tab" data-tab="tools">Tools</div>
-    <div class="tab" data-tab="health">Health</div>
-    <div class="tab" data-tab="settings">Settings</div>
-    <div class="tab" data-tab="users">Users</div>
-    <div style="margin-left:auto"><a href="/logout" class="btn btn-secondary btn-sm">Logout</a></div>
+    <div class="tab active" data-tab="dashboard">Дашборд</div>
+    <div class="tab" data-tab="news">Новости</div>
+    <div class="tab" data-tab="sources">Источники</div>
+    <div class="tab" data-tab="prompts">Промпты</div>
+    <div class="tab" data-tab="tools">Инструменты</div>
+    <div class="tab" data-tab="health">Здоровье</div>
+    <div class="tab" data-tab="settings">Настройки</div>
+    <div class="tab" data-tab="users">Пользователи</div>
+    <div style="margin-left:auto"><a href="/logout" class="btn btn-secondary btn-sm">Выйти</a></div>
   </div>
 
   <!-- DASHBOARD -->
   <div class="panel active" id="panel-dashboard">
     <div class="stats" id="stats"></div>
     <div class="btn-group">
-      <button class="btn btn-primary" onclick="sendToReview()">Send Selected to Review</button>
-      <button class="btn btn-success" onclick="runProcess()">Enrich Approved</button>
-      <button class="btn btn-secondary" onclick="selectAll()">Select All</button>
-      <button class="btn btn-secondary" onclick="deselectAll()">Deselect All</button>
-      <button class="btn btn-secondary" onclick="loadNews()">Refresh</button>
+      <button class="btn btn-primary" onclick="sendToReview()">Отправить на проверку</button>
+      <button class="btn btn-success" onclick="runProcess()">Обогатить одобренные</button>
+      <button class="btn btn-secondary" onclick="loadDashboardGroups()">Найти группы</button>
+      <button class="btn btn-secondary" onclick="selectAll()">Выбрать все</button>
+      <button class="btn btn-secondary" onclick="deselectAll()">Снять выбор</button>
+      <button class="btn btn-secondary" onclick="selectGroup()">Выбрать группу</button>
+      <button class="btn btn-secondary" onclick="loadNews()">Обновить</button>
       <span id="selected-count" style="color:#8899a6;font-size:0.9em;margin-left:10px"></span>
     </div>
+    <div id="groups-summary" style="display:none;margin-bottom:12px"></div>
     <table>
-      <thead><tr><th style="width:30px"><input type="checkbox" id="check-all" onchange="toggleAll(this)"></th><th>Source</th><th>Title</th><th>Published</th><th>Parsed</th><th>Status</th><th>Score</th><th>Actions</th></tr></thead>
+      <thead><tr><th style="width:30px"><input type="checkbox" id="check-all" onchange="toggleAll(this)"></th><th>Источник</th><th>Заголовок</th><th>Теги</th><th>Группа</th><th>Опубл.</th><th>Собр.</th><th>Статус</th><th>Скор</th><th>Действия</th></tr></thead>
       <tbody id="dash-news"></tbody>
     </table>
 
     <!-- Review Results -->
     <div id="review-results" style="display:none;margin-top:20px">
-      <h2>Review Results</h2>
+      <h2>Результаты проверки</h2>
       <div id="review-groups"></div>
       <table style="margin-top:10px">
-        <thead><tr><th><input type="checkbox" id="approve-all" onchange="toggleApproveAll(this)"></th><th>Title</th><th>Source</th><th>Dedup</th><th>Quality</th><th>Relev.</th><th>Fresh</th><th>Viral</th><th>Sentiment</th><th>Momentum</th><th>Tags</th><th>Total</th><th>Pass</th></tr></thead>
+        <thead><tr><th><input type="checkbox" id="approve-all" onchange="toggleApproveAll(this)"></th><th>Заголовок</th><th>Источник</th><th>Дедуп</th><th>Качество</th><th>Релев.</th><th>Свежесть</th><th>Вирал.</th><th>Тональн.</th><th>Момент</th><th>Теги</th><th>Итог</th><th>Ок</th></tr></thead>
         <tbody id="review-table"></tbody>
       </table>
       <div class="btn-group" style="margin-top:10px">
-        <button class="btn btn-success" onclick="approveSelected()">Approve Selected for Enrichment</button>
-        <button class="btn btn-secondary" onclick="hideReview()">Close</button>
+        <button class="btn btn-success" onclick="approveSelected()">Одобрить выбранные</button>
+        <button class="btn btn-secondary" onclick="hideReview()">Закрыть</button>
       </div>
     </div>
   </div>
 
   <!-- HEALTH -->
   <div class="panel" id="panel-health">
-    <h2>Sources Health (24h)</h2>
+    <h2>Здоровье источников (24ч)</h2>
     <table>
-      <thead><tr><th>Status</th><th>Source</th><th>Articles (24h)</th><th>Last Parsed</th><th>Minutes Ago</th></tr></thead>
+      <thead><tr><th>Статус</th><th>Источник</th><th>Статей (24ч)</th><th>Последний парсинг</th><th>Минут назад</th></tr></thead>
       <tbody id="health-table"></tbody>
     </table>
   </div>
@@ -680,23 +836,23 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   <div class="panel" id="panel-news">
     <div class="filters">
       <select id="filter-status" onchange="loadNews()">
-        <option value="">All statuses</option>
-        <option value="new">New</option>
-        <option value="in_review">In Review</option>
-        <option value="duplicate">Duplicate</option>
-        <option value="approved">Approved</option>
-        <option value="processed">Enriched</option>
-        <option value="rejected">Rejected</option>
-        <option value="ready">Ready</option>
+        <option value="">Все статусы</option>
+        <option value="new">Новые</option>
+        <option value="in_review">На проверке</option>
+        <option value="duplicate">Дубликаты</option>
+        <option value="approved">Одобрены</option>
+        <option value="processed">Обогащены</option>
+        <option value="rejected">Отклонены</option>
+        <option value="ready">Готовы</option>
       </select>
       <select id="filter-source" onchange="loadNews()">
-        <option value="">All sources</option>
+        <option value="">Все источники</option>
       </select>
       <input type="number" id="filter-limit" value="100" min="10" max="500" style="width:80px" onchange="loadNews()">
-      <button class="btn btn-secondary btn-sm" onclick="loadNews()">Filter</button>
+      <button class="btn btn-secondary btn-sm" onclick="loadNews()">Фильтр</button>
     </div>
     <table>
-      <thead><tr><th>Source</th><th>Title</th><th>H1</th><th>Published</th><th>Status</th><th>Bigrams</th><th>LLM</th><th>Score</th><th>Sheet</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Источник</th><th>Заголовок</th><th>H1</th><th>Опубл.</th><th>Статус</th><th>Биграммы</th><th>LLM</th><th>Скор</th><th>Лист</th><th>Действия</th></tr></thead>
       <tbody id="news-table"></tbody>
     </table>
   </div>
@@ -705,24 +861,24 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   <div class="panel" id="panel-sources">
     <div class="grid-2">
       <div class="card">
-        <h2>Active Sources</h2>
+        <h2>Активные источники</h2>
         <table>
-          <thead><tr><th>Name</th><th>Type</th><th>URL</th><th>Interval</th><th>Selector</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Имя</th><th>Тип</th><th>URL</th><th>Интервал</th><th>Селектор</th><th>Действия</th></tr></thead>
           <tbody id="sources-table"></tbody>
         </table>
       </div>
       <div class="card">
-        <h2>Add Source</h2>
-        <div class="form-group"><label>Name</label><input id="src-name"></div>
+        <h2>Добавить источник</h2>
+        <div class="form-group"><label>Имя</label><input id="src-name"></div>
         <div class="form-group"><label>Type</label>
           <select id="src-type" onchange="document.getElementById('src-selector-group').style.display=this.value==='html'?'block':'none'">
             <option value="rss">RSS</option><option value="html">HTML</option>
           </select>
         </div>
         <div class="form-group"><label>URL</label><input id="src-url"></div>
-        <div class="form-group"><label>Interval (min)</label><input type="number" id="src-interval" value="15"></div>
-        <div class="form-group" id="src-selector-group" style="display:none"><label>CSS Selector</label><input id="src-selector" placeholder=".news-item"></div>
-        <button class="btn btn-primary" onclick="addSource()">Add Source</button>
+        <div class="form-group"><label>Интервал (мин)</label><input type="number" id="src-interval" value="15"></div>
+        <div class="form-group" id="src-selector-group" style="display:none"><label>CSS Селектор</label><input id="src-selector" placeholder=".news-item"></div>
+        <button class="btn btn-primary" onclick="addSource()">Добавить</button>
       </div>
     </div>
   </div>
@@ -730,39 +886,39 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   <!-- PROMPTS -->
   <div class="panel" id="panel-prompts">
     <div class="card" style="margin-bottom:15px">
-      <h2>Trend Forecast Prompt</h2>
+      <h2>Промпт прогноза трендов</h2>
       <textarea id="prompt-trend" rows="10"></textarea>
     </div>
     <div class="card" style="margin-bottom:15px">
-      <h2>Merge Analysis Prompt</h2>
+      <h2>Промпт анализа объединений</h2>
       <textarea id="prompt-merge" rows="8"></textarea>
     </div>
     <div class="card" style="margin-bottom:15px">
-      <h2>Keys.so Queries Prompt</h2>
+      <h2>Промпт запросов Keys.so</h2>
       <textarea id="prompt-keyso" rows="8"></textarea>
     </div>
-    <button class="btn btn-primary" onclick="savePrompts()">Save Prompts</button>
+    <button class="btn btn-primary" onclick="savePrompts()">Сохранить промпты</button>
   </div>
 
   <!-- TOOLS -->
   <div class="panel" id="panel-tools">
     <div class="grid-2">
       <div class="card">
-        <h2>Test LLM (OpenAI)</h2>
-        <div class="form-group"><label>Prompt</label><textarea id="test-llm-prompt" rows="4">Ты аналитик. Ответь JSON: {"test": "ok", "model": "your_model"}</textarea></div>
-        <button class="btn btn-primary" onclick="testLLM()">Send</button>
+        <h2>Тест LLM</h2>
+        <div class="form-group"><label>Промпт</label><textarea id="test-llm-prompt" rows="4">Ты аналитик. Ответь JSON: {"test": "ok", "model": "your_model"}</textarea></div>
+        <button class="btn btn-primary" onclick="testLLM()">Отправить</button>
         <pre id="test-llm-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
       </div>
       <div class="card">
-        <h2>Test Keys.so</h2>
-        <div class="form-group"><label>Keyword</label><input id="test-keyso-kw" value="gta 6"></div>
-        <button class="btn btn-primary" onclick="testKeyso()">Check</button>
+        <h2>Тест Keys.so</h2>
+        <div class="form-group"><label>Ключевое слово</label><input id="test-keyso-kw" value="gta 6"></div>
+        <button class="btn btn-primary" onclick="testKeyso()">Проверить</button>
         <pre id="test-keyso-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
       </div>
     </div>
     <div class="card" style="margin-top:15px">
-      <h2>Test Google Sheets</h2>
-      <button class="btn btn-primary" onclick="testSheets()">Test Connection</button>
+      <h2>Тест Google Sheets</h2>
+      <button class="btn btn-primary" onclick="testSheets()">Проверить соединение</button>
       <pre id="test-sheets-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
     </div>
   </div>
@@ -771,17 +927,17 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   <div class="panel" id="panel-users">
     <div class="grid-2">
       <div class="card">
-        <h2>Users</h2>
+        <h2>Пользователи</h2>
         <table>
-          <thead><tr><th>Username</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Логин</th><th>Действия</th></tr></thead>
           <tbody id="users-table"></tbody>
         </table>
       </div>
       <div class="card">
-        <h2>Add User</h2>
-        <div class="form-group"><label>Username</label><input id="new-username"></div>
-        <div class="form-group"><label>Password</label><input id="new-password" type="password"></div>
-        <button class="btn btn-primary" onclick="addUser()">Add User</button>
+        <h2>Добавить пользователя</h2>
+        <div class="form-group"><label>Логин</label><input id="new-username"></div>
+        <div class="form-group"><label>Пароль</label><input id="new-password" type="password"></div>
+        <button class="btn btn-primary" onclick="addUser()">Добавить</button>
       </div>
     </div>
   </div>
@@ -790,8 +946,8 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   <div class="panel" id="panel-settings">
     <div class="grid-2">
       <div class="card">
-        <h2>General</h2>
-        <div class="form-group"><label>LLM Model</label>
+        <h2>Общие</h2>
+        <div class="form-group"><label>Модель LLM</label>
           <select id="set-model">
             <option value="anthropic/claude-sonnet-4">Claude Sonnet 4 (anthropic)</option>
             <option value="openai/gpt-4o-mini">GPT-4o Mini (openai)</option>
@@ -800,12 +956,12 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
             <option value="meta-llama/llama-3.1-70b-instruct">Llama 3.1 70B (meta)</option>
           </select>
         </div>
-        <div class="form-group"><label>Keys.so Region</label><input id="set-keyso-region"></div>
-        <div class="form-group"><label>Sheets Tab Name</label><input id="set-sheets-tab"></div>
-        <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+        <div class="form-group"><label>Регион Keys.so</label><input id="set-keyso-region"></div>
+        <div class="form-group"><label>Название вкладки Sheets</label><input id="set-sheets-tab"></div>
+        <button class="btn btn-primary" onclick="saveSettings()">Сохранить</button>
       </div>
       <div class="card">
-        <h2>API Status</h2>
+        <h2>Статус API</h2>
         <div id="api-status"></div>
       </div>
     </div>
@@ -814,20 +970,20 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 
 <div class="modal-overlay" id="edit-modal">
   <div class="modal">
-    <h2>Edit Source</h2>
+    <h2>Редактировать источник</h2>
     <input type="hidden" id="edit-old-name">
-    <div class="form-group"><label>Name</label><input id="edit-name"></div>
+    <div class="form-group"><label>Имя</label><input id="edit-name"></div>
     <div class="form-group"><label>Type</label>
       <select id="edit-type" onchange="document.getElementById('edit-selector-group').style.display=this.value==='html'?'block':'none'">
         <option value="rss">RSS</option><option value="html">HTML</option>
       </select>
     </div>
     <div class="form-group"><label>URL</label><input id="edit-url"></div>
-    <div class="form-group"><label>Interval (min)</label><input type="number" id="edit-interval"></div>
-    <div class="form-group" id="edit-selector-group" style="display:none"><label>CSS Selector</label><input id="edit-selector"></div>
+    <div class="form-group"><label>Интервал (мин)</label><input type="number" id="edit-interval"></div>
+    <div class="form-group" id="edit-selector-group" style="display:none"><label>CSS Селектор</label><input id="edit-selector"></div>
     <div class="modal-buttons">
-      <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveEditSource()">Save</button>
+      <button class="btn btn-secondary" onclick="closeEditModal()">Отмена</button>
+      <button class="btn btn-primary" onclick="saveEditSource()">Сохранить</button>
     </div>
   </div>
 </div>
@@ -875,6 +1031,74 @@ async function loadStats() {
     `<div class="stat"><div class="num">${s.ready||0}</div><div class="lbl">Ready</div></div>`;
 }
 
+// Dashboard groups data
+let _dashTags = {};
+let _dashGroups = [];
+let _dashIdToGroup = {};
+const GROUP_COLORS = ['#e0245e','#1da1f2','#17bf63','#ffad1f','#794bc4','#ff6300','#e8598b','#00bcd4','#8bc34a','#ff9800'];
+
+async function loadDashboardGroups() {
+  toast('Анализ групп...');
+  const r = await api('/api/dashboard_groups');
+  if (r.status !== 'ok') { toast(r.message, true); return; }
+  _dashTags = r.tags || {};
+  _dashGroups = r.groups || [];
+  _dashIdToGroup = r.id_to_group || {};
+
+  // Show groups summary
+  const gs = document.getElementById('groups-summary');
+  if (_dashGroups.length > 0) {
+    gs.innerHTML = '<h2 style="margin-bottom:8px">Группы похожих новостей</h2>' +
+      _dashGroups.map(g => {
+        const color = GROUP_COLORS[(g.group - 1) % GROUP_COLORS.length];
+        return `<div class="card" style="margin-bottom:6px;padding:8px;border-left:3px solid ${color}">
+          <b style="color:${color}">Группа ${g.group}</b> (${g.count} шт):
+          ${g.titles.map(t => '<span style="display:block;font-size:0.85em;color:#8899a6;margin:2px 0">' + esc(t) + '</span>').join('')}
+          <button class="btn btn-sm btn-secondary" style="margin-top:4px" onclick="selectGroupById(${g.group})">Выбрать группу</button>
+        </div>`;
+      }).join('');
+    gs.style.display = 'block';
+  } else {
+    gs.innerHTML = '<div class="card" style="padding:10px">Похожих новостей не найдено</div>';
+    gs.style.display = 'block';
+  }
+
+  // Re-render dashboard
+  loadNews();
+  toast('Найдено ' + _dashGroups.length + ' групп');
+}
+
+function selectGroupById(gid) {
+  const ids = (_dashGroups.find(g => g.group === gid) || {}).ids || [];
+  document.querySelectorAll('.news-check').forEach(c => {
+    c.checked = ids.includes(c.dataset.id);
+  });
+  updateSelectedCount();
+}
+
+function selectGroup() {
+  // Select the group of the first checked item
+  const checked = document.querySelector('.news-check:checked');
+  if (!checked) { toast('Сначала выберите новость из группы', true); return; }
+  const gid = _dashIdToGroup[checked.dataset.id];
+  if (!gid) { toast('Эта новость не в группе', true); return; }
+  selectGroupById(gid);
+}
+
+function renderTags(newsId) {
+  const tags = _dashTags[newsId] || [];
+  if (!tags.length) return '<span style="color:#38444d">-</span>';
+  return tags.map(t => `<span class="tag tag-${t.id}">${t.label}</span>`).join('');
+}
+
+function renderGroup(newsId) {
+  const gid = _dashIdToGroup[newsId];
+  if (!gid) return '';
+  const color = GROUP_COLORS[(gid - 1) % GROUP_COLORS.length];
+  const g = _dashGroups.find(x => x.group === gid);
+  return `<span class="group-marker" style="background:${color}33;color:${color}" title="${g ? g.count + ' шт' : ''}">G${gid}</span>`;
+}
+
 // News
 async function loadNews() {
   const status = document.getElementById('filter-status')?.value || '';
@@ -889,19 +1113,25 @@ async function loadNews() {
   // Dashboard table
   const dashTb = document.getElementById('dash-news');
   if (dashTb) {
-    dashTb.innerHTML = news.slice(0, 100).map(n => `<tr>
+    dashTb.innerHTML = news.slice(0, 100).map(n => {
+      const gid = _dashIdToGroup[n.id];
+      const rowStyle = gid ? `border-left:3px solid ${GROUP_COLORS[(gid-1)%GROUP_COLORS.length]}` : '';
+      return `<tr style="${rowStyle}">
       <td><input type="checkbox" class="news-check" data-id="${n.id}" onchange="updateSelectedCount()"></td>
       <td>${n.source}</td>
       <td><a href="${n.url}" target="_blank" title="${esc(n.description||'')}">${esc(n.title||'')}</a></td>
+      <td>${renderTags(n.id)}</td>
+      <td>${renderGroup(n.id)}</td>
       <td>${fmtDate(n.published_at)}</td>
       <td>${fmtDate(n.parsed_at)}</td>
       <td><span class="badge badge-${n.status}">${n.status}</span></td>
       <td>${n.llm_trend_forecast||'-'}</td>
       <td style="white-space:nowrap">
-        <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')">Analyze</button>
+        <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')">Анализ</button>
         <button class="btn btn-sm btn-success" onclick="exportOne('${n.id}')">Sheets</button>
       </td>
-    </tr>`).join('');
+    </tr>`;
+    }).join('');
   }
 
   // News tab table
@@ -921,7 +1151,7 @@ async function loadNews() {
         <td>${n.llm_trend_forecast||'-'}</td>
         <td>${n.sheets_row||'-'}</td>
         <td>
-          <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')">Analyze</button>
+          <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')">Анализ</button>
           <button class="btn btn-sm btn-success" onclick="exportOne('${n.id}')">Sheets</button>
         </td>
       </tr>`;
@@ -945,7 +1175,7 @@ function getSelectedIds() {
 }
 function updateSelectedCount() {
   const cnt = getSelectedIds().length;
-  document.getElementById('selected-count').textContent = cnt ? cnt + ' selected' : '';
+  document.getElementById('selected-count').textContent = cnt ? cnt + ' выбрано' : '';
 }
 function selectAll() { document.querySelectorAll('.news-check').forEach(c => c.checked = true); updateSelectedCount(); }
 function deselectAll() { document.querySelectorAll('.news-check').forEach(c => c.checked = false); updateSelectedCount(); }
@@ -955,8 +1185,8 @@ function toggleAll(el) { document.querySelectorAll('.news-check').forEach(c => c
 let _reviewResults = [];
 async function sendToReview() {
   const ids = getSelectedIds();
-  if (!ids.length) { toast('Select news first', true); return; }
-  toast('Running review pipeline...');
+  if (!ids.length) { toast('Сначала выберите новости', true); return; }
+  toast('Запуск проверки...');
   const r = await api('/api/review', {news_ids: ids});
   if (r.status !== 'ok') { toast(r.message, true); return; }
   _reviewResults = r.results || [];
@@ -997,7 +1227,7 @@ async function sendToReview() {
   }).join('');
 
   document.getElementById('review-results').style.display = 'block';
-  toast('Review complete: ' + _reviewResults.length + ' checked');
+  toast('Проверено: ' + _reviewResults.length + ' новостей');
   loadAll();
 }
 
@@ -1006,9 +1236,9 @@ function hideReview() { document.getElementById('review-results').style.display 
 
 async function approveSelected() {
   const ids = [...document.querySelectorAll('.approve-check:checked')].map(c => c.dataset.id);
-  if (!ids.length) { toast('Select news to approve', true); return; }
+  if (!ids.length) { toast('Сначала выберите новости', true); return; }
   const r = await api('/api/approve', {news_ids: ids});
-  if (r.status === 'ok') toast('Approved ' + r.approved + ' news');
+  if (r.status === 'ok') toast('Одобрено: ' + r.approved + ' новостей');
   else toast(r.message, true);
   hideReview();
   loadAll();
@@ -1016,23 +1246,23 @@ async function approveSelected() {
 
 // Actions
 async function runProcess() {
-  toast('Processing started...');
+  toast('Обработка запущена...');
   const r = await api('/api/process', {});
-  toast(r.message || 'Done');
+  toast(r.message || 'Готово');
   setTimeout(loadAll, 5000);
 }
 
 async function processOne(id) {
-  toast('Analyzing...');
+  toast('Анализ...');
   const r = await api('/api/process_one', {news_id: id});
-  if (r.status === 'ok') toast('Analyzed!');
+  if (r.status === 'ok') toast('Проанализировано!');
   else toast(r.message, true);
   loadAll();
 }
 
 async function exportOne(id) {
   const r = await api('/api/export_sheets', {news_id: id});
-  if (r.status === 'ok') toast('Exported to row ' + r.row);
+  if (r.status === 'ok') toast('Экспортировано в строку ' + r.row);
   else toast(r.message, true);
 }
 
@@ -1048,9 +1278,9 @@ async function loadSources() {
       <td>${s.interval}min</td>
       <td>${s.selector||'-'}</td>
       <td style="white-space:nowrap">
-        <button class="btn btn-sm btn-secondary" onclick="openEditModal('${esc(s.name)}')">Edit</button>
-        <button class="btn btn-sm btn-primary" onclick="reparseSource('${esc(s.name)}')">Reparse</button>
-        <button class="btn btn-sm btn-danger" onclick="deleteSource('${esc(s.name)}')">Delete</button>
+        <button class="btn btn-sm btn-secondary" onclick="openEditModal('${esc(s.name)}')">Ред.</button>
+        <button class="btn btn-sm btn-primary" onclick="reparseSource('${esc(s.name)}')">Парсить</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteSource('${esc(s.name)}')">Удалить</button>
       </td>
     </tr>`
   ).join('');
@@ -1083,7 +1313,7 @@ async function saveEditSource() {
     selector: document.getElementById('edit-selector').value,
   };
   await api('/api/sources/edit', data);
-  toast('Source updated');
+  toast('Источник обновлён');
   closeEditModal();
   loadSources();
 }
@@ -1096,23 +1326,23 @@ async function addSource() {
     interval: document.getElementById('src-interval').value,
     selector: document.getElementById('src-selector').value,
   };
-  if (!data.name || !data.url) { toast('Fill name and URL', true); return; }
+  if (!data.name || !data.url) { toast('Заполните имя и URL', true); return; }
   const r = await api('/api/sources/add', data);
-  toast('Source added');
+  toast('Источник добавлен');
   loadSources();
 }
 
 async function deleteSource(name) {
-  if (!confirm('Delete ' + name + '?')) return;
+  if (!confirm('Удалить ' + name + '?')) return;
   await api('/api/sources/delete', {name});
-  toast('Deleted');
+  toast('Удалено');
   loadSources();
 }
 
 async function reparseSource(name) {
-  toast('Reparsing ' + name + '...');
+  toast('Парсинг ' + name + '...');
   const r = await api('/api/reparse', {name});
-  if (r.status === 'ok') toast(name + ': ' + r.new_articles + ' new articles');
+  if (r.status === 'ok') toast(name + ': ' + r.new_articles + ' новых статей');
   else toast(r.message, true);
   loadAll();
 }
@@ -1131,7 +1361,7 @@ async function savePrompts() {
     merge_analysis: document.getElementById('prompt-merge').value,
     keyso_queries: document.getElementById('prompt-keyso').value,
   });
-  toast('Prompts saved');
+  toast('Промпты сохранены');
 }
 
 // Settings
@@ -1153,7 +1383,7 @@ async function saveSettings() {
     keyso_region: document.getElementById('set-keyso-region').value,
     sheets_tab: document.getElementById('set-sheets-tab').value,
   });
-  toast('Settings saved');
+  toast('Настройки сохранены');
 }
 
 // Tools
@@ -1173,21 +1403,21 @@ async function testKeyso() {
 async function loadUsers() {
   const users = await api('/api/users');
   document.getElementById('users-table').innerHTML = users.map(u =>
-    `<tr><td>${u.username}</td><td>${u.username==='admin'?'':'<button class="btn btn-sm btn-danger" onclick="deleteUser(\''+u.username+'\')">Delete</button>'}</td></tr>`
+    `<tr><td>${u.username}</td><td>${u.username==='admin'?'':'<button class="btn btn-sm btn-danger" onclick="deleteUser(\''+u.username+'\')">Удалить</button>'}</td></tr>`
   ).join('');
 }
 async function addUser() {
   const username = document.getElementById('new-username').value;
   const password = document.getElementById('new-password').value;
-  if (!username || !password) { toast('Fill username and password', true); return; }
+  if (!username || !password) { toast('Заполните логин и пароль', true); return; }
   await api('/api/users/add', {username, password});
-  toast('User added');
+  toast('Пользователь добавлен');
   loadUsers();
 }
 async function deleteUser(username) {
-  if (!confirm('Delete user ' + username + '?')) return;
+  if (!confirm('Удалить пользователя ' + username + '?')) return;
   await api('/api/users/delete', {username});
-  toast('User deleted');
+  toast('Пользователь удалён');
   loadUsers();
 }
 

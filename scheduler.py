@@ -1,5 +1,6 @@
 import logging
 import json
+import time
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 import config
@@ -54,19 +55,36 @@ def _do_process(news: dict) -> dict:
     bigrams = keywords.get("bigrams", [])
     trigrams = keywords.get("trigrams", [])
 
-    # 2. Keys.so
+    # 2. Keys.so (with rate limit)
     top_bigram = bigrams[0][0] if bigrams else title
-    keyso_info = get_keyword_info(top_bigram)
-    similar = get_similar_keywords(top_bigram, limit=10)
+    try:
+        keyso_info = get_keyword_info(top_bigram)
+        time.sleep(2)
+        similar = get_similar_keywords(top_bigram, limit=10)
+        time.sleep(2)
+    except Exception as e:
+        logger.warning("Keys.so error: %s", e)
+        keyso_info = {"ws": 0, "wsk": 0}
+        similar = []
 
-    # 3. Google Trends
-    trends = get_trends_for_keyword(top_bigram)
+    # 3. Google Trends (with rate limit)
+    try:
+        trends = get_trends_for_keyword(top_bigram)
+        time.sleep(3)
+    except Exception as e:
+        logger.warning("Trends error: %s", e)
+        trends = {}
 
-    # 4. LLM
-    fc = forecast_trend(
-        title=title, text=text, bigrams=bigrams,
-        keyso_freq=keyso_info.get("ws", 0), trends=trends,
-    )
+    # 4. LLM (with rate limit)
+    try:
+        fc = forecast_trend(
+            title=title, text=text, bigrams=bigrams,
+            keyso_freq=keyso_info.get("ws", 0), trends=trends,
+        )
+        time.sleep(2)
+    except Exception as e:
+        logger.warning("LLM error: %s", e)
+        fc = None
     recommendation = fc.get("recommendation", "") if fc else ""
     trend_score = str(fc.get("trend_score", "")) if fc else ""
 
