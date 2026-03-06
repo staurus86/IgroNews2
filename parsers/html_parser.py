@@ -2,6 +2,8 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timedelta, timezone
+from xml.etree import ElementTree
 
 import requests
 from bs4 import BeautifulSoup
@@ -175,6 +177,110 @@ def _parse_dtf(source: dict) -> int:
         logger.error("Error parsing DTF: %s", e)
 
     logger.info("Parsed %s (DTF JSON): %d new articles", name, count)
+    return count
+
+
+def parse_sitemap_source(source: dict) -> int:
+    """Парсит sitemap XML, берёт свежие URL (за последние 30 дней) и загружает статьи."""
+    name = source["name"]
+    url = source["url"]
+    url_filter = source.get("url_filter", "")
+    max_age_days = source.get("max_age_days", 30)
+    count = 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+
+        root = ElementTree.fromstring(resp.content)
+        ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+
+        # Проверяем: это sitemapindex или обычный sitemap?
+        if root.tag.endswith("sitemapindex"):
+            # Это индекс — берём последние 2 sitemap-файла
+            sitemaps = root.findall("sm:sitemap", ns)
+            sitemap_urls = [s.find("sm:loc", ns).text for s in sitemaps if s.find("sm:loc", ns) is not None]
+            # Берём последние 2
+            for sm_url in sitemap_urls[-2:]:
+                count += _parse_single_sitemap(name, sm_url, url_filter, cutoff)
+        else:
+            # Обычный sitemap
+            count = _parse_single_sitemap_from_root(name, root, ns, url_filter, cutoff)
+
+    except Exception as e:
+        logger.error("Error parsing sitemap %s: %s", name, e)
+
+    logger.info("Parsed %s (sitemap): %d new articles", name, count)
+    return count
+
+
+def _parse_single_sitemap(name: str, sm_url: str, url_filter: str, cutoff: datetime) -> int:
+    """Загружает один sitemap и парсит его."""
+    try:
+        resp = requests.get(sm_url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        root = ElementTree.fromstring(resp.content)
+        ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+        return _parse_single_sitemap_from_root(name, root, ns, url_filter, cutoff)
+    except Exception as e:
+        logger.error("Error loading sitemap %s: %s", sm_url, e)
+        return 0
+
+
+def _parse_single_sitemap_from_root(name: str, root, ns: dict, url_filter: str, cutoff: datetime) -> int:
+    """Парсит URL из sitemap XML root."""
+    count = 0
+    urls = root.findall("sm:url", ns)
+
+    # Собираем свежие URL
+    fresh_urls = []
+    for u in urls:
+        loc = u.find("sm:loc", ns)
+        lastmod = u.find("sm:lastmod", ns)
+        if loc is None:
+            continue
+        link = loc.text.strip()
+
+        # Фильтр по URL (например только /news/)
+        if url_filter and url_filter not in link:
+            continue
+
+        # Фильтр по дате
+        if lastmod is not None and lastmod.text:
+            try:
+                dt = datetime.fromisoformat(lastmod.text.strip())
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt < cutoff:
+                    continue
+                fresh_urls.append((link, lastmod.text.strip()))
+            except ValueError:
+                fresh_urls.append((link, ""))
+        else:
+            fresh_urls.append((link, ""))
+
+    # Сортируем по дате (новые первыми) и берём до 20
+    fresh_urls.sort(key=lambda x: x[1], reverse=True)
+
+    for link, published_at in fresh_urls[:20]:
+        if news_exists(link):
+            continue
+
+        time.sleep(1)
+        h1, description, plain_text = _fetch_article(link)
+
+        if not h1 or len(h1) < 10:
+            continue
+
+        nid = insert_news(
+            source=name, url=link, title=h1,
+            h1=h1, description=description,
+            plain_text=plain_text, published_at=published_at,
+        )
+        if nid:
+            count += 1
+
     return count
 
 

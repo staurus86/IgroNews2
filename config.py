@@ -40,6 +40,7 @@ SOURCES = [
     {"name": "Metacritic",       "type": "html", "url": "https://www.metacritic.com/news/",            "interval": 30, "selector": "article"},
     {"name": "DTF",              "type": "dtf",  "url": "https://dtf.ru/games",                        "interval": 5},
     {"name": "iXBT.games",       "type": "html", "url": "https://ixbt.games/news",                    "interval": 30, "selector": "a[href*='/news/']", "title_selector": "h3"},
+    {"name": "iXBT.games-sitemap","type": "sitemap", "url": "https://ixbt.games/export/sitemapindex.xml", "interval": 60, "url_filter": "/news/"},
     {"name": "VGTimes",          "type": "html", "url": "https://vgtimes.ru/news/",                    "interval": 30, "selector": ".news-item", "title_selector": "h3 a"},
 ]
 

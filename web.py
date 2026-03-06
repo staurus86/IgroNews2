@@ -1,9 +1,11 @@
 import json
+import hmac
 import os
 import hashlib
 import secrets
 import threading
 import logging
+import time as _time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from http.cookies import SimpleCookie
 from urllib.parse import urlparse, parse_qs
@@ -13,12 +15,42 @@ from storage.database import get_connection, _is_postgres, get_unprocessed_news,
 logger = logging.getLogger(__name__)
 PORT = int(os.getenv("PORT", 8080))
 
+# Secret key for signing cookies — stable across redeploys via env var
+_COOKIE_SECRET = os.getenv("COOKIE_SECRET", "igronews-default-secret-key-2024")
+
 # Users: {username: password_hash}
 USERS = {
     "admin": hashlib.sha256("admin123".encode()).hexdigest(),
 }
-# Active sessions: {token: username}
-SESSIONS = {}
+
+
+def _sign_cookie(username: str) -> str:
+    """Создаёт подписанную куку: username.expiry.signature"""
+    expiry = int(_time.time()) + 86400 * 7  # 7 дней
+    payload = f"{username}:{expiry}"
+    sig = hmac.new(_COOKIE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:24]
+    return f"{payload}:{sig}"
+
+
+def _verify_cookie(value: str) -> str | None:
+    """Проверяет подписанную куку. Возвращает username или None."""
+    try:
+        parts = value.split(":")
+        if len(parts) != 3:
+            return None
+        username, expiry_str, sig = parts
+        expiry = int(expiry_str)
+        if _time.time() > expiry:
+            return None
+        payload = f"{username}:{expiry_str}"
+        expected = hmac.new(_COOKIE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:24]
+        if not hmac.compare_digest(sig, expected):
+            return None
+        if username not in USERS:
+            return None
+        return username
+    except Exception:
+        return None
 
 
 class AdminHandler(BaseHTTPRequestHandler):
@@ -28,7 +60,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         cookie = SimpleCookie(cookie_header)
         token = cookie.get("session")
         if token:
-            return SESSIONS.get(token.value)
+            return _verify_cookie(token.value)
         return None
 
     def _require_auth(self):
@@ -134,22 +166,16 @@ class AdminHandler(BaseHTTPRequestHandler):
         password = body.get("password", "")
         pw_hash = hashlib.sha256(password.encode()).hexdigest()
         if USERS.get(username) == pw_hash:
-            token = secrets.token_hex(32)
-            SESSIONS[token] = username
+            signed = _sign_cookie(username)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Set-Cookie", f"session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400")
+            self.send_header("Set-Cookie", f"session={signed}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "ok"}).encode())
         else:
             self._json({"status": "error", "message": "Invalid credentials"}, 401)
 
     def _do_logout(self):
-        cookie_header = self.headers.get("Cookie", "")
-        cookie = SimpleCookie(cookie_header)
-        token = cookie.get("session")
-        if token and token.value in SESSIONS:
-            del SESSIONS[token.value]
         self.send_response(302)
         self.send_header("Set-Cookie", "session=; Path=/; Max-Age=0")
         self.send_header("Location", "/login")
@@ -173,10 +199,6 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json({"status": "error", "message": "Cannot delete admin"})
             return
         USERS.pop(username, None)
-        # Remove their sessions
-        to_remove = [t for t, u in SESSIONS.items() if u == username]
-        for t in to_remove:
-            del SESSIONS[t]
         self._json({"status": "ok", "users": [{"username": u} for u in USERS.keys()]})
 
     def _serve_login(self):
@@ -660,6 +682,9 @@ async function login() {
             if source["type"] == "rss":
                 from parsers.rss_parser import parse_rss_source
                 count = parse_rss_source(source)
+            elif source["type"] == "sitemap":
+                from parsers.html_parser import parse_sitemap_source
+                count = parse_sitemap_source(source)
             else:
                 from parsers.html_parser import parse_html_source
                 count = parse_html_source(source)

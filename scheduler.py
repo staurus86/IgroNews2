@@ -25,6 +25,9 @@ def parse_sources(interval_min: int):
             total += parse_rss_source(source)
         elif source["type"] in ("html", "dtf"):
             total += parse_html_source(source)
+        elif source["type"] == "sitemap":
+            from parsers.html_parser import parse_sitemap_source
+            total += parse_sitemap_source(source)
     logger.info("[%dmin] Total new articles: %d", interval_min, total)
 
 
