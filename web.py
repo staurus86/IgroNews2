@@ -6250,7 +6250,13 @@ loadArticles();
 loadQueue();
 loadAnalytics();
 loadLogs();
-loadEditorial();
+loadEditorial().then(() => {
+  // Авто-проверка при первом входе: если таблица пуста и есть new-новости
+  const stats = document.getElementById('ed-stats');
+  if (_edData.length === 0 && stats && stats.textContent.match(/Новые.*[1-9]/)) {
+    edRunAutoReview();
+  }
+});
 setInterval(loadAll, 30000);
 setInterval(loadHealth, 60000);
 setInterval(loadQueue, 15000);
@@ -6320,6 +6326,16 @@ function renderEdTable() {
   });
 
   const tbody = document.getElementById('ed-table');
+  if (!data.length) {
+    const stats = document.getElementById('ed-stats');
+    const hasNew = stats && stats.innerHTML.includes('"new"');
+    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:40px;color:#8899a6">
+      <div style="font-size:1.3em;margin-bottom:12px">Нет новостей для отображения</div>
+      <div style="margin-bottom:12px">Нажмите <b>&#9654; Проверить новые</b> чтобы запустить проверку</div>
+      <button class="btn btn-success" onclick="edRunAutoReview()" style="padding:8px 24px;font-size:1em">&#9654; Проверить новые</button>
+    </td></tr>`;
+    return;
+  }
   tbody.innerHTML = data.map(n => {
     const sc = n.total_score || 0;
     const scColor = sc >= 70 ? '#17bf63' : sc >= 40 ? '#ffad1f' : '#e0245e';
