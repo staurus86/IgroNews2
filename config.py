@@ -37,6 +37,11 @@ KEYSO_BASE_URL = "https://api.keys.so/api/v2"
 # Google Trends regions
 REGIONS = ["RU", "US", "GB", "DE"]
 
+# Telegram Bot
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_IDS = os.getenv("TELEGRAM_CHAT_IDS", "")  # comma-separated authorized chat IDs
+TELEGRAM_NOTIFY_THRESHOLD = int(os.getenv("TELEGRAM_NOTIFY_THRESHOLD", "70"))
+
 # Sources — flat list, scheduler distributes by interval
 SOURCES = [
     # RSS

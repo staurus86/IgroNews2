@@ -126,6 +126,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/cache_stats": lambda: self._json(self._get_cache_stats()),
             "/api/editorial": lambda: self._json(self._get_editorial()),
             "/api/moderation_list": lambda: self._json(self._get_moderation_list()),
+            "/api/digests": lambda: self._json(self._get_digests()),
         }
 
         # DOCX download (GET with query param)
@@ -217,6 +218,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/prompt_versions/save": lambda: self._save_prompt_version(body),
             "/api/prompt_versions/activate": lambda: self._activate_prompt_version(body),
             "/api/generate_digest": lambda: self._generate_digest(body),
+            "/api/digest/generate": lambda: self._generate_and_save_digest(body),
             "/api/event_chain": lambda: self._get_event_chain(body),
             "/api/queue/cancel": lambda: self._cancel_queue_task(body),
             "/api/queue/cancel_all": lambda: self._cancel_all_queue(body),
@@ -2369,6 +2371,75 @@ async function login() {
 
         finally:
             cur.close()
+
+    def _get_digests(self):
+        """Возвращает последние 10 сохранённых дайджестов."""
+        from storage.database import get_digests
+        digests = get_digests(limit=10)
+        return {"status": "ok", "digests": digests}
+
+    def _generate_and_save_digest(self, body):
+        """Ручная генерация дайджеста с сохранением в БД."""
+        style = body.get("style", "brief")
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            if _is_postgres():
+                cur.execute("""
+                    SELECT n.id, n.title, n.source, n.url,
+                           COALESCE(a.total_score, 0) as total_score
+                    FROM news n
+                    LEFT JOIN news_analysis a ON a.news_id = n.id
+                    WHERE n.status IN ('approved', 'processed', 'in_review', 'ready')
+                      AND n.parsed_at > (NOW() - INTERVAL '24 hours')::text
+                    ORDER BY COALESCE(a.total_score, 0) DESC
+                    LIMIT 20
+                """)
+                columns = [desc[0] for desc in cur.description]
+                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                cur.execute("""
+                    SELECT n.id, n.title, n.source, n.url,
+                           COALESCE(a.total_score, 0) as total_score
+                    FROM news n
+                    LEFT JOIN news_analysis a ON a.news_id = n.id
+                    WHERE n.status IN ('approved', 'processed', 'in_review', 'ready')
+                      AND n.parsed_at > datetime('now', '-1 day')
+                    ORDER BY COALESCE(a.total_score, 0) DESC
+                    LIMIT 20
+                """)
+                news_list = [dict(row) for row in cur.fetchall()]
+
+            if not news_list:
+                self._json({"status": "ok", "digest": {"title": "Нет данных", "text": "Нет новостей за последние 24 часа.", "news_count": 0}})
+                return
+
+            from apis.digest import generate_daily_digest
+            result = generate_daily_digest(news_list, style=style)
+
+            # Save to DB
+            import uuid
+            from datetime import datetime, timezone
+            from storage.database import save_digest
+            digest_id = str(uuid.uuid4())[:12]
+            digest_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            save_digest(
+                digest_id=digest_id,
+                digest_date=digest_date,
+                style=style,
+                title=result.get("title", ""),
+                text=result.get("text", ""),
+                news_count=result.get("news_count", 0),
+            )
+
+            self._json({"status": "ok", "digest": result})
+
+        except Exception as e:
+            self._json({"status": "error", "message": str(e)[:500]})
+        finally:
+            cur.close()
+
     def _get_event_chain(self, body):
         news_id = body.get("news_id", "")
         if not news_id:
@@ -4376,10 +4447,27 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       </div>
     </div>
 
-    <!-- Digest result -->
+    <!-- Digest result (inline from old button) -->
     <div class="card" id="digest-result" style="display:none;margin-bottom:16px">
       <h3 style="font-size:0.95em;margin-bottom:10px">Дайджест</h3>
       <div id="digest-content"></div>
+    </div>
+
+    <!-- Saved Digests section -->
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <h3 style="font-size:0.95em;margin:0">Дайджесты</h3>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="digest-style-select" style="padding:4px 8px;background:#192734;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
+            <option value="brief">Краткий</option>
+            <option value="detailed">Подробный</option>
+            <option value="telegram">Telegram</option>
+          </select>
+          <button class="btn btn-sm btn-success" onclick="generateAndSaveDigest()">Сгенерировать</button>
+          <button class="btn btn-sm btn-secondary" onclick="loadSavedDigests()">Обновить</button>
+        </div>
+      </div>
+      <div id="saved-digests-list" style="color:#8899a6;font-size:0.85em">Нажмите «Обновить» для загрузки</div>
     </div>
   </div>
 
@@ -4743,7 +4831,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   if (t.dataset.tab === 'news') { loadNewsPage(); }
   if (t.dataset.tab === 'editor') { loadArticles(); }
   if (t.dataset.tab === 'viral') { loadViral(); }
-  if (t.dataset.tab === 'analytics') { loadAnalytics(); }
+  if (t.dataset.tab === 'analytics') { loadAnalytics(); loadSavedDigests(); }
   if (t.dataset.tab === 'health') { loadHealth(); }
   if (t.dataset.tab === 'settings') { loadSettings(); loadLogs(); loadQueue(); }
 }));
@@ -6731,6 +6819,41 @@ async function generateDigest(period) {
   } else {
     el.style.display = 'block';
     content.innerHTML = '<span style="color:#e0245e">' + (r.message||'Ошибка') + '</span>';
+  }
+}
+
+// ---- Saved Digests ----
+async function loadSavedDigests() {
+  const r = await api('/api/digests');
+  const el = document.getElementById('saved-digests-list');
+  if (r.status === 'ok' && r.digests && r.digests.length > 0) {
+    const styleLabels = {brief: 'Краткий', detailed: 'Подробный', telegram: 'Telegram'};
+    el.innerHTML = r.digests.map(d => `
+      <div class="card" style="margin-bottom:8px;padding:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span style="font-weight:600;color:#1da1f2;font-size:0.95em">${d.title||'Дайджест'}</span>
+          <span style="font-size:0.78em;color:#8899a6">${d.digest_date||''} &middot; ${styleLabels[d.style]||d.style} &middot; ${d.news_count||0} новостей</span>
+        </div>
+        <div style="white-space:pre-wrap;line-height:1.5;font-size:0.88em;color:#e1e8ed">${(d.text||'').replace(/</g,'&lt;')}</div>
+        <div style="margin-top:6px;font-size:0.75em;color:#657786">${d.created_at||''}</div>
+      </div>
+    `).join('');
+  } else {
+    el.innerHTML = '<div style="text-align:center;padding:20px;color:#657786">Нет сохранённых дайджестов</div>';
+  }
+}
+
+async function generateAndSaveDigest() {
+  const style = document.getElementById('digest-style-select').value;
+  const styleLabels = {brief: 'Краткий', detailed: 'Подробный', telegram: 'Telegram'};
+  if (!confirm('Сгенерировать и сохранить дайджест (' + styleLabels[style] + ')? Это вызов LLM API.')) return;
+  toast('Генерация дайджеста...');
+  const r = await api('/api/digest/generate', {style});
+  if (r.status === 'ok' && r.digest) {
+    toast('Дайджест сохранён!');
+    loadSavedDigests();
+  } else {
+    toast(r.message || 'Ошибка генерации', true);
   }
 }
 

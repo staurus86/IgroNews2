@@ -84,6 +84,29 @@ def _auto_review_new():
         dupes = sum(1 for r in result.get("results", []) if r.get("is_duplicate"))
         logger.info("Auto-review: %d checked, %d duplicates", reviewed, dupes)
 
+        # Telegram notifications for high-scoring news
+        try:
+            if getattr(config, "TELEGRAM_BOT_TOKEN", ""):
+                from bot.telegram_bot import notify_high_score, notify_pipeline_done
+                # Build notification list from results
+                high_score_news = []
+                for r in result.get("results", []):
+                    if not r.get("is_duplicate") and not r.get("auto_rejected"):
+                        high_score_news.append({
+                            "id": r.get("id", ""),
+                            "title": r.get("title", ""),
+                            "source": r.get("source", ""),
+                            "total_score": r.get("total_score", 0),
+                        })
+                if high_score_news:
+                    notify_high_score(high_score_news)
+                notify_pipeline_done("auto_review", {
+                    "reviewed": reviewed,
+                    "duplicates": dupes,
+                })
+        except Exception as tg_err:
+            logger.debug("Telegram notify skipped: %s", tg_err)
+
     except Exception as e:
         logger.error("Auto-review error: %s", e)
 
@@ -657,6 +680,67 @@ def run_no_llm_pipeline(news_ids: list[str], task_ids: list[str]):
             _update_task(task_id, "error", {"stage": "unknown", "error": str(e)[:500]})
 
 
+def generate_auto_digest():
+    """Генерирует авто-дайджест: топ-20 новостей за последние 24 часа."""
+    try:
+        from storage.database import get_connection, _is_postgres, save_digest
+        from apis.digest import generate_daily_digest
+        import uuid
+        from datetime import datetime, timezone
+
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            if _is_postgres():
+                cur.execute("""
+                    SELECT n.id, n.title, n.source, n.url,
+                           COALESCE(a.total_score, 0) as total_score
+                    FROM news n
+                    LEFT JOIN news_analysis a ON a.news_id = n.id
+                    WHERE n.status IN ('approved', 'processed', 'in_review', 'ready')
+                      AND n.parsed_at > (NOW() - INTERVAL '24 hours')::text
+                    ORDER BY COALESCE(a.total_score, 0) DESC
+                    LIMIT 20
+                """)
+                columns = [desc[0] for desc in cur.description]
+                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                cur.execute("""
+                    SELECT n.id, n.title, n.source, n.url,
+                           COALESCE(a.total_score, 0) as total_score
+                    FROM news n
+                    LEFT JOIN news_analysis a ON a.news_id = n.id
+                    WHERE n.status IN ('approved', 'processed', 'in_review', 'ready')
+                      AND n.parsed_at > datetime('now', '-1 day')
+                    ORDER BY COALESCE(a.total_score, 0) DESC
+                    LIMIT 20
+                """)
+                news_list = [dict(row) for row in cur.fetchall()]
+        finally:
+            cur.close()
+
+        if not news_list:
+            logger.info("Auto-digest: no news in last 24h, skipping")
+            return
+
+        result = generate_daily_digest(news_list, style="brief")
+
+        digest_id = str(uuid.uuid4())[:12]
+        digest_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        save_digest(
+            digest_id=digest_id,
+            digest_date=digest_date,
+            style="brief",
+            title=result.get("title", ""),
+            text=result.get("text", ""),
+            news_count=result.get("news_count", 0),
+        )
+        logger.info("Auto-digest generated: %s (%d news)", result.get("title", "")[:60], len(news_list))
+
+    except Exception as e:
+        logger.error("Auto-digest error: %s", e)
+
+
 def start_scheduler():
     """Запускает планировщик задач."""
     scheduler = BlockingScheduler(timezone="Europe/Moscow")
@@ -671,6 +755,9 @@ def start_scheduler():
 
     # Очистка старого plain_text раз в сутки (экономия памяти БД)
     scheduler.add_job(cleanup_old_plaintext, "interval", hours=24, id="cleanup_plaintext")
+
+    # Авто-дайджест: ежедневно в 23:00 по Москве
+    scheduler.add_job(generate_auto_digest, "cron", hour=23, minute=0, id="auto_digest")
 
     # Первый запуск парсинга сразу (включает auto-review)
     for mins in intervals:

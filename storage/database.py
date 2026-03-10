@@ -102,6 +102,18 @@ def init_db():
         )
     """
 
+    digests_sql = """
+        CREATE TABLE IF NOT EXISTS digests (
+            id TEXT PRIMARY KEY,
+            digest_date TEXT,
+            style TEXT,
+            title TEXT,
+            text TEXT,
+            news_count INTEGER DEFAULT 0,
+            created_at TEXT
+        )
+    """
+
     news_sql = """
         CREATE TABLE IF NOT EXISTS news (
             id TEXT PRIMARY KEY,
@@ -138,6 +150,7 @@ def init_db():
         cur.execute(task_queue_sql)
         cur.execute(feedback_sql)
         cur.execute(prompt_versions_sql)
+        cur.execute(digests_sql)
     else:
         cur.execute(news_sql)
         cur.execute(analysis_sql)
@@ -145,6 +158,7 @@ def init_db():
         cur.execute(task_queue_sql)
         cur.execute(feedback_sql)
         cur.execute(prompt_versions_sql)
+        cur.execute(digests_sql)
         conn.commit()
 
     # Add check_data columns if missing (stores viral, sentiment, freshness, tags as JSON)
@@ -374,3 +388,47 @@ def cleanup_old_plaintext(days: int = 14):
     if count > 0:
         logger.info("Cleaned plain_text for %d old news items", count)
     return count
+
+
+def save_digest(digest_id: str, digest_date: str, style: str,
+                title: str, text: str, news_count: int):
+    """Сохраняет дайджест в БД."""
+    conn = get_connection()
+    cur = conn.cursor()
+    now = datetime.now(timezone.utc).isoformat()
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        if _is_postgres():
+            cur.execute(
+                f"""INSERT INTO digests (id, digest_date, style, title, text, news_count, created_at)
+                    VALUES ({','.join([ph]*7)})
+                    ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title, text=EXCLUDED.text,
+                    news_count=EXCLUDED.news_count, created_at=EXCLUDED.created_at""",
+                (digest_id, digest_date, style, title, text, news_count, now)
+            )
+        else:
+            cur.execute(
+                f"""INSERT OR REPLACE INTO digests (id, digest_date, style, title, text, news_count, created_at)
+                    VALUES ({','.join([ph]*7)})""",
+                (digest_id, digest_date, style, title, text, news_count, now)
+            )
+            conn.commit()
+    finally:
+        cur.close()
+    logger.info("Saved digest: %s (%s)", title[:60], style)
+
+
+def get_digests(limit: int = 10) -> list[dict]:
+    """Возвращает последние дайджесты."""
+    conn = get_connection()
+    cur = conn.cursor()
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        cur.execute(f"SELECT * FROM digests ORDER BY created_at DESC LIMIT {ph}", (limit,))
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            return [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        cur.close()

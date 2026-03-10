@@ -7,6 +7,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 
+import config
 from storage.database import init_db
 from storage.sheets import setup_headers
 from scheduler import start_scheduler
@@ -29,6 +30,12 @@ def main():
     # Запуск веб-дашборда на порту 8080
     start_web()
     logging.info("Dashboard running on port 8080")
+
+    # Запуск Telegram-бота (если токен задан)
+    if config.TELEGRAM_BOT_TOKEN:
+        from bot.telegram_bot import start_bot_polling
+        start_bot_polling()
+        logging.info("Telegram bot started")
 
     # Запуск планировщика
     start_scheduler()
