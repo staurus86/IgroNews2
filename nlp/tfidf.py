@@ -13,22 +13,74 @@ logger = logging.getLogger(__name__)
 
 # Стоп-слова для игровых новостей (рус + англ)
 STOP_WORDS = {
+    # Русские — местоимения, предлоги, союзы, частицы, вспомогательные
     "это", "как", "что", "для", "при", "все", "они", "его", "она", "мне",
     "так", "или", "уже", "без", "тоже", "может", "будет", "если", "еще",
     "них", "нет", "есть", "был", "быть", "были", "было", "свой", "свои",
     "том", "тот", "этот", "эти", "где", "когда", "чем", "кто", "под",
+    "также", "после", "перед", "между", "через", "более", "менее", "очень",
+    "только", "просто", "именно", "вот", "лишь", "ведь", "даже", "ещё",
+    "которые", "который", "которая", "которое", "которых", "которому",
+    "чтобы", "потому", "поэтому", "однако", "хотя", "впрочем", "причём",
+    "тем", "нас", "вас", "нам", "вам", "ним", "ней", "ему", "ими",
+    "себя", "себе", "собой", "свою", "свое", "своё", "своих", "своим",
+    "моя", "мой", "моё", "мои", "наш", "наша", "наше", "наши",
+    "какой", "какая", "какие", "какое", "такой", "такая", "такие", "такое",
+    "другой", "другая", "другие", "другое", "каждый", "каждая", "каждое",
+    "сам", "сама", "само", "сами", "весь", "вся", "всё", "всех",
+    "над", "про", "ото", "обо", "надо", "пока", "либо", "иначе",
+    "раз", "ещё", "два", "три", "уже", "чуть", "куда", "туда", "сюда",
+    "тогда", "теперь", "потом", "затем", "снова", "опять", "здесь", "там",
+    "ничего", "никто", "ничто", "никогда", "нигде", "некоторые",
+    # Русские — глагольные формы общего употребления
+    "стал", "стала", "стало", "стали", "стать",
+    "мог", "могла", "могли", "могут", "можно", "нельзя",
+    "хочет", "хотят", "хотел", "хотела",
+    "должен", "должна", "должно", "должны",
+    "говорит", "говорят", "сказал", "сказала", "заявил", "заявила",
+    "решил", "решила", "решили", "получил", "получила", "получили",
+    "сделал", "сделала", "сделали", "делает", "делают",
+    "дал", "дала", "дали", "даёт", "дают", "давать",
+    "знает", "знают", "знал", "знала",
+    "видно", "видел", "видела", "хорошо", "плохо",
+    "надо", "нужно", "нужна", "нужны", "нужен",
+    # Английские
     "the", "and", "for", "that", "with", "this", "from", "has", "are",
     "was", "will", "but", "not", "you", "all", "can", "had", "her",
     "one", "our", "out", "its", "have", "been", "who", "more", "new",
+    "also", "about", "into", "than", "just", "over", "some", "after",
+    "before", "between", "through", "most", "only", "very", "when",
+    "where", "which", "while", "being", "would", "could", "should",
+    "their", "there", "these", "those", "then", "them", "they", "what",
+    "each", "other", "much", "such", "here", "does", "did", "may",
+    "like", "well", "back", "even", "still", "many", "made", "said",
+    "any", "how", "now", "way", "get", "got", "going", "come",
 }
 
-# Фоновый корпус: типичные фразы из игровых новостей.
+# Фоновый корпус: типичные фразы из игровых новостей (рус + англ, сбалансировано).
 BACKGROUND_CORPUS = [
+    # Русские — общие игровые новости
     "новая игра вышла на pc и консоли с большим обновлением",
     "разработчики выпустили патч обновление для игры",
     "трейлер новой игры показали на презентации",
     "студия анонсировала продолжение популярной серии",
     "релиз игры перенесли на следующий год",
+    "компания представила новый геймплей на выставке",
+    "обзор игры показал высокие оценки критиков",
+    "игроки обнаружили баг в последнем обновлении",
+    "дополнение к игре выйдет в следующем месяце",
+    "бесплатное обновление добавляет новый контент и режимы",
+    "киберспортивный турнир собрал рекордный призовой фонд",
+    "издатель закрыл студию разработчиков после провала",
+    "эксклюзив консоли выходит на другие платформы",
+    "ремейк классической игры получил дату релиза",
+    "утечка раскрыла подробности неанонсированного проекта",
+    "сервис подписки пополнился новыми играми",
+    "ранний доступ стартовал в steam и epic games store",
+    "разработчики рассказали о планах на будущее игры",
+    "сиквел получил первый геймплейный трейлер",
+    "мобильная версия игры выходит на ios и android",
+    # Английские — общие игровые новости
     "new game announced with release date trailer",
     "developer studio released major update patch",
     "upcoming game revealed gameplay trailer first look",
@@ -39,17 +91,21 @@ BACKGROUND_CORPUS = [
     "dlc expansion season pass new content update",
     "free to play battle royale shooter open world",
     "console exclusive port remaster remake collection",
+    "studio shut down after layoffs restructuring",
+    "leak reveals unannounced game sequel project",
+    "subscription service adds new games this month",
+    "remake remaster classic game gets release date",
+    "mobile version launches on ios android devices",
 ]
 
 _STOP_WORDS_LIST = list(STOP_WORDS)
 
 # Pre-compiled regex for text cleaning
 _RE_HTML = re.compile(r"<[^>]+>")
-_RE_NONWORD = re.compile(r"[^\w\s]")
+_RE_NONWORD = re.compile(r"[^\w\s\-]")
 _RE_SPACES = re.compile(r"\s+")
-
-# Cached fitted vectorizers (created once, reused with transform)
-_fitted_vectorizers = {}
+# Regex for Cyrillic token pattern (allows words from both alphabets)
+_TOKEN_PATTERN = r"(?u)\b[a-zA-Zа-яА-ЯёЁ0-9][a-zA-Zа-яА-ЯёЁ0-9\-]+\b"
 
 
 def clean_text(text: str) -> str:
@@ -60,36 +116,20 @@ def clean_text(text: str) -> str:
     return text.strip().lower()
 
 
-def _get_fitted_vectorizer(ngram_range: tuple) -> TfidfVectorizer:
-    """Returns a vectorizer pre-fitted on background corpus. Created once."""
-    if ngram_range not in _fitted_vectorizers:
-        v = TfidfVectorizer(
-            ngram_range=ngram_range,
-            max_features=100,
-            stop_words=_STOP_WORDS_LIST,
-            min_df=1,
-        )
-        v.fit(BACKGROUND_CORPUS)
-        _fitted_vectorizers[ngram_range] = v
-    return _fitted_vectorizers[ngram_range]
-
-
 def _tfidf_with_background(text: str, ngram_range: tuple, top_n: int) -> list[list]:
     """TF-IDF с фоновым корпусом.
 
-    Uses pre-fitted vectorizer's vocabulary, fits a new one on corpus+text
-    to get proper IDF scores. Vocabulary is fixed so fit is cheap.
+    Fit each time on corpus+text to capture all n-grams including Russian.
+    Background corpus provides IDF dampening for common gaming phrases.
     """
     corpus = [text] + BACKGROUND_CORPUS
     try:
-        base = _get_fitted_vectorizer(ngram_range)
-        # Create lightweight vectorizer with fixed vocabulary — fit is O(vocab) not O(features)
         vectorizer = TfidfVectorizer(
             ngram_range=ngram_range,
-            max_features=100,
+            max_features=200,
             stop_words=_STOP_WORDS_LIST,
             min_df=1,
-            vocabulary=base.vocabulary_,
+            token_pattern=_TOKEN_PATTERN,
         )
         tfidf_matrix = vectorizer.fit_transform(corpus)
         feature_names = vectorizer.get_feature_names_out()

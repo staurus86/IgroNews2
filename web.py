@@ -6847,13 +6847,6 @@ loadArticles();
 loadQueue();
 loadAnalytics();
 loadLogs();
-loadEditorial().then(() => {
-  // Авто-проверка при первом входе: если таблица пуста и есть new-новости
-  const stats = document.getElementById('ed-stats');
-  if (_edData.length === 0 && stats && stats.textContent.match(/Новые.*[1-9]/)) {
-    edRunAutoReview();
-  }
-});
 setInterval(loadHealth, 60000);
 setInterval(loadQueue, 15000);
 
@@ -6976,7 +6969,10 @@ function renderEdTable() {
 
     // Viral triggers tooltip
     let vTriggers = [];
-    try { vTriggers = JSON.parse(n.viral_data || '[]'); } catch(e) {}
+    try {
+      const vRaw = JSON.parse(n.viral_data || '[]');
+      vTriggers = Array.isArray(vRaw) ? vRaw : [];
+    } catch(e) {}
     const vTriggersTooltip = vTriggers.map(t => `${t.label||'?'} (${t.weight||0})`).join('\\n') || 'Нет триггеров';
 
     // Quality / Relevance
@@ -7286,6 +7282,14 @@ setInterval(() => {
   }
 }, 30000);
 
+// Initial editorial load + auto-review if empty
+loadEditorial().then(() => {
+  const stats = document.getElementById('ed-stats');
+  if (_edData.length === 0 && stats && stats.textContent.match(/Новые.*[1-9]/)) {
+    edRunAutoReview();
+  }
+});
+
 // ═══════════════════════════════════════════
 // PIPELINE BUTTONS (Редакция)
 // ═══════════════════════════════════════════
@@ -7423,7 +7427,7 @@ function renderModTable() {
     ).join(' ');
     const freshH = n.freshness_hours != null && n.freshness_hours >= 0 ? n.freshness_hours.toFixed(1) + 'ч' : '?';
     let modVT = [];
-    try { modVT = JSON.parse(n.viral_data || '[]'); } catch(e) {}
+    try { const mvRaw = JSON.parse(n.viral_data || '[]'); modVT = Array.isArray(mvRaw) ? mvRaw : []; } catch(e) {}
     const modVTip = modVT.map(t => `${t.label||'?'} (${t.weight||0})`).join('\\n') || 'Нет триггеров';
     return `<tr>
       <td><input type="checkbox" class="mod-cb" value="${n.id}" onchange="modUpdateSelected()"></td>
