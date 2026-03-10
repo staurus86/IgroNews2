@@ -188,8 +188,11 @@ def news_exists(url: str) -> bool:
     news_id = hashlib.md5(url.encode()).hexdigest()
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT 1 FROM news WHERE id = %s" if _is_postgres() else "SELECT 1 FROM news WHERE id = ?", (news_id,))
-    return cur.fetchone() is not None
+    try:
+        cur.execute("SELECT 1 FROM news WHERE id = %s" if _is_postgres() else "SELECT 1 FROM news WHERE id = ?", (news_id,))
+        return cur.fetchone() is not None
+    finally:
+        cur.close()
 
 
 def insert_news(source: str, url: str, title: str, h1: str = "",
@@ -225,23 +228,29 @@ def get_unprocessed_news(limit: int = 20):
     conn = get_connection()
     cur = conn.cursor()
     q = "SELECT * FROM news WHERE status = 'approved' ORDER BY parsed_at DESC"
-    if _is_postgres():
-        cur.execute(q + " LIMIT %s", (limit,))
-        columns = [desc[0] for desc in cur.description]
-        return [dict(zip(columns, row)) for row in cur.fetchall()]
-    else:
-        cur.execute(q + " LIMIT ?", (limit,))
-        return [dict(row) for row in cur.fetchall()]
+    try:
+        if _is_postgres():
+            cur.execute(q + " LIMIT %s", (limit,))
+            columns = [desc[0] for desc in cur.description]
+            return [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            cur.execute(q + " LIMIT ?", (limit,))
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        cur.close()
 
 
 def update_news_status(news_id: str, status: str):
     conn = get_connection()
     cur = conn.cursor()
-    if _is_postgres():
-        cur.execute("UPDATE news SET status = %s WHERE id = %s", (status, news_id))
-    else:
-        cur.execute("UPDATE news SET status = ? WHERE id = ?", (status, news_id))
-        conn.commit()
+    try:
+        if _is_postgres():
+            cur.execute("UPDATE news SET status = %s WHERE id = %s", (status, news_id))
+        else:
+            cur.execute("UPDATE news SET status = ? WHERE id = ?", (status, news_id))
+            conn.commit()
+    finally:
+        cur.close()
 
 
 def save_analysis(news_id: str, **kwargs):
@@ -330,17 +339,20 @@ def save_check_results(news_id: str, checks: dict, sentiment: dict = None,
     }
 
     # Ensure row exists in news_analysis
-    if _is_postgres():
-        cur.execute(f"INSERT INTO news_analysis (news_id) VALUES ({ph}) ON CONFLICT DO NOTHING", (news_id,))
-        set_clause = ", ".join(f"{k} = {ph}" for k in vals)
-        cur.execute(f"UPDATE news_analysis SET {set_clause} WHERE news_id = {ph}",
-                    list(vals.values()) + [news_id])
-    else:
-        cur.execute(f"INSERT OR IGNORE INTO news_analysis (news_id) VALUES ({ph})", (news_id,))
-        set_clause = ", ".join(f"{k} = {ph}" for k in vals)
-        cur.execute(f"UPDATE news_analysis SET {set_clause} WHERE news_id = {ph}",
-                    list(vals.values()) + [news_id])
-        conn.commit()
+    try:
+        if _is_postgres():
+            cur.execute(f"INSERT INTO news_analysis (news_id) VALUES ({ph}) ON CONFLICT DO NOTHING", (news_id,))
+            set_clause = ", ".join(f"{k} = {ph}" for k in vals)
+            cur.execute(f"UPDATE news_analysis SET {set_clause} WHERE news_id = {ph}",
+                        list(vals.values()) + [news_id])
+        else:
+            cur.execute(f"INSERT OR IGNORE INTO news_analysis (news_id) VALUES ({ph})", (news_id,))
+            set_clause = ", ".join(f"{k} = {ph}" for k in vals)
+            cur.execute(f"UPDATE news_analysis SET {set_clause} WHERE news_id = {ph}",
+                        list(vals.values()) + [news_id])
+            conn.commit()
+    finally:
+        cur.close()
 
 
 def cleanup_old_plaintext(days: int = 14):
