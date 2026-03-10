@@ -921,7 +921,7 @@ async function login() {
             self._json({"status": "error", "message": str(e), "type": type(e).__name__})
 
     def _approve_news(self, body):
-        """Одобряет новости для обогащения."""
+        """Одобряет новости и запускает обогащение в фоне."""
         news_ids = body.get("news_ids", [])
         if not news_ids:
             self._json({"status": "error", "message": "No news selected"})
@@ -935,24 +935,40 @@ async function login() {
                     record_decision(nid, "approved")
                 except Exception:
                     pass
-            self._json({"status": "ok", "approved": len(news_ids)})
+
+            # Auto-enrich: запускаем обогащение в фоновом потоке
+            import threading
+            def _bg_enrich(ids):
+                from scheduler import _process_single_news
+                for nid in ids:
+                    try:
+                        _process_single_news(nid)
+                    except Exception as e:
+                        logger.warning("Background enrich failed for %s: %s", nid, e)
+            threading.Thread(target=_bg_enrich, args=(list(news_ids),), daemon=True).start()
+
+            self._json({"status": "ok", "approved": len(news_ids), "enriching": True})
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
 
     def _reject_news(self, body):
-        """Отклоняет новость."""
+        """Отклоняет новости (одну или массив)."""
+        news_ids = body.get("news_ids", [])
         news_id = body.get("news_id")
-        if not news_id:
-            self._json({"status": "error", "message": "news_id required"})
+        if news_id and not news_ids:
+            news_ids = [news_id]
+        if not news_ids:
+            self._json({"status": "error", "message": "news_ids required"})
             return
         try:
             from checks.feedback import record_decision
-            update_news_status(news_id, "rejected")
-            try:
-                record_decision(news_id, "rejected")
-            except Exception:
-                pass
-            self._json({"status": "ok"})
+            for nid in news_ids:
+                update_news_status(nid, "rejected")
+                try:
+                    record_decision(nid, "rejected")
+                except Exception:
+                    pass
+            self._json({"status": "ok", "rejected": len(news_ids)})
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
 
@@ -3008,10 +3024,11 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
             <option value="">Все</option>
           </select>
           <select id="editor-status-filter" onchange="filterEditorNews()" style="padding:6px 8px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
-            <option value="">Статус</option>
+            <option value="approved" selected>Одобренные</option>
+            <option value="processed">Обработанные</option>
+            <option value="">Все</option>
+            <option value="in_review">На проверке</option>
             <option value="new">Новые</option>
-            <option value="approved">Одобренные</option>
-            <option value="rejected">Отклонённые</option>
             <option value="_viral" style="color:#64c8ff">&#9733; Viral picks</option>
           </select>
         </div>
@@ -5010,6 +5027,7 @@ function renderEditorList(news) {
         <div style="font-size:0.88em;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden" title="${esc(n.title||'')}">${esc(n.title||'')}${isViral ? '<span class="viral-pick-badge">VIRAL</span>' : ''}</div>
         <div style="font-size:0.72em;color:#8899a6;margin-top:3px;display:flex;align-items:center;gap:6px">
           <span style="font-weight:500;color:#657786">${n.source}</span>
+          ${n.total_score ? `<span style="color:${n.total_score>=70?'#17bf63':n.total_score>=40?'#ffad1f':'#e0245e'};font-weight:bold">${n.total_score}</span>` : ''}
           <span>${dateStr}</span>
           <span class="badge badge-${n.status}" style="font-size:0.9em">${STATUS_LABELS[n.status]||n.status}</span>
         </div>
@@ -6404,7 +6422,7 @@ function _edGetSelected() {
 
 async function edApprove(id) {
   const r = await api('/api/approve', {news_ids: [id]});
-  if (r.status === 'ok') { toast('Одобрено'); loadEditorial(); } else toast(r.message, true);
+  if (r.status === 'ok') { toast('Одобрено + обогащение запущено'); loadEditorial(); } else toast(r.message, true);
 }
 
 async function edReject(id) {
@@ -6416,7 +6434,7 @@ async function edApproveSelected() {
   const ids = _edGetSelected();
   if (!ids.length) { toast('Выберите новости', true); return; }
   const r = await api('/api/approve', {news_ids: ids});
-  if (r.status === 'ok') { toast(`Одобрено: ${ids.length}`); loadEditorial(); } else toast(r.message, true);
+  if (r.status === 'ok') { toast(`Одобрено: ${ids.length} — обогащение запущено`); loadEditorial(); } else toast(r.message, true);
 }
 
 async function edRejectSelected() {

@@ -94,10 +94,15 @@ def run_review_pipeline(news_list: list[dict], update_status: bool = True) -> di
             member["dedup_status"] = group["status"]
 
     # Save check results in DB (always) + update statuses (optional)
+    # Smart auto-approve/reject thresholds
+    AUTO_REJECT_SCORE = 15
     for r in results:
         if update_status:
             if r.get("is_duplicate"):
                 update_news_status(r["id"], "duplicate")
+            elif r.get("total_score", 0) < AUTO_REJECT_SCORE:
+                update_news_status(r["id"], "rejected")
+                r["auto_rejected"] = True
             else:
                 update_news_status(r["id"], "in_review")
         try:
