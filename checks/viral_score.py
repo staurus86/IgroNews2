@@ -500,6 +500,143 @@ VIRAL_TRIGGERS = {
         ],
     },
 
+    # === LIVE SERVICE / SHUT DOWN ===
+    "live_service_shutdown": {
+        "label": "Live service shutdown",
+        "weight": 55,
+        "keywords": [
+            "закрытие серверов", "отключают серверы", "servers shutting down",
+            "end of service", "game shutting down", "final season",
+            "последний сезон", "конец поддержки", "sunsetting",
+            "прекращение поддержки", "servers offline forever",
+        ],
+    },
+    "live_service_revival": {
+        "label": "Dead game revived",
+        "weight": 45,
+        "keywords": [
+            "игру воскресили", "возобновили поддержку", "game revived",
+            "comeback update", "new life", "relaunch", "relaunch 2.0",
+            "игра вернулась", "back from the dead",
+        ],
+    },
+
+    # === HARDWARE / CONSOLE WAR ===
+    "hw_console_reveal": {
+        "label": "Console reveal",
+        "weight": 60,
+        "keywords": [
+            "анонс консоли", "новая консоль", "console reveal",
+            "ps5 pro", "switch 2", "nintendo switch 2", "xbox handheld",
+            "steam deck 2", "next-gen console", "hardware reveal",
+            "portable console", "ps6 specs", "xbox next specs",
+        ],
+    },
+    "hw_price_drop": {
+        "label": "Price drop",
+        "weight": 30,
+        "keywords": [
+            "снижение цены", "цена снижена", "price cut", "price drop",
+            "дешевле", "cheaper", "permanent price reduction",
+            "new lower price", "скидка на консоль",
+        ],
+    },
+    "hw_shortage": {
+        "label": "Hardware shortage",
+        "weight": 30,
+        "keywords": [
+            "дефицит", "нет в продаже", "shortage", "sold out",
+            "scalpers", "перекупщики", "раскупили за минуты",
+            "out of stock", "pre-order sold out",
+        ],
+    },
+
+    # === CROSSOVER / COLLAB ===
+    "crossover_unexpected": {
+        "label": "Unexpected crossover",
+        "weight": 40,
+        "keywords": [
+            "неожиданный кроссовер", "коллаборация", "crossover",
+            "collaboration", "collab event", "x meets y",
+            "guest character", "гостевой персонаж",
+            "fortnite collaboration", "fortnite x",
+        ],
+    },
+
+    # === MODDING / COMMUNITY ===
+    "mod_viral": {
+        "label": "Viral mod",
+        "weight": 30,
+        "keywords": [
+            "вирусный мод", "мод взорвал", "viral mod", "mod goes viral",
+            "mod downloaded millions", "лучший мод", "insane mod",
+            "мод который", "mod of the year", "total conversion",
+        ],
+    },
+    "community_milestone": {
+        "label": "Community milestone",
+        "weight": 25,
+        "keywords": [
+            "100 миллионов игроков", "200 million players",
+            "billion hours", "миллиард часов", "community event record",
+            "community achievement", "player count milestone",
+            "concurrent players record", "steam charts record",
+        ],
+    },
+
+    # === ПЛАТФОРМЫ / ПОДПИСКИ ===
+    "sub_major_addition": {
+        "label": "Major sub addition",
+        "weight": 35,
+        "keywords": [
+            "добавлен в game pass", "game pass day one", "ps plus premium",
+            "day one game pass", "added to game pass",
+            "ps plus essential", "added to ps plus",
+            "day one on subscription", "бесплатно по подписке",
+        ],
+    },
+    "sub_price_hike": {
+        "label": "Sub price increase",
+        "weight": 40,
+        "keywords": [
+            "повышение цены подписки", "подписка подорожала",
+            "game pass price increase", "ps plus price increase",
+            "subscription price hike", "стоимость подписки выросла",
+            "new subscription tier", "подписка стала дороже",
+        ],
+    },
+    "platform_exclusive_lost": {
+        "label": "Exclusive goes multi",
+        "weight": 45,
+        "keywords": [
+            "эксклюзив на другие платформы", "потеря эксклюзива",
+            "exclusive going multiplatform", "no longer exclusive",
+            "coming to pc", "coming to xbox", "coming to playstation",
+            "портирование эксклюзива", "exclusive deal ended",
+        ],
+    },
+
+    # === ESPORTS ===
+    "esports_drama": {
+        "label": "Esports drama",
+        "weight": 35,
+        "keywords": [
+            "дисквалификация", "бан про игрока", "disqualified",
+            "pro player banned", "match fixing", "договорной матч",
+            "esports scandal", "cheating scandal", "допинг",
+            "esports organization collapse", "org shut down",
+        ],
+    },
+    "esports_record_prize": {
+        "label": "Record prize pool",
+        "weight": 30,
+        "keywords": [
+            "рекордный призовой", "record prize pool",
+            "million dollar tournament", "крупнейший турнир",
+            "biggest esports event", "prize pool record",
+        ],
+    },
+
     # === БАЗОВЫЕ КАТЕГОРИИ ===
     "sequel": {
         "label": "Sequel",
@@ -650,7 +787,7 @@ def viral_score(news: dict, precomputed_entities: list = None) -> dict:
         best = entities[0] if entities else {}
         triggered.append({
             "id": "entity_boost",
-            "label": f"{best.get('tier', '?')}-tier: {best.get('name', '?')} (freq={best.get('freq', 0)})",
+            "label": f"Тег {best.get('tier', '?')}: {best.get('name', '?')}",
             "weight": entity_boost,
         })
 
@@ -658,20 +795,20 @@ def viral_score(news: dict, precomputed_entities: list = None) -> dict:
     has_leak = any(kw in text for kw in ["leak", "leaked", "утечка", "слив", "инсайдер"])
     if has_leak and has_big_title:
         score += 45
-        triggered.append({"id": "leak_big_title", "label": "Big title leak", "weight": 45})
+        triggered.append({"id": "leak_big_title", "label": "Утечка + крупный тайтл", "weight": 45})
 
     # Big title + studio closure combo
     has_closure = any(kw in text for kw in ["закрытие студии", "studio closure", "shut down", "студию закрыли"])
     if has_closure and has_big_title:
         score += 30
-        triggered.append({"id": "closure_big_title", "label": "Big studio closure", "weight": 30})
+        triggered.append({"id": "closure_big_title", "label": "Закрытие крупной студии", "weight": 30})
 
     # Lawsuit + Big company combo (из entity базы — студии)
     has_lawsuit = any(kw in text for kw in ["lawsuit", "судебный иск", "court", "sued"])
     has_big_company = any(e.get("type") == "studio" and e.get("tier") in ("S", "A", "B") for e in entities)
     if has_lawsuit and has_big_company:
         score += 20
-        triggered.append({"id": "lawsuit_big_company", "label": "Big company lawsuit", "weight": 20})
+        triggered.append({"id": "lawsuit_big_company", "label": "Судебный иск + крупная компания", "weight": 20})
 
     # Calendar boost
     cal_boost, event_name = get_calendar_boost()

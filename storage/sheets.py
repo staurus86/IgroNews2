@@ -109,12 +109,13 @@ HEADERS = [
 HEADERS_READY = [
     "Дата", "Источник", "Оригинал заголовок", "Рерайт заголовок", "Рерайт текст",
     "Meta Title", "Meta Description", "Теги", "Скор", "Вирал",
-    "Keys.so частота", "Тренды RU", "LLM рекомендация", "Прогноз", "URL оригинала",
+    "Вирал триггеры", "Keys.so частота", "Тренды RU", "LLM рекомендация",
+    "Прогноз", "URL оригинала",
 ]
 
 HEADERS_NOT_READY = [
     "Дата", "Источник", "Заголовок", "Скор", "Качество", "Релевантность",
-    "Свежесть (ч)", "Вирал", "Тон", "Теги", "Entities",
+    "Свежесть (ч)", "Вирал", "Вирал триггеры", "Тон", "Теги", "Entities",
     "Headline скор", "Momentum", "URL", "Описание",
 ]
 
@@ -163,6 +164,31 @@ def _get_or_create_worksheet(tab_name: str, headers: list):
         return None
 
 
+def _format_viral_triggers(analysis: dict | None) -> str:
+    """Форматирует виральные триггеры из news_analysis для Sheets."""
+    if not analysis:
+        return ""
+    try:
+        triggers_raw = analysis.get("viral_data", "")
+        if not triggers_raw:
+            return ""
+        triggers = json.loads(triggers_raw) if isinstance(triggers_raw, str) else triggers_raw
+        if not isinstance(triggers, list):
+            return ""
+        return ", ".join(f"{t.get('label', '?')}({t.get('weight', 0)})" for t in triggers[:10])
+    except Exception:
+        return ""
+
+
+def _format_viral_triggers_from_checks(checks: dict) -> str:
+    """Форматирует виральные триггеры из check_results для Sheets."""
+    viral = checks.get("viral", {})
+    triggers = viral.get("triggers", [])
+    if not triggers:
+        return ""
+    return ", ".join(f"{t.get('label', '?')}({t.get('weight', 0)})" for t in triggers[:10])
+
+
 def write_ready_row(news: dict, analysis: dict, rewrite: dict) -> int | None:
     """Записывает готовую переписанную новость в вкладку Ready."""
     tab_name = getattr(config, "SHEETS_TAB_READY", "Ready")
@@ -174,7 +200,7 @@ def write_ready_row(news: dict, analysis: dict, rewrite: dict) -> int | None:
         # Dedup by URL
         news_url = news.get("url", "")
         if news_url:
-            existing = ws.col_values(15)  # column O = URL
+            existing = ws.col_values(16)  # column P = URL (shifted by viral triggers col)
             if news_url in existing:
                 logger.info("Skipped duplicate in Ready: %s", news_url[:80])
                 return -1
@@ -214,11 +240,12 @@ def write_ready_row(news: dict, analysis: dict, rewrite: dict) -> int | None:
             tags,                                                    # H: Теги
             str(analysis.get("total_score", "") if analysis else ""),  # I: Скор
             str(analysis.get("viral_score", "") if analysis else ""),  # J: Вирал
-            str(keyso_data.get("freq", "")),                         # K: Keys.so частота
-            str(trends_data.get("RU", "")),                          # L: Тренды RU
-            analysis.get("llm_recommendation", "") if analysis else "",  # M: LLM рекомендация
-            analysis.get("llm_trend_forecast", "") if analysis else "",  # N: Прогноз
-            news.get("url", ""),                                     # O: URL оригинала
+            _format_viral_triggers(analysis),                        # K: Вирал триггеры
+            str(keyso_data.get("freq", "")),                         # L: Keys.so частота
+            str(trends_data.get("RU", "")),                          # M: Тренды RU
+            analysis.get("llm_recommendation", "") if analysis else "",  # N: LLM рекомендация
+            analysis.get("llm_trend_forecast", "") if analysis else "",  # O: Прогноз
+            news.get("url", ""),                                     # P: URL оригинала
         ]
 
         ws.append_row(row, value_input_option="USER_ENTERED", table_range="A1")
@@ -241,7 +268,7 @@ def write_not_ready_row(news: dict, check_results: dict) -> int | None:
         # Dedup by URL
         news_url = news.get("url", "")
         if news_url:
-            existing = ws.col_values(14)  # column N = URL
+            existing = ws.col_values(15)  # column O = URL (shifted by viral triggers col)
             if news_url in existing:
                 logger.info("Skipped duplicate in NotReady: %s", news_url[:80])
                 return -1
@@ -272,13 +299,14 @@ def write_not_ready_row(news: dict, check_results: dict) -> int | None:
             str(checks.get("relevance", {}).get("score", 0)),          # F: Релевантность
             age_str,                                                   # G: Свежесть (ч)
             str(checks.get("viral", {}).get("score", 0)),              # H: Вирал
-            check_results.get("sentiment", {}).get("label", "neutral"),  # I: Тон
-            tags_str,                                                  # J: Теги
-            entities_str,                                              # K: Entities
-            str(check_results.get("headline", {}).get("score", 0)),    # L: Headline скор
-            str(check_results.get("momentum", {}).get("score", 0)),    # M: Momentum
-            news.get("url", ""),                                       # N: URL
-            (news.get("description", "") or "")[:500],                 # O: Описание
+            _format_viral_triggers_from_checks(checks),                # I: Вирал триггеры
+            check_results.get("sentiment", {}).get("label", "neutral"),  # J: Тон
+            tags_str,                                                  # K: Теги
+            entities_str,                                              # L: Entities
+            str(check_results.get("headline", {}).get("score", 0)),    # M: Headline скор
+            str(check_results.get("momentum", {}).get("score", 0)),    # N: Momentum
+            news.get("url", ""),                                       # O: URL
+            (news.get("description", "") or "")[:500],                 # P: Описание
         ]
 
         ws.append_row(row, value_input_option="USER_ENTERED", table_range="A1")

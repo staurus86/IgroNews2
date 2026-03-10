@@ -216,6 +216,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/translate_title": lambda: self._translate_title(body),
             "/api/ai_recommend": lambda: self._ai_recommend(body),
             "/api/cache/clear": lambda: self._clear_cache(body),
+            "/api/export_all_processed": lambda: self._export_all_processed(body),
             "/api/pipeline/full_auto": lambda: self._pipeline_full_auto(body),
             "/api/pipeline/no_llm": lambda: self._pipeline_no_llm(body),
             "/api/moderation": lambda: self._get_moderation(body),
@@ -1139,6 +1140,65 @@ async function login() {
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
 
+    def _export_all_processed(self, body):
+        """Экспортирует все обработанные новости (processed) в Sheets/Лист1."""
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT id FROM news WHERE status IN ('processed', 'ready') ORDER BY parsed_at DESC")
+            if _is_postgres():
+                news_ids = [r[0] for r in cur.fetchall()]
+            else:
+                news_ids = [r["id"] for r in cur.fetchall()]
+        finally:
+            cur.close()
+
+        if not news_ids:
+            self._json({"status": "error", "message": "Нет обработанных новостей"})
+            return
+
+        # Queue sheets export for all
+        from scheduler import _create_task
+        task_ids = []
+        cur2 = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        for nid in news_ids:
+            try:
+                cur2.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
+                row = cur2.fetchone()
+                title = (row[0] if _is_postgres() else row["title"]) if row else ""
+            except Exception:
+                title = ""
+            tid = _create_task("sheets", nid, title)
+            task_ids.append(tid)
+        cur2.close()
+
+        # Process in background
+        import threading
+        def _bg_export(ids, tids):
+            from storage.sheets import write_news_row
+            from scheduler import _update_task, _fetch_news_by_id, _fetch_analysis_by_id
+            for nid, tid in zip(ids, tids):
+                try:
+                    _update_task(tid, "running", {"stage": "exporting"})
+                    news = _fetch_news_by_id(nid)
+                    analysis = _fetch_analysis_by_id(nid)
+                    if not news:
+                        _update_task(tid, "error", {"error": "News not found"})
+                        continue
+                    sheet_row = write_news_row(news, analysis or {})
+                    if sheet_row and sheet_row > 0:
+                        _update_task(tid, "done", {"sheet_row": sheet_row})
+                    elif sheet_row == -1:
+                        _update_task(tid, "skipped", {"reason": "duplicate in Sheets"})
+                    else:
+                        _update_task(tid, "error", {"error": "Sheets write failed"})
+                except Exception as e:
+                    _update_task(tid, "error", {"error": str(e)[:500]})
+
+        threading.Thread(target=_bg_export, args=(list(news_ids), list(task_ids)), daemon=True).start()
+        self._json({"status": "ok", "queued": len(news_ids), "task_ids": task_ids})
+
     # ─── Pipeline endpoints ───
 
     def _pipeline_full_auto(self, body):
@@ -1270,7 +1330,8 @@ async function login() {
                 SELECT n.id, n.source, n.title, n.url, n.published_at, n.parsed_at, n.status,
                        n.description,
                        na.total_score, na.quality_score, na.relevance_score,
-                       na.freshness_hours, na.viral_score, na.sentiment_label,
+                       na.freshness_hours, na.viral_score, na.viral_data,
+                       na.sentiment_label,
                        na.tags, na.entities, na.headline_score, na.momentum_score
                 FROM news n
                 LEFT JOIN news_analysis na ON na.news_id = n.id
@@ -4138,6 +4199,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
             <button class="btn btn-primary" onclick="runProcess()">&#9654; Обогатить одобренные</button>
             <button class="btn btn-warning" onclick="reparseAll()">Парсить все источники</button>
             <button class="btn btn-secondary" onclick="setupHeaders()">Создать заголовки Sheets</button>
+            <button class="btn btn-secondary" onclick="exportAllProcessed()">&#128196; Экспорт обработанных в Sheets</button>
           </div>
         </div>
       </div>
@@ -5494,6 +5556,27 @@ async function setupHeaders() {
   const r = await api('/api/setup_headers', {});
   if (r.status === 'ok') toast('Заголовки Sheets созданы');
   else toast(r.message, true);
+}
+
+async function exportAllProcessed() {
+  if (!confirm('Экспортировать ВСЕ обработанные новости в Sheets (Лист1)? Дубликаты будут пропущены.')) return;
+  toast('Запуск экспорта...');
+  const r = await api('/api/export_all_processed', {});
+  if (r.status === 'ok') {
+    toast(r.queued + ' задач в очереди экспорта');
+    // Switch to queue tab
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => { p.classList.remove('active'); p.style.display = ''; });
+    document.querySelector('[data-tab="settings"]')?.classList.add('active');
+    document.getElementById('panel-settings')?.classList.add('active');
+    document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.settings-section').forEach(s => s.classList.remove('active'));
+    document.querySelector('[data-stab="queue"]')?.classList.add('active');
+    document.getElementById('stab-queue')?.classList.add('active');
+    loadQueue();
+  } else {
+    toast(r.message || 'Ошибка', true);
+  }
 }
 
 // Editor
@@ -6891,6 +6974,11 @@ function renderEdTable() {
     const entTier = n.entity_best_tier || '';
     const entHtml = entTier ? `<span style="color:${entTier==='S'?'#e0245e':entTier==='A'?'#ffad1f':'#8899a6'};font-size:0.7em;font-weight:bold">${entTier}</span>` : '';
 
+    // Viral triggers tooltip
+    let vTriggers = [];
+    try { vTriggers = JSON.parse(n.viral_data || '[]'); } catch(e) {}
+    const vTriggersTooltip = vTriggers.map(t => `${t.label||'?'} (${t.weight||0})`).join('\\n') || 'Нет триггеров';
+
     // Quality / Relevance
     const qs = n.quality_score || 0;
     const rs = n.relevance_score || 0;
@@ -6912,7 +7000,7 @@ function renderEdTable() {
       <td><span style="color:${stColor};font-size:0.75em;font-weight:500">${stLabel}</span></td>
       <td style="text-align:center"><span style="color:${scColor};font-weight:bold;font-size:1.1em">${sc}</span></td>
       <td style="text-align:center;font-size:0.8em;color:#8899a6">${qs}/${rs}</td>
-      <td style="text-align:center"><span style="color:${vlColor};font-weight:bold">${vs}</span><br><span style="font-size:0.7em;color:${vlColor}">${vl}</span></td>
+      <td style="text-align:center;cursor:help" title="${vTriggersTooltip}"><span style="color:${vlColor};font-weight:bold">${vs}</span><br><span style="font-size:0.7em;color:${vlColor}">${vl}</span></td>
       <td style="text-align:center"><span style="color:${fColor};font-size:0.85em">${fLabel}</span></td>
       <td style="text-align:center"><span style="color:${slColor}" title="${sl}">${sEmoji}</span></td>
       <td>${tagsHtml}</td>
@@ -7334,6 +7422,9 @@ function renderModTable() {
       `<span style="background:#253341;color:#8899a6;padding:2px 6px;border-radius:4px;font-size:0.75em">${t}</span>`
     ).join(' ');
     const freshH = n.freshness_hours != null && n.freshness_hours >= 0 ? n.freshness_hours.toFixed(1) + 'ч' : '?';
+    let modVT = [];
+    try { modVT = JSON.parse(n.viral_data || '[]'); } catch(e) {}
+    const modVTip = modVT.map(t => `${t.label||'?'} (${t.weight||0})`).join('\\n') || 'Нет триггеров';
     return `<tr>
       <td><input type="checkbox" class="mod-cb" value="${n.id}" onchange="modUpdateSelected()"></td>
       <td style="font-size:0.85em">${n.source || ''}</td>
@@ -7341,7 +7432,7 @@ function renderModTable() {
       <td style="color:${scoreColor};font-weight:bold;text-align:center">${score}</td>
       <td style="text-align:center">${n.quality_score || 0}</td>
       <td style="text-align:center">${n.relevance_score || 0}</td>
-      <td style="text-align:center">${n.viral_score || 0}</td>
+      <td style="text-align:center;cursor:help" title="${modVTip}">${n.viral_score || 0}</td>
       <td style="text-align:center;font-size:0.85em">${freshH}</td>
       <td style="text-align:center">${sentimentEmoji[n.sentiment_label] || '&#9898;'}</td>
       <td>${tagsHtml}</td>
