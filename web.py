@@ -1503,11 +1503,31 @@ async function login() {
                         active_type = r["type"]
                         break
 
+            # Count done tasks and find earliest running start
+            total_done = 0
+            started_at = ""
+            try:
+                cur.execute("""
+                    SELECT COUNT(*) FROM task_queue
+                    WHERE status = 'done' AND task_type IN ('full_auto', 'no_llm')
+                """)
+                total_done = cur.fetchone()[0]
+                cur.execute("""
+                    SELECT MIN(created_at) FROM task_queue
+                    WHERE status IN ('pending', 'running') AND task_type IN ('full_auto', 'no_llm')
+                """)
+                row = cur.fetchone()
+                started_at = str(row[0]) if row and row[0] else ""
+            except Exception:
+                pass
+
             return {
                 "running": running or pending > 0,
                 "active_type": active_type,
                 "running_count": running_count,
                 "pending_count": pending,
+                "total_done": total_done,
+                "started_at": started_at,
                 "details": rows,
             }
         finally:
@@ -1563,13 +1583,15 @@ async function login() {
             else:
                 rows = [dict(r) for r in cur.fetchall()]
 
-            # Count total
-            cur.execute(f"SELECT COUNT(*) FROM news n LEFT JOIN news_analysis na ON na.news_id = n.id WHERE {where}", tuple(params))
-            total = cur.fetchone()[0]
+            # Count total + avg score
+            cur.execute(f"SELECT COUNT(*), COALESCE(AVG(na.total_score), 0) FROM news n LEFT JOIN news_analysis na ON na.news_id = n.id WHERE {where}", tuple(params))
+            row = cur.fetchone()
+            total = row[0]
+            avg_score = round(row[1], 1) if row[1] else 0
         finally:
             cur.close()
 
-        return {"status": "ok", "news": rows, "total": total}
+        return {"status": "ok", "news": rows, "total": total, "avg_score": avg_score}
 
     def _get_moderation(self, body):
         """POST версия для совместимости."""
@@ -3657,8 +3679,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <option value="B">B-tier</option>
       </select>
       <input id="ed-min-score" type="number" value="0" min="0" max="100" placeholder="Мин. скор" onchange="loadEditorial()" style="width:70px;padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
-      <input id="ed-search" placeholder="Поиск по заголовку..." onkeyup="if(event.key==='Enter')loadEditorial()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px;min-width:180px">
+      <input id="ed-search" placeholder="Поиск по заголовку..." oninput="debounceEdSearch()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px;min-width:180px">
       <button class="btn btn-sm btn-secondary" onclick="loadEditorial()">&#128269;</button>
+      <button class="btn btn-sm btn-secondary" onclick="resetEdFilters()" title="Сбросить фильтры">&#10005;</button>
       <span style="color:#8899a6;font-size:0.85em" id="ed-count"></span>
     </div>
 
@@ -3668,7 +3691,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <span style="color:#38444d">|</span>
       <button class="btn btn-sm btn-primary" onclick="edApproveSelected()">&#10003; Одобрить</button>
       <button class="btn btn-sm btn-danger" onclick="edRejectSelected()">&#10007; Отклонить</button>
-      <button class="btn btn-sm btn-warning" onclick="edAutoApprove()">&#9889; Авто (скор&gt;70)</button>
+      <button class="btn btn-sm btn-warning" onclick="edAutoApprove()">&#9889; Авто-одобрение (&gt;70)</button>
       <span style="color:#38444d">|</span>
       <button class="btn btn-sm btn-secondary" onclick="edExportSheets()">&#9776; Sheets</button>
       <button class="btn btn-sm btn-secondary" onclick="edBatchRewrite()">&#9998; Рерайт</button>
@@ -3677,7 +3700,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <button id="btn-full-auto" class="btn btn-sm" style="background:#1da1f2;color:#fff" onclick="runFullAuto()">&#128640; Полный автомат</button>
         <button id="btn-no-llm" class="btn btn-sm" style="background:#794bc4;color:#fff" onclick="runNoLLM()">&#128203; Без LLM</button>
         <button id="btn-pipeline-stop" class="btn btn-sm btn-danger" style="display:none" onclick="stopPipeline()">&#9724; Стоп</button>
-        <span id="pipeline-status" style="color:#ffad1f;font-size:0.85em;margin-left:6px"></span>
+        <span id="pipeline-status" style="display:none;margin-left:8px;padding:4px 12px;border-radius:8px;background:#253341;font-size:0.85em;color:#ffad1f;border:1px solid #38444d"></span>
       </span>
       <span id="ed-selected-count" style="color:#8899a6;font-size:0.85em"></span>
     </div>
@@ -3718,9 +3741,12 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <span class="filter-sep"></span>
       <span class="filter-label">Мин. скор:</span>
       <input type="number" id="mod-min-score" min="0" max="100" value="0" style="width:60px" onchange="loadModeration()">
+      <span class="filter-sep"></span>
+      <button class="btn btn-sm btn-secondary" onclick="resetModFilters()" title="Сбросить фильтры">&#10005;</button>
     </div>
 
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-sm" style="background:#17bf63;color:#fff" onclick="modApproveSelected()">&#10003; Одобрить</button>
       <button class="btn btn-sm btn-primary" onclick="modRewriteSelected()">&#9998; Рерайт выбранных</button>
       <button class="btn btn-sm btn-danger" onclick="modRejectSelected()">&#10007; Отклонить</button>
       <button class="btn btn-sm btn-secondary" onclick="modExportSheets()">&#9776; В Sheets</button>
@@ -3739,16 +3765,16 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <table>
         <thead><tr>
           <th style="width:30px"><input type="checkbox" onchange="modToggleAll(this)" style="width:16px;height:16px"></th>
-          <th style="width:90px">Источник</th>
-          <th>Заголовок</th>
-          <th style="width:50px">Скор</th>
-          <th style="width:45px">Кач.</th>
-          <th style="width:45px">Рел.</th>
-          <th style="width:50px">Вирал</th>
-          <th style="width:55px">Свеж.</th>
+          <th class="sortable" onclick="sortModTable('source')" style="width:90px">Источник</th>
+          <th class="sortable" onclick="sortModTable('title')">Заголовок</th>
+          <th class="sortable" onclick="sortModTable('total_score')" style="width:50px">Скор</th>
+          <th class="sortable" onclick="sortModTable('quality_score')" style="width:45px">Кач.</th>
+          <th class="sortable" onclick="sortModTable('relevance_score')" style="width:45px">Рел.</th>
+          <th class="sortable" onclick="sortModTable('viral_score')" style="width:50px">Вирал</th>
+          <th class="sortable" onclick="sortModTable('freshness_hours')" style="width:55px">Свеж.</th>
           <th style="width:45px">Тон</th>
           <th style="width:120px">Теги</th>
-          <th style="width:80px">Действия</th>
+          <th style="width:100px">Действия</th>
         </tr></thead>
         <tbody id="mod-table"></tbody>
       </table>
@@ -3756,183 +3782,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div id="mod-pagination" style="margin-top:10px;display:flex;gap:8px;justify-content:center"></div>
   </div>
 
-  <div class="panel" id="panel-dashboard" style="display:none">
-    <div class="stats" id="stats"></div>
-
-    <!-- Dashboard Filters -->
-    <div class="dash-filters">
-      <span class="filter-label">Поиск:</span>
-      <input type="search" id="dash-search" placeholder="По заголовку..." oninput="debounceDashSearch()" autocomplete="off" name="dash-search-nologin">
-      <span class="filter-sep"></span>
-      <span class="filter-label">Источник:</span>
-      <select id="dash-source" onchange="loadNews()">
-        <option value="">Все</option>
-      </select>
-      <span class="filter-sep"></span>
-      <span class="filter-label">Статус:</span>
-      <select id="dash-status" onchange="loadNews()">
-        <option value="">Все</option>
-        <option value="new">Новые</option>
-        <option value="in_review">На проверке</option>
-        <option value="approved">Одобрены</option>
-        <option value="processed">Обогащены</option>
-        <option value="duplicate">Дубликаты</option>
-        <option value="rejected">Отклонены</option>
-      </select>
-      <span class="filter-sep"></span>
-      <span class="filter-label">Тег:</span>
-      <select id="dash-tag" onchange="loadNews()">
-        <option value="">Все</option>
-        <option value="release">Release</option>
-        <option value="update">Update/Patch</option>
-        <option value="announcement">Announcement</option>
-        <option value="esports">Esports</option>
-        <option value="hardware">Hardware</option>
-        <option value="controversy">Controversy</option>
-        <option value="rumor">Rumor/Leak</option>
-        <option value="review">Review</option>
-        <option value="industry">Industry</option>
-      </select>
-      <span class="filter-sep"></span>
-      <span class="filter-label">С:</span>
-      <input type="date" id="dash-date-from" onchange="loadNews()">
-      <span class="filter-label">По:</span>
-      <input type="date" id="dash-date-to" onchange="loadNews()">
-      <span class="filter-sep"></span>
-      <button class="btn btn-sm btn-secondary" onclick="setDashDateRange('today')">Сегодня</button>
-      <button class="btn btn-sm btn-secondary" onclick="setDashDateRange('week')">Неделя</button>
-      <button class="btn btn-sm btn-secondary" onclick="setDashDateRange('month')">Месяц</button>
-      <button class="btn btn-sm btn-secondary" onclick="resetDashFilters()">Сбросить</button>
-    </div>
-    <div class="active-filters" id="active-filters"></div>
-
-    <!-- Action buttons -->
-    <div class="btn-group">
-      <button class="btn btn-primary" onclick="sendToReview()">Проверить</button>
-      <button class="btn btn-success" onclick="runProcess()">&#9654; Обогатить одобренные</button>
-      <button class="btn btn-warning" onclick="loadDashboardGroups()">Найти группы</button>
-      <button class="btn btn-secondary" onclick="selectAll()">Выбрать все</button>
-      <button class="btn btn-secondary" onclick="deselectAll()">Снять выбор</button>
-      <button class="btn btn-secondary" onclick="selectGroup()">Выбрать группу</button>
-      <button class="btn btn-success" onclick="exportSelectedToSheetsDash()" title="Экспорт выбранных в Google Sheets">&#9776; В Sheets</button>
-      <span id="selected-count" style="color:#1da1f2;font-size:0.9em;font-weight:500;margin-left:6px"></span>
-    </div>
-    <div id="groups-summary" style="display:none;margin-bottom:12px"></div>
-
-    <div class="table-info" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <span id="dash-table-count"></span>
-      <span id="dash-showing"></span>
-      <span class="filter-sep"></span>
-      <span class="filter-label">На стр:</span>
-      <select id="dash-page-size" onchange="changeDashPageSize()" style="padding:2px 6px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px;font-size:0.85em">
-        <option value="50" selected>50</option>
-        <option value="100">100</option>
-        <option value="150">150</option>
-        <option value="200">200</option>
-      </select>
-    </div>
-    <table id="dash-table">
-      <thead><tr>
-        <th style="width:30px"><input type="checkbox" id="check-all" onchange="toggleAll(this)"></th>
-        <th class="sortable" data-sort="source" onclick="sortDash('source')">Источник <span class="sort-arrow">&#9650;</span></th>
-        <th class="sortable" data-sort="title" onclick="sortDash('title')">Заголовок <span class="sort-arrow">&#9650;</span></th>
-        <th>Теги</th>
-        <th class="sortable" data-sort="group" onclick="sortDash('group')">Группа <span class="sort-arrow">&#9650;</span></th>
-        <th class="sortable" data-sort="published_at" onclick="sortDash('published_at')">Опубл. <span class="sort-arrow">&#9650;</span></th>
-        <th class="sortable" data-sort="parsed_at" onclick="sortDash('parsed_at')">Собр. <span class="sort-arrow">&#9650;</span></th>
-        <th class="sortable" data-sort="status" onclick="sortDash('status')">Статус <span class="sort-arrow">&#9650;</span></th>
-        <th class="sortable" data-sort="score" onclick="sortDash('score')">Скор <span class="sort-arrow">&#9650;</span></th>
-        <th>Действия</th>
-      </tr></thead>
-      <tbody id="dash-news"></tbody>
-    </table>
-    <div id="dash-pagination"></div>
-    <div id="dash-empty" class="empty-state" style="display:none">
-      <div class="empty-icon">&#128270;</div>
-      <div>Нет новостей по заданным фильтрам</div>
-    </div>
-
-  </div>
-
-  <!-- REVIEW -->
-  <div class="panel" id="panel-review" style="display:none">
-    <div class="dash-filters" style="margin-bottom:12px">
-      <span class="filter-label">Статус:</span>
-      <select id="rev-status" onchange="loadReviewTab()">
-        <option value="new" selected>Новые</option>
-        <option value="in_review">На проверке</option>
-        <option value="">Все</option>
-        <option value="approved">Одобрены</option>
-        <option value="duplicate">Дубликаты</option>
-        <option value="rejected">Отклонены</option>
-      </select>
-      <span class="filter-sep"></span>
-      <span class="filter-label">Кол-во:</span>
-      <select id="rev-limit" onchange="loadReviewTab()">
-        <option value="50" selected>50</option>
-        <option value="100">100</option>
-        <option value="200">200</option>
-      </select>
-      <span class="filter-sep"></span>
-      <button class="btn btn-sm btn-primary" onclick="loadReviewTab()">Проверить</button>
-      <span class="filter-sep"></span>
-      <span class="filter-label">Поиск:</span>
-      <input type="search" id="rev-search" placeholder="По заголовку..." oninput="filterReviewTable()" autocomplete="off" name="rev-search-nologin">
-      <span class="filter-sep"></span>
-      <span class="filter-label">Тональность:</span>
-      <select id="rev-sentiment" onchange="filterReviewTable()">
-        <option value="">Все</option>
-        <option value="positive">Позитивная</option>
-        <option value="neutral">Нейтральная</option>
-        <option value="negative">Негативная</option>
-      </select>
-      <span class="filter-sep"></span>
-      <span class="filter-label">Виральность:</span>
-      <select id="rev-viral" onchange="filterReviewTable()">
-        <option value="">Все</option>
-        <option value="high">High (70+)</option>
-        <option value="medium">Medium (40+)</option>
-        <option value="low">Low (20+)</option>
-        <option value="none">None (0-19)</option>
-      </select>
-      <span class="filter-sep"></span>
-      <span class="filter-label">Мин. скор:</span>
-      <input type="number" id="rev-min-score" placeholder="0" min="0" max="100" style="width:70px" oninput="filterReviewTable()" autocomplete="off">
-      <span id="rev-loading" style="color:#8899a6;font-size:0.85em;margin-left:8px"></span>
-    </div>
-    <div class="btn-group">
-      <button class="btn btn-success" onclick="approveSelected()">Одобрить выбранные</button>
-      <button class="btn btn-danger" onclick="rejectSelected()">Отклонить выбранные</button>
-      <button class="btn btn-secondary" onclick="toggleApproveAllPassed()">Выбрать прошедшие</button>
-      <span id="review-count" style="color:#8899a6;font-size:0.9em;margin-left:10px"></span>
-    </div>
-    <div id="review-groups" style="margin-bottom:12px"></div>
-    <table id="review-main-table">
-      <thead><tr>
-        <th><input type="checkbox" id="approve-all" onchange="toggleApproveAll(this)"></th>
-        <th class="sortable" data-sort="title" onclick="sortReview('title')">Заголовок <span class="sort-arrow">&#9650;</span></th>
-        <th class="sortable" data-sort="source" onclick="sortReview('source')">Источник <span class="sort-arrow">&#9650;</span></th>
-        <th>Дедуп</th>
-        <th class="sortable" data-sort="quality" onclick="sortReview('quality')">Качество <span class="sort-arrow">&#9650;</span></th>
-        <th class="sortable" data-sort="relevance" onclick="sortReview('relevance')">Релев. <span class="sort-arrow">&#9650;</span></th>
-        <th class="sortable" data-sort="freshness" onclick="sortReview('freshness')">Свежесть <span class="sort-arrow">&#9650;</span></th>
-        <th class="sortable" data-sort="viral" onclick="sortReview('viral')">Вирал. <span class="sort-arrow">&#9650;</span></th>
-        <th>Тональн.</th>
-        <th>Теги</th>
-        <th>NER</th>
-        <th class="sortable" data-sort="headline" onclick="sortReview('headline')">Заг. <span class="sort-arrow">&#9650;</span></th>
-        <th>Момент.</th>
-        <th class="sortable" data-sort="total_score" onclick="sortReview('total_score')">Итог <span class="sort-arrow">&#9650;</span></th>
-        <th>Ок</th>
-        <th>Действия</th>
-      </tr></thead>
-      <tbody id="review-table"></tbody>
-    </table>
-    <div id="review-empty" class="empty-state" style="display:none">
-      <div class="empty-icon">&#128203;</div>
-      <div>Нажмите «Проверить» чтобы загрузить и оценить новости</div>
-    </div>
-  </div>
+  <!-- Dashboard and Review panels removed (dead code) -->
 
   <!-- EDITOR -->
   <div class="panel" id="panel-editor">
@@ -4862,199 +4712,12 @@ setInterval(() => {
   document.getElementById('clock').textContent = new Date().toLocaleString('ru-RU');
 }, 1000);
 
-// Stats — clickable cards filter by status
-async function loadStats() {
-  const s = await api('/api/stats');
-  const items = [
-    {key:'',     num:s.total,         lbl:'Всего',       cls:''},
-    {key:'new',  num:s.new,           lbl:'Новые',       cls:'new'},
-    {key:'in_review', num:s.in_review||0, lbl:'На проверке', cls:''},
-    {key:'duplicate', num:s.duplicate||0, lbl:'Дубликаты',   cls:''},
-    {key:'approved',  num:s.approved||0,  lbl:'Одобрены',    cls:''},
-    {key:'processed', num:s.processed||0, lbl:'Обогащены',   cls:'proc'},
-    {key:'ready',     num:s.ready||0,     lbl:'Готовы',      cls:''},
-  ];
-  const activeStatus = document.getElementById('dash-status')?.value || '';
-  document.getElementById('stats').innerHTML = items.map(i =>
-    `<div class="stat ${i.cls} ${activeStatus===i.key?'active-filter':''}" onclick="filterByStatus('${i.key}')">
-      <div class="num">${i.num}</div><div class="lbl">${i.lbl}</div>
-    </div>`
-  ).join('');
-}
-
-function filterByStatus(status) {
-  document.getElementById('dash-status').value = status;
-  loadStats();
-  loadNews();
-}
-
-// Dashboard groups data
-let _dashTags = {};
-let _dashGroups = [];
-let _dashIdToGroup = {};
-const GROUP_COLORS = ['#e0245e','#1da1f2','#17bf63','#ffad1f','#794bc4','#ff6300','#e8598b','#00bcd4','#8bc34a','#ff9800'];
-
-async function loadDashboardGroups() {
-  toast('Анализ групп...');
-  const status = document.getElementById('dash-status')?.value || '';
-  let url = '/api/dashboard_groups';
-  if (status) url += '?status=' + status;
-  const r = await api(url);
-  if (r.status !== 'ok') { toast(r.message, true); return; }
-  _dashTags = r.tags || {};
-  _dashGroups = r.groups || [];
-  // Ensure string keys for ID matching with DOM dataset
-  const rawIdMap = r.id_to_group || {};
-  _dashIdToGroup = {};
-  for (const [k, v] of Object.entries(rawIdMap)) _dashIdToGroup[String(k)] = v;
-
-  // Show groups summary
-  const gs = document.getElementById('groups-summary');
-  if (_dashGroups.length > 0) {
-    gs.innerHTML = '<h2 style="margin-bottom:8px">Группы похожих новостей</h2>' +
-      _dashGroups.map(g => {
-        const color = GROUP_COLORS[(g.group - 1) % GROUP_COLORS.length];
-        return `<div class="card" style="margin-bottom:6px;padding:8px;border-left:3px solid ${color}">
-          <b style="color:${color}">Группа ${g.group}</b> (${g.count} шт):
-          ${g.titles.map(t => '<span style="display:block;font-size:0.85em;color:#8899a6;margin:2px 0">' + esc(t) + '</span>').join('')}
-          <button class="btn btn-sm btn-secondary" style="margin-top:4px" onclick="selectGroupById(${g.group})">Выбрать группу</button>
-        </div>`;
-      }).join('');
-    gs.style.display = 'block';
-  } else {
-    gs.innerHTML = '<div class="card" style="padding:10px">Похожих новостей не найдено</div>';
-    gs.style.display = 'block';
-  }
-
-  // Re-render dashboard
-  loadNews();
-  toast('Найдено ' + _dashGroups.length + ' групп');
-}
-
-function selectGroupById(gid) {
-  const group = _dashGroups.find(g => g.group === gid);
-  if (!group || !group.ids || !group.ids.length) {
-    toast('Группа не найдена или пуста', true);
-    return;
-  }
-  const ids = group.ids.map(String);
-  let selected = 0;
-  document.querySelectorAll('.news-check').forEach(c => {
-    const match = ids.includes(String(c.dataset.id));
-    c.checked = match;
-    if (match) selected++;
-  });
-  updateSelectedCount();
-  if (selected === 0) toast('Новости группы не найдены в таблице — попробуйте обновить', true);
-  else toast('Выбрано ' + selected + ' новостей из группы ' + gid);
-}
-
-function selectGroup() {
-  if (!_dashGroups.length) { toast('Сначала нажмите "Найти группы"', true); return; }
-  const checked = document.querySelector('.news-check:checked');
-  if (!checked) { toast('Сначала выберите новость из группы', true); return; }
-  const gid = _dashIdToGroup[String(checked.dataset.id)];
-  if (!gid) { toast('Эта новость не в группе — выберите другую', true); return; }
-  selectGroupById(gid);
-}
-
-// renderTags and renderGroup replaced by renderTagsClickable and renderGroupClickable
-
-// News
-let _allNews = []; // news for current dashboard page
-let _allNewsFull = []; // used for source filter population
+// News tab state (used by Обогащённые panel)
+let _allNews = [];
 
 let _newsTotal = 0;
 let _newsOffset = 0;
 let _newsPageSize = 100;
-
-// Dashboard pagination
-let _dashOffset = 0;
-let _dashPageSize = 50;
-let _dashTotal = 0;
-
-async function loadNews(keepOffset) {
-  // Build URL with current dashboard filters for server-side filtering
-  const dashStatus = document.getElementById('dash-status')?.value || '';
-  const dashSource = document.getElementById('dash-source')?.value || '';
-  const dashDateFrom = document.getElementById('dash-date-from')?.value || '';
-  const dashDateTo = document.getElementById('dash-date-to')?.value || '';
-  const search = (document.getElementById('dash-search')?.value || '').trim();
-  const tag = document.getElementById('dash-tag')?.value || '';
-
-  if (!keepOffset) _dashOffset = 0;
-  _dashPageSize = parseInt(document.getElementById('dash-page-size')?.value) || 50;
-
-  let url = `/api/news?limit=${_dashPageSize}&offset=${_dashOffset}`;
-  if (dashStatus) url += `&status=${dashStatus}`;
-  if (dashSource) url += `&source=${encodeURIComponent(dashSource)}`;
-  if (dashDateFrom) url += `&date_from=${dashDateFrom}`;
-  if (dashDateTo) url += `&date_to=${dashDateTo}`;
-
-  const resp = await api(url);
-  const news = resp.news || resp;
-  _allNews = news;
-  _dashTotal = resp.total || news.length;
-
-  // Populate source filters (only once, with a no-filter request)
-  const dashSrc = document.getElementById('dash-source');
-  const srcFilter = document.getElementById('filter-source');
-  if (dashSrc && dashSrc.options.length <= 1) {
-    const srcResp = await api('/api/news?limit=1000&offset=0');
-    const allSrc = [...new Set((srcResp.news || srcResp).map(n => n.source))].sort();
-    allSrc.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; dashSrc.appendChild(o); });
-    if (srcFilter && srcFilter.options.length <= 1) {
-      allSrc.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; srcFilter.appendChild(o); });
-    }
-  }
-
-  // Client-side filter only for search and tag (not sent to server)
-  let filtered = news;
-  if (search) filtered = filtered.filter(n => (n.title||'').toLowerCase().includes(search.toLowerCase()) || (n.description||'').toLowerCase().includes(search.toLowerCase()));
-  if (tag) filtered = filtered.filter(n => {
-    const tags = _dashTags[n.id] || [];
-    return tags.some(t => t.id === tag);
-  });
-
-  renderDashboard(filtered);
-  renderDashPagination();
-  renderNewsTab(news);
-  initEditorSourceFilter();
-}
-
-function changeDashPageSize() {
-  _dashOffset = 0;
-  loadNews();
-}
-
-function loadDashPage(offset) {
-  _dashOffset = Math.max(0, offset);
-  loadNews(true);
-}
-
-function renderDashPagination() {
-  const el = document.getElementById('dash-pagination');
-  if (!el) return;
-  const totalPages = Math.ceil(_dashTotal / _dashPageSize);
-  const currentPage = Math.floor(_dashOffset / _dashPageSize) + 1;
-  if (totalPages <= 1) { el.innerHTML = ''; return; }
-  let html = '<div style="display:flex;gap:4px;align-items:center;margin-top:10px;justify-content:center">';
-  if (currentPage > 1) html += `<button class="btn btn-sm btn-secondary" onclick="loadDashPage(0)">&#9664;&#9664;</button>`;
-  if (currentPage > 1) html += `<button class="btn btn-sm btn-secondary" onclick="loadDashPage(${_dashOffset - _dashPageSize})">&#9664; Назад</button>`;
-  // Page numbers (show up to 7 pages around current)
-  const startPage = Math.max(1, currentPage - 3);
-  const endPage = Math.min(totalPages, currentPage + 3);
-  for (let p = startPage; p <= endPage; p++) {
-    const offset = (p - 1) * _dashPageSize;
-    if (p === currentPage) html += `<button class="btn btn-sm btn-primary" disabled>${p}</button>`;
-    else html += `<button class="btn btn-sm btn-secondary" onclick="loadDashPage(${offset})">${p}</button>`;
-  }
-  if (currentPage < totalPages) html += `<button class="btn btn-sm btn-secondary" onclick="loadDashPage(${_dashOffset + _dashPageSize})">Далее &#9654;</button>`;
-  if (currentPage < totalPages) html += `<button class="btn btn-sm btn-secondary" onclick="loadDashPage(${(_dashTotal - 1) - ((_dashTotal - 1) % _dashPageSize)})">&#9654;&#9654;</button>`;
-  html += `<span style="color:#8899a6;font-size:0.85em;margin:0 8px">Стр. ${currentPage} из ${totalPages} (${_dashTotal})</span>`;
-  html += '</div>';
-  el.innerHTML = html;
-}
 
 async function loadNewsPage(offset) {
   if (offset !== undefined) _newsOffset = offset;
@@ -5093,180 +4756,7 @@ function renderNewsPagination() {
   el.innerHTML = html;
 }
 
-function applyDashFilters() {
-  // Server-side filters (status, source, date) are handled by loadNews
-  // Just reload from server with new filters, reset to page 1
-  const search = document.getElementById('dash-search')?.value || '';
-  const source = document.getElementById('dash-source')?.value || '';
-  const status = document.getElementById('dash-status')?.value || '';
-  const tag = document.getElementById('dash-tag')?.value || '';
-  const dateFrom = document.getElementById('dash-date-from')?.value || '';
-  const dateTo = document.getElementById('dash-date-to')?.value || '';
-  loadNews();
-  renderActiveFilters(search, source, status, tag, dateFrom, dateTo);
-}
-
-function renderActiveFilters(search, source, status, tag, dateFrom, dateTo) {
-  const chips = [];
-  if (search) chips.push({label: 'Поиск: ' + search, clear: () => { document.getElementById('dash-search').value = ''; loadNews(); }});
-  if (source) chips.push({label: 'Источник: ' + source, clear: () => { document.getElementById('dash-source').value = ''; loadNews(); }});
-  if (status) chips.push({label: 'Статус: ' + status, clear: () => { document.getElementById('dash-status').value = ''; loadStats(); loadNews(); }});
-  if (tag) chips.push({label: 'Тег: ' + tag, clear: () => { document.getElementById('dash-tag').value = ''; loadNews(); }});
-  if (dateFrom) chips.push({label: 'С: ' + dateFrom, clear: () => { document.getElementById('dash-date-from').value = ''; loadNews(); }});
-  if (dateTo) chips.push({label: 'По: ' + dateTo, clear: () => { document.getElementById('dash-date-to').value = ''; loadNews(); }});
-
-  const container = document.getElementById('active-filters');
-  container.innerHTML = '';
-  chips.forEach((chip, i) => {
-    const el = document.createElement('span');
-    el.className = 'active-filter-chip';
-    el.innerHTML = chip.label + ' <span class="chip-x">&times;</span>';
-    el.onclick = chip.clear;
-    container.appendChild(el);
-  });
-}
-
-function resetDashFilters() {
-  document.getElementById('dash-search').value = '';
-  document.getElementById('dash-source').value = '';
-  document.getElementById('dash-status').value = '';
-  document.getElementById('dash-tag').value = '';
-  document.getElementById('dash-date-from').value = '';
-  document.getElementById('dash-date-to').value = '';
-  loadStats();
-  loadNews();
-}
-
-function filterByTag(tagId) {
-  document.getElementById('dash-tag').value = tagId;
-  loadNews();
-}
-
-function filterBySource(source) {
-  document.getElementById('dash-source').value = source;
-  applyDashFilters();
-}
-
 const STATUS_LABELS = {new:'Новая',in_review:'Проверка',approved:'Одобр.',processed:'Обогащ.',duplicate:'Дубль',rejected:'Откл.',ready:'Готова'};
-
-// Sorting state
-let _sortField = 'parsed_at';
-let _sortDir = 'desc'; // 'asc' or 'desc'
-let _lastFiltered = [];
-
-function sortDash(field) {
-  if (_sortField === field) {
-    _sortDir = _sortDir === 'asc' ? 'desc' : 'asc';
-  } else {
-    _sortField = field;
-    _sortDir = 'asc';
-  }
-  // Update header arrows
-  document.querySelectorAll('#dash-table th.sortable').forEach(th => {
-    const arrow = th.querySelector('.sort-arrow');
-    if (th.dataset.sort === field) {
-      th.classList.add('sort-active');
-      arrow.innerHTML = _sortDir === 'asc' ? '&#9650;' : '&#9660;';
-    } else {
-      th.classList.remove('sort-active');
-      arrow.innerHTML = '&#9650;';
-    }
-  });
-  // Re-sort and render
-  const sorted = sortNews(_lastFiltered, field, _sortDir);
-  renderDashboardRows(sorted);
-}
-
-function sortNews(news, field, dir) {
-  const arr = [...news];
-  const mult = dir === 'asc' ? 1 : -1;
-  arr.sort((a, b) => {
-    let va, vb;
-    if (field === 'source') { va = (a.source||'').toLowerCase(); vb = (b.source||'').toLowerCase(); }
-    else if (field === 'title') { va = (a.title||'').toLowerCase(); vb = (b.title||'').toLowerCase(); }
-    else if (field === 'published_at') { va = a.published_at||''; vb = b.published_at||''; }
-    else if (field === 'parsed_at') { va = a.parsed_at||''; vb = b.parsed_at||''; }
-    else if (field === 'status') { va = a.status||''; vb = b.status||''; }
-    else if (field === 'score') {
-      va = parseFloat(a.llm_trend_forecast) || 0;
-      vb = parseFloat(b.llm_trend_forecast) || 0;
-    }
-    else if (field === 'group') {
-      va = _dashIdToGroup[a.id] || 9999;
-      vb = _dashIdToGroup[b.id] || 9999;
-    }
-    else { va = ''; vb = ''; }
-    if (va < vb) return -1 * mult;
-    if (va > vb) return 1 * mult;
-    return 0;
-  });
-  return arr;
-}
-
-function renderDashboard(news) {
-  _lastFiltered = news;
-  const emptyEl = document.getElementById('dash-empty');
-  const infoEl = document.getElementById('dash-table-count');
-  const showEl = document.getElementById('dash-showing');
-
-  if (!news.length) {
-    document.getElementById('dash-news').innerHTML = '';
-    emptyEl.style.display = 'block';
-    infoEl.textContent = '';
-    showEl.textContent = '';
-    return;
-  }
-  emptyEl.style.display = 'none';
-  infoEl.textContent = `${news.length} из ${_dashTotal}`;
-  showEl.textContent = '';
-
-  const sorted = sortNews(news, _sortField, _sortDir);
-  renderDashboardRows(sorted);
-}
-
-function renderDashboardRows(news) {
-  const shown = news;
-  document.getElementById('dash-news').innerHTML = shown.map(n => {
-    const gid = _dashIdToGroup[n.id];
-    const rowStyle = gid ? `border-left:3px solid ${GROUP_COLORS[(gid-1)%GROUP_COLORS.length]}` : '';
-    const statusLabel = STATUS_LABELS[n.status] || n.status;
-    return `<tr style="${rowStyle}">
-      <td><input type="checkbox" class="news-check" data-id="${n.id}" onchange="updateSelectedCount()"></td>
-      <td><span style="cursor:pointer" onclick="filterBySource('${esc(n.source)}')" title="Фильтр по источнику">${n.source}</span></td>
-      <td class="td-title"><a href="${n.url}" target="_blank" title="${esc(n.description||'')}">${esc(n.title||'')}</a></td>
-      <td>${renderTagsClickable(n.id)}</td>
-      <td>${renderGroupClickable(n.id)}</td>
-      <td>${fmtDate(n.published_at)}</td>
-      <td>${fmtDate(n.parsed_at)}</td>
-      <td><span class="badge badge-${n.status}" style="cursor:pointer" onclick="filterByStatus('${n.status}')">${statusLabel}</span></td>
-      <td>${n.llm_trend_forecast||'-'}</td>
-      <td style="white-space:nowrap">
-        <button class="btn btn-sm btn-primary" onclick="processOne('${n.id}')" title="Анализ">&#9654;</button>
-        <button class="btn btn-sm btn-success" onclick="exportOne('${n.id}')" title="В Google Sheets">&#9776;</button>
-        <button class="btn btn-sm btn-secondary" onclick="translateTitle('${n.id}')" title="Перевод" style="padding:4px 6px">&#127760;</button>
-        <button class="btn btn-sm btn-warning" onclick="aiRecommend('${n.id}')" title="AI рекомендация" style="padding:4px 6px">AI</button>
-      </td>
-    </tr>`;
-  }).join('');
-}
-
-function renderTagsClickable(newsId) {
-  const tags = _dashTags[newsId] || [];
-  if (!tags.length) return '<span style="color:#38444d">-</span>';
-  return tags.map(t => `<span class="tag tag-${t.id}" onclick="filterByTag('${t.id}')" title="Фильтр по тегу">${t.label}</span>`).join('');
-}
-
-function renderGroupClickable(newsId) {
-  const gid = _dashIdToGroup[newsId];
-  if (!gid) return '';
-  const color = GROUP_COLORS[(gid - 1) % GROUP_COLORS.length];
-  const g = _dashGroups.find(x => x.group === gid);
-  return `<span class="group-marker" style="background:${color}33;color:${color}" title="${g ? g.count + ' шт — нажми чтобы выбрать' : ''}" onclick="selectGroupById(${gid})">G${gid}</span>`;
-}
-
-function renderNewsTab(news) {
-  renderNewsFiltered();
-}
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function fmtDate(d) { if (!d) return '-'; return d.replace('T',' ').slice(0,16); }
@@ -5280,23 +4770,6 @@ function renderSimilarTooltip(count, items) {
   const allWords = items.map(it => typeof it === 'string' ? it : (it.word || '')).join('\\n');
   return `<div class="tip-wrap"><span class="tip-count">${count}</span><div class="tip-box"><div class="tip-box-inner"><div class="tip-header"><span>Похожие запросы</span><button class="tip-copy-all" onclick="event.stopPropagation();navigator.clipboard.writeText('${allWords.replace(/'/g,"\\'")}');this.textContent='Скопировано!';setTimeout(()=>this.textContent='Копировать все',1000)">Копировать все</button></div>${rows}</div></div></div>`;
 }
-
-// Selection
-function getSelectedIds() {
-  return [...document.querySelectorAll('.news-check:checked')].map(c => c.dataset.id);
-}
-function updateSelectedCount() {
-  const cnt = getSelectedIds().length;
-  document.getElementById('selected-count').textContent = cnt ? cnt + ' выбрано' : '';
-}
-function selectAll() { document.querySelectorAll('.news-check').forEach(c => c.checked = true); updateSelectedCount(); }
-function deselectAll() { document.querySelectorAll('.news-check').forEach(c => c.checked = false); updateSelectedCount(); }
-function toggleAll(el) { document.querySelectorAll('.news-check').forEach(c => c.checked = el.checked); updateSelectedCount(); }
-
-// Review
-let _reviewResults = [];
-let _revSortField = 'total_score';
-let _revSortDir = 'desc';
 
 function switchToTab(tabName) {
   // Check if this tab was moved into settings as a sub-tab
@@ -5320,184 +4793,6 @@ function switchToTab(tabName) {
   document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
   document.querySelector(`.tab[data-tab="${tabName}"]`).classList.add('active');
   document.getElementById('panel-' + tabName).classList.add('active');
-}
-
-// Load review tab — batch check by status
-async function loadReviewTab() {
-  const status = document.getElementById('rev-status').value;
-  const limit = document.getElementById('rev-limit').value;
-  document.getElementById('rev-loading').textContent = 'Загрузка и проверка...';
-  const r = await api('/api/review_batch', {status, limit: parseInt(limit)});
-  document.getElementById('rev-loading').textContent = '';
-  if (r.status !== 'ok') { toast(r.message, true); return; }
-  _reviewResults = r.results || [];
-  renderReviewResults(r);
-}
-
-// Send selected from dashboard to review (with status change)
-async function sendToReview() {
-  const ids = getSelectedIds();
-  if (!ids.length) { toast('Сначала выберите новости', true); return; }
-  toast('Запуск проверки...');
-  const r = await api('/api/review', {news_ids: ids});
-  if (r.status !== 'ok') { toast(r.message, true); return; }
-  _reviewResults = r.results || [];
-  renderReviewResults(r);
-  switchToTab('editorial');
-  loadEditorial();
-}
-
-function renderReviewResults(r) {
-  // Groups
-  const groupsHtml = (r.groups||[]).filter(g => g.members.length >= 2).map(g => {
-    const icon = g.status === 'trending' ? '&#9889;' : g.status === 'popular' ? '&#128293;' : '&#128994;';
-    const titles = g.members.map(m => esc(m.title)).join('<br>');
-    return `<div class="card" style="margin-bottom:6px;padding:8px"><b>${icon} ${g.status.toUpperCase()}</b> (${g.members.length} шт):<div style="font-size:0.85em;color:#8899a6;margin-top:3px">${titles}</div></div>`;
-  }).join('');
-  document.getElementById('review-groups').innerHTML = groupsHtml;
-
-  // Badge
-  const badge = document.getElementById('review-badge');
-  badge.textContent = _reviewResults.length;
-  badge.style.display = 'inline';
-  document.getElementById('review-count').textContent = _reviewResults.length + ' новостей';
-
-  if (!_reviewResults.length) {
-    document.getElementById('review-table').innerHTML = '';
-    document.getElementById('review-empty').style.display = 'block';
-    return;
-  }
-  document.getElementById('review-empty').style.display = 'none';
-
-  // Sort and render
-  const sorted = sortReviewData(_reviewResults, _revSortField, _revSortDir);
-  renderReviewRows(sorted);
-  toast('Проверено: ' + _reviewResults.length + ' новостей');
-}
-
-function sortReview(field) {
-  if (_revSortField === field) {
-    _revSortDir = _revSortDir === 'asc' ? 'desc' : 'asc';
-  } else {
-    _revSortField = field;
-    _revSortDir = field === 'total_score' || field === 'quality' || field === 'relevance' || field === 'freshness' || field === 'viral' ? 'desc' : 'asc';
-  }
-  document.querySelectorAll('#review-main-table th.sortable').forEach(th => {
-    const arrow = th.querySelector('.sort-arrow');
-    if (th.dataset.sort === field) {
-      th.classList.add('sort-active');
-      arrow.innerHTML = _revSortDir === 'asc' ? '&#9650;' : '&#9660;';
-    } else {
-      th.classList.remove('sort-active');
-      arrow.innerHTML = '&#9650;';
-    }
-  });
-  const sorted = sortReviewData(_reviewResults, field, _revSortDir);
-  renderReviewRows(sorted);
-}
-
-function sortReviewData(results, field, dir) {
-  const arr = [...results];
-  const mult = dir === 'asc' ? 1 : -1;
-  arr.sort((a, b) => {
-    let va, vb;
-    if (field === 'title') { va = (a.title||'').toLowerCase(); vb = (b.title||'').toLowerCase(); }
-    else if (field === 'source') { va = a.source||''; vb = b.source||''; }
-    else if (field === 'total_score') { va = a.total_score||0; vb = b.total_score||0; }
-    else if (field === 'quality') { va = a.checks?.quality?.score||0; vb = b.checks?.quality?.score||0; }
-    else if (field === 'relevance') { va = a.checks?.relevance?.score||0; vb = b.checks?.relevance?.score||0; }
-    else if (field === 'freshness') { va = a.checks?.freshness?.score||0; vb = b.checks?.freshness?.score||0; }
-    else if (field === 'viral') { va = a.checks?.viral?.score||0; vb = b.checks?.viral?.score||0; }
-    else if (field === 'headline') { va = a.headline?.score||0; vb = b.headline?.score||0; }
-    else { va = ''; vb = ''; }
-    if (va < vb) return -1 * mult;
-    if (va > vb) return 1 * mult;
-    return 0;
-  });
-  return arr;
-}
-
-function renderReviewRows(results) {
-  document.getElementById('review-table').innerHTML = results.map(r => {
-    const q = r.checks.quality, rel = r.checks.relevance, f = r.checks.freshness, v = r.checks.viral;
-    const sent = r.sentiment || {};
-    const tags = (r.tags||[]).map(t => `<span class="tag tag-${t.id}">${t.label}</span>`).join('') || '-';
-    const sentColor = sent.label==='positive'?'#17bf63':sent.label==='negative'?'#e0245e':'#8899a6';
-    const passIcon = r.overall_pass ? '&#9989;' : '&#10060;';
-    const dup = r.is_duplicate ? '&#128308; DUP' : (r.dedup_status||'unique');
-    const statusBadge = r.status ? `<span class="badge badge-${r.status}" style="margin-left:4px">${STATUS_LABELS[r.status]||r.status}</span>` : '';
-    return `<tr id="review-row-${r.id}">
-      <td><input type="checkbox" class="approve-check" data-id="${r.id}" ${r.overall_pass && !r.is_duplicate ? 'checked' : ''}></td>
-      <td class="td-title"><a href="${r.url}" target="_blank" title="${esc(r.title||'')}">${esc(r.title||'')}</a>${statusBadge}</td>
-      <td>${r.source}</td>
-      <td>${dup}</td>
-      <td style="color:${q.pass?'#17bf63':'#e0245e'}">${q.score}</td>
-      <td style="color:${rel.pass?'#17bf63':'#e0245e'}">${rel.score}</td>
-      <td>${f.score} <span style="color:#8899a6;font-size:0.8em">${f.status||''}</span></td>
-      <td>${v.score} <span style="color:#8899a6;font-size:0.8em">${v.level||''}</span>${(v.triggers||[]).length?'<div style="margin-top:2px;display:flex;flex-wrap:wrap;gap:2px">'+v.triggers.map(t=>{const c=t.weight>=40?'#e0245e':t.weight>=20?'#ffad1f':'#1da1f2';return `<span style="font-size:0.7em;padding:1px 5px;background:${c}18;border-radius:8px;color:${c}" title="+${t.weight}">${t.label}</span>`;}).join('')+'</div>':''}</td>
-      <td style="color:${sentColor}">${sent.score||0} ${sent.label||''}</td>
-      <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis">${tags}</td>
-      <td style="font-size:0.78em;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${((r.entities||{}).games||[]).concat((r.entities||{}).studios||[]).join(', ')}">${((r.entities||{}).games||[]).slice(0,2).concat((r.entities||{}).studios||[]).slice(0,1).join(', ')||'-'}</td>
-      <td style="color:${(r.headline||{}).score>=70?'#17bf63':(r.headline||{}).score>=50?'#ffad1f':'#e0245e'}">${(r.headline||{}).score||'-'}</td>
-      <td style="font-size:0.8em">${(r.momentum||{}).level||'-'} <span style="color:#8899a6">${(r.momentum||{}).sources_24h||0}src</span></td>
-      <td><b style="color:${r.total_score>=60?'#17bf63':r.total_score>=30?'#ffad1f':'#e0245e'}">${r.total_score}</b><span style="font-size:0.7em;color:#8899a6;margin-left:2px">x${r.source_weight||'1'}</span></td>
-      <td>${passIcon}</td>
-      <td style="white-space:nowrap">
-        <button class="btn btn-sm btn-success" onclick="approveOne('${r.id}')">&#10004;</button>
-        <button class="btn btn-sm btn-danger" onclick="rejectOne('${r.id}')">&#10008;</button>
-      </td>
-    </tr>`;
-  }).join('');
-}
-
-function toggleApproveAll(el) { document.querySelectorAll('.approve-check').forEach(c => c.checked = el.checked); }
-
-function toggleApproveAllPassed() {
-  document.querySelectorAll('.approve-check').forEach(c => {
-    const r = _reviewResults.find(x => x.id === c.dataset.id);
-    c.checked = r && r.overall_pass && !r.is_duplicate;
-  });
-}
-
-async function approveOne(id) {
-  const r = await api('/api/approve', {news_ids: [id]});
-  if (r.status === 'ok') {
-    toast('Одобрено');
-    const row = document.getElementById('review-row-' + id);
-    if (row) row.style.opacity = '0.4';
-  } else toast(r.message, true);
-}
-
-async function rejectOne(id) {
-  const r = await api('/api/reject', {news_id: id});
-  if (r.status === 'ok') {
-    toast('Отклонено');
-    const row = document.getElementById('review-row-' + id);
-    if (row) row.style.opacity = '0.4';
-  } else toast(r.message, true);
-}
-
-async function approveSelected() {
-  const ids = [...document.querySelectorAll('.approve-check:checked')].map(c => c.dataset.id);
-  if (!ids.length) { toast('Сначала выберите новости', true); return; }
-  const r = await api('/api/approve', {news_ids: ids});
-  if (r.status === 'ok') {
-    toast('Одобрено: ' + r.approved + ' новостей');
-    ids.forEach(id => { const row = document.getElementById('review-row-' + id); if (row) row.style.opacity = '0.4'; });
-  }
-  else toast(r.message, true);
-  loadAll();
-}
-
-async function rejectSelected() {
-  const ids = [...document.querySelectorAll('.approve-check:checked')].map(c => c.dataset.id);
-  if (!ids.length) { toast('Сначала выберите новости', true); return; }
-  for (const id of ids) {
-    await api('/api/reject', {news_id: id});
-    const row = document.getElementById('review-row-' + id); if (row) row.style.opacity = '0.4';
-  }
-  toast('Отклонено: ' + ids.length + ' новостей');
-  loadAll();
 }
 
 // Actions
@@ -5736,22 +5031,6 @@ async function loadHealth() {
   if (el) el.textContent = `${healthy} ок / ${warn} внимание / ${dead} мертв`;
 }
 
-// Review filter
-function filterReviewTable() {
-  const search = (document.getElementById('rev-search')?.value || '').toLowerCase();
-  const sentiment = document.getElementById('rev-sentiment')?.value || '';
-  const viral = document.getElementById('rev-viral')?.value || '';
-  const minScore = parseInt(document.getElementById('rev-min-score')?.value) || 0;
-  let filtered = _reviewResults;
-  if (search) filtered = filtered.filter(r => (r.title||'').toLowerCase().includes(search));
-  if (sentiment) filtered = filtered.filter(r => (r.sentiment?.label||'') === sentiment);
-  if (viral) filtered = filtered.filter(r => (r.checks?.viral?.level||'none') === viral);
-  if (minScore > 0) filtered = filtered.filter(r => (r.total_score||0) >= minScore);
-  const sorted = sortReviewData(filtered, _revSortField, _revSortDir);
-  renderReviewRows(sorted);
-  document.getElementById('review-count').textContent = filtered.length + ' / ' + _reviewResults.length + ' новостей';
-}
-
 // News tab sorting & filtering
 let _newsSortField = 'parsed_at';
 let _newsSortDir = 'desc';
@@ -5870,7 +5149,7 @@ async function analyzeSelectedNews() {
     } catch(e) { fail++; }
   }
   toast(`Анализ завершён: ${ok} успешно, ${fail} ошибок`);
-  loadNews();
+  loadNewsPage();
 }
 
 async function exportSelectedToSheets() {
@@ -5882,14 +5161,7 @@ async function exportSelectedToSheets() {
   else toast(r.message, true);
 }
 
-async function exportSelectedToSheetsDash() {
-  const ids = getSelectedIds();
-  if (!ids.length) { toast('Сначала выберите новости', true); return; }
-  if (!confirm('Экспортировать ' + ids.length + ' новостей в Google Sheets через очередь?')) return;
-  const r = await api('/api/queue/sheets', {news_ids: ids});
-  if (r.status === 'ok') { toast(`${r.queued} задач добавлено в очередь Sheets`); loadQueue(); }
-  else toast(r.message, true);
-}
+
 
 async function sendSelectedToContent() {
   const ids = getNewsSelectedIds();
@@ -6981,21 +6253,6 @@ function setNewsDateRange(range) {
   loadNewsPage(0);
 }
 
-// Quick date buttons (Dashboard)
-function setDashDateRange(range) {
-  const fromEl = document.getElementById('dash-date-from');
-  const toEl = document.getElementById('dash-date-to');
-  if (!range) { fromEl.value = ''; toEl.value = ''; loadNews(); return; }
-  const now = new Date();
-  const fmt = d => d.toISOString().slice(0,10);
-  toEl.value = fmt(now);
-  if (range === 'today') fromEl.value = fmt(now);
-  else if (range === 'yesterday') { const y = new Date(now); y.setDate(y.getDate()-1); fromEl.value = fmt(y); toEl.value = fmt(y); }
-  else if (range === 'week') { const w = new Date(now); w.setDate(w.getDate()-7); fromEl.value = fmt(w); }
-  else if (range === 'month') { const m = new Date(now); m.setMonth(m.getMonth()-1); fromEl.value = fmt(m); }
-  loadNews();
-}
-
 // Logs
 async function loadLogs() {
   const level = document.getElementById('log-level')?.value || '';
@@ -7074,13 +6331,7 @@ async function aiRecommend(newsId) {
 }
 
 // Init
-function loadAll() { /* Dashboard hidden — skip loadStats/loadNews */ }
-
-let _dashSearchTimer = null;
-function debounceDashSearch() {
-  clearTimeout(_dashSearchTimer);
-  _dashSearchTimer = setTimeout(() => loadNews(), 300);
-}
+function loadAll() { /* No-op: dashboard removed */ }
 
 // ===== VIRAL TAB =====
 let _viralData = [];
@@ -7118,7 +6369,7 @@ async function loadViral() {
     {num: s.none||0, lbl: 'None', cls: 'none', color: '#38444d'},
   ];
   document.getElementById('viral-stats').innerHTML = statItems.map(i =>
-    `<div class="stat" style="${i.color ? 'border-bottom:3px solid '+i.color : ''}" onclick="document.getElementById('viral-level').value='${i.cls==='high'?'high':i.cls==='med'?'medium':i.cls==='low'?'low':i.cls==='none'?'none':''}';loadViral()">
+    `<div class="stat" style="${i.color ? 'border-bottom:3px solid '+i.color : ''}" title="Нажмите для фильтрации" onclick="document.getElementById('viral-level').value='${i.cls==='high'?'high':i.cls==='med'?'medium':i.cls==='low'?'low':i.cls==='none'?'none':''}';loadViral()">
       <div class="num">${i.num}</div><div class="lbl">${i.lbl}</div>
     </div>`
   ).join('');
@@ -7324,6 +6575,22 @@ let _edPage = 0;
 let _edTotalAll = 0;
 const _edLimit = 100;
 
+let _edSearchTimer;
+function debounceEdSearch() {
+  clearTimeout(_edSearchTimer);
+  _edSearchTimer = setTimeout(() => loadEditorial(0), 400);
+}
+
+function resetEdFilters() {
+  document.getElementById('ed-status').value = '';
+  document.getElementById('ed-source').value = '';
+  document.getElementById('ed-viral').value = '';
+  document.getElementById('ed-tier').value = '';
+  document.getElementById('ed-min-score').value = '0';
+  document.getElementById('ed-search').value = '';
+  loadEditorial(0);
+}
+
 async function loadEditorial(page) {
   if (page !== undefined) _edPage = page;
   const status = document.getElementById('ed-status').value;
@@ -7353,12 +6620,12 @@ async function loadEditorial(page) {
   const sLabels = {new:'Новые',in_review:'Проверка',moderation:'Модерация',approved:'Одобрены',processed:'Обработаны',duplicate:'Дубли',rejected:'Отклонены',ready:'Готовы'};
   const totalAll = Object.values(stats).reduce((a,b) => a + (b||0), 0);
   _edTotalAll = totalAll;
-  let statsHtml = `<div class="stat ${!status?'active-filter':''}" onclick="document.getElementById('ed-status').value='';loadEditorial(0)">
+  let statsHtml = `<div class="stat ${!status?'active-filter':''}" title="Нажмите для фильтрации" onclick="document.getElementById('ed-status').value='';loadEditorial(0)">
     <div class="num" style="color:#e1e8ed">${totalAll}</div><div class="lbl">Всего</div></div>`;
   statsHtml += Object.entries(sLabels).map(([k,v]) => {
     const cnt = stats[k] || 0;
     const isActive = status === k;
-    return `<div class="stat ${isActive?'active-filter':''}" onclick="document.getElementById('ed-status').value='${isActive?'':k}';loadEditorial(0)">
+    return `<div class="stat ${isActive?'active-filter':''}" title="Нажмите для фильтрации" onclick="document.getElementById('ed-status').value='${isActive?'':k}';loadEditorial(0)">
       <div class="num" style="color:${sColors[k]}">${cnt}</div><div class="lbl">${v}</div></div>`;
   }).join('');
   statsEl.innerHTML = statsHtml;
@@ -7669,13 +6936,19 @@ function renderEdPagination(total) {
 async function edExportSheets() {
   let ids = _edGetSelected();
   if (!ids.length) {
-    // Если ничего не выбрано — экспортируем все processed на текущей странице
     ids = _edData.filter(n => n.status === 'processed').map(n => n.id);
     if (!ids.length) { toast('Нет обработанных для экспорта', true); return; }
   }
-  toast(`Экспорт ${ids.length} в Sheets...`);
-  const r = await api('/api/queue/sheets', {news_ids: ids});
-  if (r.status === 'ok') { toast(`${r.queued || ids.length} задач добавлено в очередь Sheets`); } else toast(r.message, true);
+  const btn = event && event.target ? event.target : null;
+  const origText = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '&#9203; Экспорт...'; }
+  try {
+    toast(`Экспорт ${ids.length} в Sheets...`);
+    const r = await api('/api/queue/sheets', {news_ids: ids});
+    if (r.status === 'ok') { toast(`${r.queued || ids.length} задач добавлено в очередь Sheets`); } else toast(r.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = origText; }
+  }
 }
 
 // Batch rewrite from editorial
@@ -7685,9 +6958,16 @@ async function edBatchRewrite() {
     ids = _edData.filter(n => ['approved','processed'].includes(n.status)).map(n => n.id);
     if (!ids.length) { toast('Нет одобренных для рерайта', true); return; }
   }
-  toast(`Рерайт ${ids.length} в очередь...`);
-  const r = await api('/api/queue/rewrite', {news_ids: ids, style: 'news'});
-  if (r.status === 'ok') { toast(`${r.queued || ids.length} задач добавлено`); } else toast(r.message, true);
+  const btn = event && event.target ? event.target : null;
+  const origText = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '&#9203; Рерайт...'; }
+  try {
+    toast(`Рерайт ${ids.length} в очередь...`);
+    const r = await api('/api/queue/rewrite', {news_ids: ids, style: 'news'});
+    if (r.status === 'ok') { toast(`${r.queued || ids.length} задач добавлено`); } else toast(r.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = origText; }
+  }
 }
 
 // Force parse all sources from editorial empty state
@@ -7721,16 +7001,23 @@ function switchContentTab(tab) {
 }
 
 async function edForceParse() {
-  toast('Парсинг всех источников...');
-  const r = await api('/api/reparse_all', {});
-  if (r.status === 'ok') {
-    toast('Спарсено: ' + (r.new_articles || 0) + ' новостей. Запуск проверки...');
-    if (r.new_articles > 0) {
-      await edRunAutoReview();
+  const btn = event && event.target ? event.target : null;
+  const origText = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '&#9203; Парсинг...'; }
+  try {
+    toast('Парсинг всех источников...');
+    const r = await api('/api/reparse_all', {});
+    if (r.status === 'ok') {
+      toast('Спарсено: ' + (r.new_articles || 0) + ' новостей. Запуск проверки...');
+      if (r.new_articles > 0) {
+        await edRunAutoReview();
+      }
+      loadEditorial(0);
+    } else {
+      toast(r.message || 'Ошибка парсинга', true);
     }
-    loadEditorial(0);
-  } else {
-    toast(r.message || 'Ошибка парсинга', true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = origText; }
   }
 }
 
@@ -7818,7 +7105,8 @@ function setPipelineActive(type) {
     if (type === 'full_auto') btnFull.style.boxShadow = '0 0 8px #1da1f2';
     if (type === 'no_llm') btnNoLLM.style.boxShadow = '0 0 8px #794bc4';
     btnStop.style.display = 'inline-block';
-    statusEl.textContent = '';
+    statusEl.style.display = 'inline-block';
+    statusEl.innerHTML = '';
     // Start polling
     if (!_pipelinePolling) {
       _pipelinePolling = setInterval(pollPipelineStatus, 3000);
@@ -7831,7 +7119,8 @@ function setPipelineActive(type) {
     btnFull.style.boxShadow = '';
     btnNoLLM.style.boxShadow = '';
     btnStop.style.display = 'none';
-    statusEl.textContent = '';
+    statusEl.style.display = 'none';
+    statusEl.innerHTML = '';
     if (_pipelinePolling) {
       clearInterval(_pipelinePolling);
       _pipelinePolling = null;
@@ -7844,16 +7133,30 @@ async function pollPipelineStatus() {
     const r = await api('/api/pipeline/status');
     const statusEl = document.getElementById('pipeline-status');
     if (r.running) {
-      const total = (r.running_count || 0) + (r.pending_count || 0);
-      const done = r.running_count || 0;
-      statusEl.textContent = `${r.active_type === 'full_auto' ? 'Автомат' : 'Без LLM'}: ${done} активных, ${r.pending_count || 0} в очереди`;
+      statusEl.style.display = 'inline-block';
+      const typeLabel = r.active_type === 'full_auto' ? 'Автомат' : 'Без LLM';
+      const done = r.total_done || 0;
+      const totalAll = done + (r.running_count || 0) + (r.pending_count || 0);
+      let elapsed = '';
+      if (r.started_at) {
+        const diffSec = Math.floor((Date.now() - new Date(r.started_at).getTime()) / 1000);
+        if (diffSec > 0) {
+          const m = Math.floor(diffSec / 60);
+          const s = diffSec % 60;
+          elapsed = m > 0 ? ` | ${m}м ${s}с` : ` | ${s}с`;
+        }
+      }
+      statusEl.innerHTML = `<b>${typeLabel}</b> &middot; ${done}/${totalAll} обработано${elapsed}`;
       statusEl.style.color = '#ffad1f';
+      statusEl.style.borderColor = r.active_type === 'full_auto' ? '#1da1f2' : '#794bc4';
     } else {
-      statusEl.textContent = 'Завершено';
+      statusEl.style.display = 'inline-block';
+      statusEl.innerHTML = '<b style="color:#17bf63">Завершено</b>';
       statusEl.style.color = '#17bf63';
+      statusEl.style.borderColor = '#17bf63';
       setPipelineActive(null);
       loadEditorial();
-      setTimeout(() => { statusEl.textContent = ''; }, 3000);
+      setTimeout(() => { statusEl.style.display = 'none'; statusEl.innerHTML = ''; }, 3000);
     }
   } catch(e) {}
 }
@@ -7939,6 +7242,13 @@ function debounceModSearch() {
   _modSearchTimer = setTimeout(() => loadModeration(), 300);
 }
 
+function resetModFilters() {
+  document.getElementById('mod-search').value = '';
+  document.getElementById('mod-source').value = '';
+  document.getElementById('mod-min-score').value = '0';
+  loadModeration(0);
+}
+
 async function loadModeration(page) {
   if (page !== undefined) _modPage = page;
   const params = new URLSearchParams({
@@ -7955,13 +7265,17 @@ async function loadModeration(page) {
   const r = await api('/api/moderation_list?' + params.toString());
   _modData = r.news || [];
   _modTotal = r.total || 0;
+  const _modAvgScore = r.avg_score || 0;
+  const avgColor = _modAvgScore >= 60 ? '#17bf63' : _modAvgScore >= 35 ? '#ffad1f' : '#e0245e';
 
   // Stats
   document.getElementById('mod-stats').innerHTML =
-    `<div class="stat-card" style="background:#192734;padding:8px 14px;border-radius:8px;font-size:0.9em">` +
-    `<span style="color:#8899a6">Всего:</span> <b style="color:#d9d9d9">${_modTotal}</b></div>` +
-    `<div class="stat-card" style="background:#192734;padding:8px 14px;border-radius:8px;font-size:0.9em">` +
-    `<span style="color:#8899a6">На странице:</span> <b style="color:#d9d9d9">${_modData.length}</b></div>`;
+    `<div class="stat-card" style="background:#192734;padding:10px 18px;border-radius:8px;font-size:0.9em;border:1px solid #38444d">` +
+    `<span style="color:#8899a6">Всего на модерации</span><br><b style="color:#1da1f2;font-size:1.4em">${_modTotal}</b></div>` +
+    `<div class="stat-card" style="background:#192734;padding:10px 18px;border-radius:8px;font-size:0.9em;border:1px solid #38444d">` +
+    `<span style="color:#8899a6">Средний скор</span><br><b style="color:${avgColor};font-size:1.4em">${_modAvgScore}</b></div>` +
+    `<div class="stat-card" style="background:#192734;padding:10px 18px;border-radius:8px;font-size:0.9em;border:1px solid #38444d">` +
+    `<span style="color:#8899a6">На странице</span><br><b style="color:#d9d9d9;font-size:1.4em">${_modData.length}</b></div>`;
 
   // Populate source filter (once)
   const srcSel = document.getElementById('mod-source');
@@ -8003,7 +7317,8 @@ function renderModTable() {
       <td style="text-align:center;font-size:0.85em">${freshH}</td>
       <td style="text-align:center">${sentimentEmoji[n.sentiment_label] || '&#9898;'}</td>
       <td>${tagsHtml}</td>
-      <td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm" style="background:#17bf63;color:#fff" onclick="modApprove('${n.id}')" title="Одобрить">&#10003;</button>
         <button class="btn btn-sm btn-primary" onclick="modRewrite('${n.id}')" title="Рерайт">&#9998;</button>
         <button class="btn btn-sm btn-danger" onclick="modReject('${n.id}')" title="Отклонить">&#10007;</button>
       </td>
@@ -8072,6 +7387,42 @@ async function modExportSheets() {
   if (!ids.length) { toast('Сначала выберите новости', true); return; }
   const r = await api('/api/queue/sheets', {news_ids: ids});
   if (r.status === 'ok') { toast(`${r.queued} задач в очереди Sheets`); } else toast(r.message, true);
+}
+
+async function modApprove(id) {
+  const r = await api('/api/approve', {news_ids: [id]});
+  if (r.status === 'ok') { toast('Одобрено + обогащение запущено'); loadModeration(); } else toast(r.message, true);
+}
+
+async function modApproveSelected() {
+  const ids = getModSelectedIds();
+  if (!ids.length) { toast('Сначала выберите новости', true); return; }
+  const r = await api('/api/approve', {news_ids: ids});
+  if (r.status === 'ok') { toast(`Одобрено: ${ids.length} — обогащение запущено`); loadModeration(); } else toast(r.message, true);
+}
+
+// Moderation sorting
+let _modSortField = 'total_score';
+let _modSortDir = 'desc';
+
+function sortModTable(field) {
+  if (_modSortField === field) {
+    _modSortDir = _modSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _modSortField = field;
+    _modSortDir = (field === 'title' || field === 'source') ? 'asc' : 'desc';
+  }
+  _modData.sort((a, b) => {
+    let va = a[_modSortField], vb = b[_modSortField];
+    if (va == null) va = '';
+    if (vb == null) vb = '';
+    if (typeof va === 'string') va = va.toLowerCase();
+    if (typeof vb === 'string') vb = vb.toLowerCase();
+    if (va < vb) return _modSortDir === 'asc' ? -1 : 1;
+    if (va > vb) return _modSortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+  renderModTable();
 }
 
 // Auto-refresh moderation
