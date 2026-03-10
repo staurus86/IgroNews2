@@ -6,7 +6,7 @@ from checks.freshness import check_freshness
 from checks.viral_score import viral_score
 from checks.tags import auto_tag
 from checks.sentiment import analyze_sentiment
-from checks.momentum import get_momentum
+from checks.momentum import get_momentum, invalidate_cache
 from checks.ner import extract_entities
 from checks.headline_score import headline_score
 from checks.source_weight import get_source_weight
@@ -49,10 +49,16 @@ def _check_single(news: dict) -> dict:
         result["early_exit"] = True
         return result
 
+    # Compute text once, reuse for all checks
+    text = news.get("title", "") + " " + news.get("plain_text", "")
+
+    # Game entities — computed once, passed to viral_score
+    game_ents = find_entities(text)
+
     # Основные проверки
     result["checks"]["relevance"] = check_relevance(news)
     result["checks"]["freshness"] = check_freshness(news)
-    result["checks"]["viral"] = viral_score(news)
+    result["checks"]["viral"] = viral_score(news, precomputed_entities=game_ents)
 
     # Дополнительные анализы
     result["tags"] = auto_tag(news)
@@ -62,9 +68,7 @@ def _check_single(news: dict) -> dict:
     result["headline"] = headline_score(news)
     result["source_weight"] = get_source_weight(news.get("source", ""))
 
-    # Game entities из единой базы
-    text = news.get("title", "") + " " + news.get("plain_text", "")
-    result["game_entities"] = find_entities(text)
+    result["game_entities"] = game_ents
 
     all_pass = all(c["pass"] for c in result["checks"].values())
     total_score = sum(c["score"] for c in result["checks"].values()) // 4
@@ -95,7 +99,11 @@ def run_review_pipeline(news_list: list[dict], update_status: bool = True) -> di
         news_list: список новостей для проверки
         update_status: если True — обновляет статусы в БД (in_review/duplicate)
     """
-    results = [_check_single(news) for news in news_list]
+    try:
+        results = [_check_single(news) for news in news_list]
+    finally:
+        # Invalidate momentum cache after batch completes
+        invalidate_cache()
 
     # Dedup across batch (TF-IDF + entity overlap)
     titles = [r["title"] for r in results]
@@ -115,7 +123,6 @@ def run_review_pipeline(news_list: list[dict], update_status: bool = True) -> di
             member["dedup_status"] = group["status"]
 
     # Save check results in DB (always) + update statuses (optional)
-    # Smart auto-approve/reject thresholds
     AUTO_REJECT_SCORE = 15
     for r in results:
         if update_status:

@@ -30,13 +30,17 @@ NEGATIVE_EN = [
     "overwhelmingly negative", "mostly negative",
 ]
 
+# Pre-concatenated lists (built once at import)
+_ALL_POSITIVE = POSITIVE_RU + POSITIVE_EN
+_ALL_NEGATIVE = NEGATIVE_RU + NEGATIVE_EN
+
 
 def analyze_sentiment(news: dict) -> dict:
     """Анализирует тональность новости. Возвращает score от -1 до +1."""
     text = (news.get("title", "") + " " + news.get("plain_text", "")).lower()
 
-    pos_hits = sum(1 for w in POSITIVE_RU + POSITIVE_EN if w in text)
-    neg_hits = sum(1 for w in NEGATIVE_RU + NEGATIVE_EN if w in text)
+    pos_hits = sum(1 for w in _ALL_POSITIVE if w in text)
+    neg_hits = sum(1 for w in _ALL_NEGATIVE if w in text)
 
     total = pos_hits + neg_hits
     if total == 0:

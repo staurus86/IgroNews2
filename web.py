@@ -395,20 +395,34 @@ async function login() {
     def _get_stats(self):
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        stats = {}
-        for status in ["new", "in_review", "duplicate", "approved", "processed", "rejected", "ready"]:
-            cur.execute(f"SELECT COUNT(*) FROM news WHERE status = {ph}", (status,))
-            stats[status] = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM news")
-        stats["total"] = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM news_analysis")
-        stats["analyzed"] = cur.fetchone()[0]
-        return stats
+        try:
+            # Single query instead of 7+2 separate queries
+            cur.execute("SELECT status, COUNT(*) FROM news GROUP BY status")
+            stats = {}
+            total = 0
+            for row in cur.fetchall():
+                s, c = (row[0], row[1]) if _is_postgres() else (row[0], row[1])
+                stats[s] = c
+                total += c
+            stats["total"] = total
+            # Ensure all expected statuses exist
+            for s in ["new", "in_review", "duplicate", "approved", "processed", "rejected", "ready"]:
+                stats.setdefault(s, 0)
+            cur.execute("SELECT COUNT(*) FROM news_analysis")
+            stats["analyzed"] = cur.fetchone()[0]
+            return stats
+        finally:
+            cur.close()
 
     def _get_news(self):
         conn = get_connection()
         cur = conn.cursor()
+        try:
+            return self._get_news_impl(cur)
+        finally:
+            cur.close()
+
+    def _get_news_impl(self, cur):
         qs = parse_qs(urlparse(self.path).query)
         limit = int(qs.get("limit", [100])[0])
         offset = int(qs.get("offset", [0])[0])
@@ -469,6 +483,12 @@ async function login() {
         """Единый endpoint для вкладки Редакция — все данные в одном запросе."""
         conn = get_connection()
         cur = conn.cursor()
+        try:
+            return self._get_editorial_impl(cur)
+        finally:
+            cur.close()
+
+    def _get_editorial_impl(self, cur):
         qs = parse_qs(urlparse(self.path).query)
         limit = int(qs.get("limit", [100])[0])
         offset = int(qs.get("offset", [0])[0])

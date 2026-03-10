@@ -581,6 +581,18 @@ VIRAL_TRIGGERS = {
 
 from nlp.game_entities import get_entity_boost, TIER_BOOST
 
+# Pre-build keyword->trigger_id lookup for fast matching
+# Maps each keyword to the (trigger_id, label, weight) that contains it
+_KEYWORD_TO_TRIGGER = {}  # {keyword: [(trigger_id, label, weight), ...]}
+for _tid, _tdata in VIRAL_TRIGGERS.items():
+    for _kw in _tdata["keywords"]:
+        if _kw not in _KEYWORD_TO_TRIGGER:
+            _KEYWORD_TO_TRIGGER[_kw] = []
+        _KEYWORD_TO_TRIGGER[_kw].append((_tid, _tdata["label"], _tdata["weight"]))
+
+# Sort keywords longest-first for efficient scanning
+_SORTED_KEYWORDS = sorted(_KEYWORD_TO_TRIGGER.keys(), key=len, reverse=True)
+
 GAMING_EVENTS_CALENDAR = [
     (1, 15, 25, "Xbox Developer Direct", 20),
     (2, 1, 28, "Nintendo Direct (Feb)", 25),
@@ -605,24 +617,33 @@ def get_calendar_boost(dt: Optional[datetime] = None) -> tuple[int, str]:
     return 0, ""
 
 
-def viral_score(news: dict) -> dict:
+def viral_score(news: dict, precomputed_entities: list = None) -> dict:
     title = news.get("title", "").lower()
     text = (title + " " + news.get("plain_text", "")).lower()
 
     score = 0
     triggered = []
 
-    for trigger_id, trigger in VIRAL_TRIGGERS.items():
-        if any(kw in text for kw in trigger["keywords"]):
-            score += trigger["weight"]
-            triggered.append({
-                "id": trigger_id,
-                "label": trigger["label"],
-                "weight": trigger["weight"],
-            })
+    # Optimized: scan keywords once, collect triggered IDs (avoids N*M loops)
+    triggered_ids = set()
+    for kw in _SORTED_KEYWORDS:
+        if kw in text:
+            for tid, label, weight in _KEYWORD_TO_TRIGGER[kw]:
+                if tid not in triggered_ids:
+                    triggered_ids.add(tid)
+                    score += weight
+                    triggered.append({"id": tid, "label": label, "weight": weight})
 
-    # Entity-based boost (из единой базы с тирами)
-    entity_boost, entities = get_entity_boost(text)
+    # Entity-based boost — reuse precomputed if available
+    if precomputed_entities is not None:
+        entities = precomputed_entities
+        if entities:
+            best_tier = entities[0]["tier"]
+            entity_boost = TIER_BOOST.get(best_tier, 0)
+        else:
+            entity_boost = 0
+    else:
+        entity_boost, entities = get_entity_boost(text)
     has_big_title = entity_boost >= TIER_BOOST["A"]  # A-tier и выше
     if entity_boost > 0:
         score += entity_boost

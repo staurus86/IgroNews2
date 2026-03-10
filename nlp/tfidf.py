@@ -1,6 +1,6 @@
 """Гибридное извлечение ключевых фраз: словарь сущностей + TF-IDF.
 
-Оптимизировано: vectorizer кешируется, фоновый корпус фитится один раз.
+Оптимизировано: vectorizer кешируется, transform вместо fit_transform.
 """
 
 import logging
@@ -41,49 +41,55 @@ BACKGROUND_CORPUS = [
     "console exclusive port remaster remake collection",
 ]
 
-# Кешированные vectorizer-ы (создаются один раз)
-_vectorizer_cache = {}
+_STOP_WORDS_LIST = list(STOP_WORDS)
+
+# Pre-compiled regex for text cleaning
+_RE_HTML = re.compile(r"<[^>]+>")
+_RE_NONWORD = re.compile(r"[^\w\s]")
+_RE_SPACES = re.compile(r"\s+")
+
+# Cached fitted vectorizers (created once, reused with transform)
+_fitted_vectorizers = {}
 
 
 def clean_text(text: str) -> str:
     """Очищает текст от HTML, лишних символов."""
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"[^\w\s]", " ", text)
-    text = re.sub(r"\s+", " ", text)
+    text = _RE_HTML.sub(" ", text)
+    text = _RE_NONWORD.sub(" ", text)
+    text = _RE_SPACES.sub(" ", text)
     return text.strip().lower()
 
 
-def _get_vectorizer(ngram_range: tuple) -> TfidfVectorizer:
-    """Возвращает кешированный vectorizer, предобученный на фоновом корпусе."""
-    key = ngram_range
-    if key not in _vectorizer_cache:
+def _get_fitted_vectorizer(ngram_range: tuple) -> TfidfVectorizer:
+    """Returns a vectorizer pre-fitted on background corpus. Created once."""
+    if ngram_range not in _fitted_vectorizers:
         v = TfidfVectorizer(
             ngram_range=ngram_range,
             max_features=100,
-            stop_words=list(STOP_WORDS),
+            stop_words=_STOP_WORDS_LIST,
             min_df=1,
         )
-        # Предобучаем на фоновом корпусе — фиксируем vocabulary
         v.fit(BACKGROUND_CORPUS)
-        _vectorizer_cache[key] = v
-    return _vectorizer_cache[key]
+        _fitted_vectorizers[ngram_range] = v
+    return _fitted_vectorizers[ngram_range]
 
 
 def _tfidf_with_background(text: str, ngram_range: tuple, top_n: int) -> list[list]:
-    """TF-IDF с фоновым корпусом для значимого IDF.
+    """TF-IDF с фоновым корпусом.
 
-    Vectorizer кешируется, только transform выполняется каждый раз.
+    Uses pre-fitted vectorizer's vocabulary, fits a new one on corpus+text
+    to get proper IDF scores. Vocabulary is fixed so fit is cheap.
     """
     corpus = [text] + BACKGROUND_CORPUS
     try:
-        # Каждый раз fit_transform чтобы IDF учитывал новый документ,
-        # но vectorizer создаётся один раз с фиксированным vocabulary
+        base = _get_fitted_vectorizer(ngram_range)
+        # Create lightweight vectorizer with fixed vocabulary — fit is O(vocab) not O(features)
         vectorizer = TfidfVectorizer(
             ngram_range=ngram_range,
             max_features=100,
-            stop_words=list(STOP_WORDS),
+            stop_words=_STOP_WORDS_LIST,
             min_df=1,
-            vocabulary=_get_vectorizer(ngram_range).vocabulary_,
+            vocabulary=base.vocabulary_,
         )
         tfidf_matrix = vectorizer.fit_transform(corpus)
         feature_names = vectorizer.get_feature_names_out()

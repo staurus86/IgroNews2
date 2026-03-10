@@ -1,6 +1,10 @@
-"""Named Entity Recognition — словарный подход для извлечения студий, игр, чисел."""
+"""Named Entity Recognition — оптимизированный словарный подход.
+
+Использует предкомпилированные множества и regex для быстрого поиска.
+"""
 
 import re
+from functools import lru_cache
 
 STUDIOS = [
     "rockstar", "rockstar games", "valve", "blizzard", "activision", "ubisoft",
@@ -58,62 +62,93 @@ PLATFORMS = [
     "vr", "psvr2", "meta quest", "oculus",
 ]
 
+# Pre-build: sorted by length (longest first) for greedy matching
+_SORTED_STUDIOS = sorted(STUDIOS, key=len, reverse=True)
+_SORTED_GAMES = sorted(GAMES, key=len, reverse=True)
+_SORTED_PLATFORMS = sorted(PLATFORMS, key=len, reverse=True)
 
-def extract_entities(news: dict) -> dict:
-    """Извлекает именованные сущности из новости."""
-    title = news.get("title", "").lower()
-    text = (title + " " + news.get("plain_text", "")).lower()
+# Short keys (<=3 chars) need word boundary regex to avoid false matches
+_SHORT_THRESHOLD = 3
+_SHORT_PATTERNS = {}
+for _list in (STUDIOS, GAMES, PLATFORMS):
+    for _item in _list:
+        if len(_item) <= _SHORT_THRESHOLD:
+            _SHORT_PATTERNS[_item] = re.compile(r'\b' + re.escape(_item) + r'\b')
 
-    found_studios = []
-    for s in STUDIOS:
-        if s in text:
-            found_studios.append(s)
+EVENT_KWS = {
+    "The Game Awards": ["the game awards", "tga"],
+    "E3": ["e3"],
+    "Gamescom": ["gamescom"],
+    "GDC": ["gdc"],
+    "Nintendo Direct": ["nintendo direct"],
+    "Xbox Showcase": ["xbox showcase"],
+    "PlayStation Showcase": ["playstation showcase", "state of play"],
+    "Summer Game Fest": ["summer game fest", "sgf"],
+    "Tokyo Game Show": ["tokyo game show", "tgs"],
+}
 
-    found_games = []
-    for g in GAMES:
-        if g in text:
-            found_games.append(g)
+_NUMBER_RE = re.compile(r'\b(\d[\d\s,.]*\d)\b|\b(\d+)\b')
+_SKIP_YEARS = {2024, 2025, 2026, 2027}
 
-    found_platforms = []
-    for p in PLATFORMS:
-        if p in text:
-            found_platforms.append(p)
 
-    # Числа (большие, значимые)
+def _find_in_list(text: str, sorted_list: list) -> list:
+    """Finds all matches from sorted_list in text, using word-boundary for short keys."""
+    found = []
+    for item in sorted_list:
+        if len(item) <= _SHORT_THRESHOLD:
+            pat = _SHORT_PATTERNS.get(item)
+            if pat and pat.search(text):
+                found.append(item)
+        elif item in text:
+            found.append(item)
+    return found
+
+
+@lru_cache(maxsize=256)
+def _extract_cached(text_lower: str) -> tuple:
+    """Cached entity extraction. Returns tuple for hashability."""
+    found_studios = _find_in_list(text_lower, _SORTED_STUDIOS)
+    found_games = _find_in_list(text_lower, _SORTED_GAMES)
+    found_platforms = _find_in_list(text_lower, _SORTED_PLATFORMS)
+
     numbers = []
-    for m in re.finditer(r'\b(\d[\d\s,.]*\d)\b|\b(\d+)\b', text):
+    for m in _NUMBER_RE.finditer(text_lower):
         raw = (m.group(1) or m.group(2)).replace(" ", "").replace(",", "").replace(".", "")
         try:
             n = int(raw)
-            if n >= 10 and n != 2024 and n != 2025 and n != 2026:
+            if n >= 10 and n not in _SKIP_YEARS:
                 numbers.append(n)
         except ValueError:
             pass
-    # Deduplicate and keep unique large numbers
     numbers = sorted(set(numbers), reverse=True)[:5]
 
-    # Events mentioned
     events = []
-    event_kws = {
-        "The Game Awards": ["the game awards", "tga"],
-        "E3": ["e3"],
-        "Gamescom": ["gamescom"],
-        "GDC": ["gdc"],
-        "Nintendo Direct": ["nintendo direct"],
-        "Xbox Showcase": ["xbox showcase"],
-        "PlayStation Showcase": ["playstation showcase", "state of play"],
-        "Summer Game Fest": ["summer game fest", "sgf"],
-        "Tokyo Game Show": ["tokyo game show", "tgs"],
-    }
-    for event_name, kws in event_kws.items():
-        if any(kw in text for kw in kws):
+    for event_name, kws in EVENT_KWS.items():
+        if any(kw in text_lower for kw in kws):
             events.append(event_name)
 
+    return (
+        tuple(found_studios[:10]),
+        tuple(found_games[:10]),
+        tuple(found_platforms[:5]),
+        tuple(numbers),
+        tuple(events),
+        len(found_studios) + len(found_games) + len(found_platforms),
+    )
+
+
+def extract_entities(news: dict) -> dict:
+    """Извлекает именованные сущности из новости. Результаты кешируются (LRU 256)."""
+    title = news.get("title", "").lower()
+    text = (title + " " + news.get("plain_text", "")).lower()
+
+    studios, games, platforms, numbers, events, total = _extract_cached(text)
+
     return {
-        "studios": found_studios[:10],
-        "games": found_games[:10],
-        "platforms": found_platforms[:5],
-        "numbers": numbers,
-        "events": events,
-        "total_entities": len(found_studios) + len(found_games) + len(found_platforms),
+        "studios": list(studios),
+        "games": list(games),
+        "platforms": list(platforms),
+        "numbers": list(numbers),
+        "events": list(events),
+        "total_entities": total,
     }

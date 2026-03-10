@@ -41,13 +41,16 @@ def _auto_review_new():
         from storage.database import get_connection, _is_postgres
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        cur.execute(f"SELECT * FROM news WHERE status = 'new' ORDER BY parsed_at DESC LIMIT {ph}", (20,))
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
-        else:
-            news_list = [dict(row) for row in cur.fetchall()]
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"SELECT * FROM news WHERE status = 'new' ORDER BY parsed_at DESC LIMIT {ph}", (20,))
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                news_list = [dict(row) for row in cur.fetchall()]
+        finally:
+            cur.close()
 
         if not news_list:
             return
@@ -66,13 +69,16 @@ def _process_single_news(news_id: str) -> dict:
     from storage.database import get_connection, _is_postgres
     conn = get_connection()
     cur = conn.cursor()
-    ph = "%s" if _is_postgres() else "?"
-    cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
-    if _is_postgres():
-        columns = [desc[0] for desc in cur.description]
-        news = dict(zip(columns, cur.fetchone()))
-    else:
-        news = dict(cur.fetchone())
+    try:
+        ph = "%s" if _is_postgres() else "?"
+        cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            news = dict(zip(columns, cur.fetchone()))
+        else:
+            news = dict(cur.fetchone())
+    finally:
+        cur.close()
     return _do_process(news)
 
 

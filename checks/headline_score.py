@@ -65,6 +65,12 @@ HEADLINE_PATTERNS = {
     },
 }
 
+# Pre-compile all patterns at import time
+_COMPILED_PATTERNS = {
+    pat_id: (re.compile(pat_info["pattern"]), pat_info["bonus"], pat_info["label"])
+    for pat_id, pat_info in HEADLINE_PATTERNS.items()
+}
+
 # Penalties
 HEADLINE_PENALTIES = {
     "too_short": {
@@ -98,14 +104,14 @@ def headline_score(news: dict) -> dict:
     score = 40  # base score
     triggers = []
 
-    # Patterns (bonuses)
-    for pat_id, pat_info in HEADLINE_PATTERNS.items():
-        if re.search(pat_info["pattern"], title_lower):
-            score += pat_info["bonus"]
+    # Patterns (bonuses) — uses pre-compiled regex
+    for pat_id, (compiled_re, bonus, label) in _COMPILED_PATTERNS.items():
+        if compiled_re.search(title_lower):
+            score += bonus
             triggers.append({
                 "id": pat_id,
-                "label": pat_info["label"],
-                "bonus": pat_info["bonus"],
+                "label": label,
+                "bonus": bonus,
             })
 
     # Penalties
