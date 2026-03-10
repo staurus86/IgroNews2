@@ -316,6 +316,241 @@ def process_news():
             logger.error("Error processing news %s: %s", news.get("id"), e)
 
 
+# ─── Pipeline 1: Full Auto (score → enrich → rewrite → Sheets/Ready) ───
+
+def _update_task(task_id: str, status: str, result_data: dict | str | None = None):
+    """Обновляет статус задачи в очереди."""
+    import json as _json
+    from datetime import datetime, timezone
+    from storage.database import get_connection, _is_postgres
+
+    conn = get_connection()
+    cur = conn.cursor()
+    ph = "%s" if _is_postgres() else "?"
+    now = datetime.now(timezone.utc).isoformat()
+    result_str = ""
+    if result_data:
+        result_str = _json.dumps(result_data, ensure_ascii=False) if isinstance(result_data, dict) else str(result_data)
+    try:
+        cur.execute(f"UPDATE task_queue SET status = {ph}, result = {ph}, updated_at = {ph} WHERE id = {ph}",
+                    (status, result_str[:2000], now, task_id))
+        if not _is_postgres():
+            conn.commit()
+    finally:
+        cur.close()
+
+
+def _create_task(task_type: str, news_id: str, news_title: str, style: str = "") -> str:
+    """Создаёт задачу в очереди, возвращает task_id."""
+    import uuid
+    from datetime import datetime, timezone
+    from storage.database import get_connection, _is_postgres
+
+    conn = get_connection()
+    cur = conn.cursor()
+    ph = "%s" if _is_postgres() else "?"
+    now = datetime.now(timezone.utc).isoformat()
+    tid = str(uuid.uuid4())[:12]
+    try:
+        cur.execute(f"""INSERT INTO task_queue (id, task_type, news_id, news_title, style, status, created_at, updated_at)
+            VALUES ({','.join([ph]*8)})""",
+            (tid, task_type, news_id, news_title[:200], style, "pending", now, now))
+        if not _is_postgres():
+            conn.commit()
+    finally:
+        cur.close()
+    return tid
+
+
+def _fetch_news_by_id(news_id: str) -> dict | None:
+    """Загружает новость из БД по ID."""
+    from storage.database import get_connection, _is_postgres
+    conn = get_connection()
+    cur = conn.cursor()
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        if _is_postgres():
+            cols = [d[0] for d in cur.description]
+            return dict(zip(cols, row))
+        return dict(row)
+    finally:
+        cur.close()
+
+
+def _fetch_analysis_by_id(news_id: str) -> dict | None:
+    """Загружает анализ из БД по news_id."""
+    from storage.database import get_connection, _is_postgres
+    conn = get_connection()
+    cur = conn.cursor()
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (news_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        if _is_postgres():
+            cols = [d[0] for d in cur.description]
+            return dict(zip(cols, row))
+        return dict(row)
+    finally:
+        cur.close()
+
+
+def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
+    """Режим 1: Полный автомат.
+
+    score → enrich (Keys.so+Trends+LLM) → фильтр publish_now → rewrite → Sheets/Ready
+    """
+    from checks.pipeline import run_review_pipeline
+    from apis.llm import rewrite_news
+    from storage.sheets import write_ready_row
+
+    for news_id, task_id in zip(news_ids, task_ids):
+        try:
+            news = _fetch_news_by_id(news_id)
+            if not news:
+                _update_task(task_id, "error", {"stage": "init", "error": "News not found"})
+                continue
+
+            # Stage 1: Local scoring
+            _update_task(task_id, "running", {"stage": "scoring"})
+            review_result = run_review_pipeline([news], update_status=True)
+            results = review_result.get("results", [])
+            if not results:
+                _update_task(task_id, "error", {"stage": "scoring", "error": "No review results"})
+                continue
+
+            check_result = results[0]
+            total_score = check_result.get("total_score", 0)
+            is_dup = check_result.get("is_duplicate", False)
+
+            if is_dup:
+                _update_task(task_id, "skipped", {"stage": "scoring", "reason": "duplicate", "score": total_score})
+                continue
+
+            if check_result.get("auto_rejected"):
+                _update_task(task_id, "skipped", {"stage": "scoring", "reason": "auto_rejected", "score": total_score})
+                continue
+
+            # Stage 2: Enrichment (APIs + LLM analysis)
+            _update_task(task_id, "running", {"stage": "enriching", "score": total_score})
+            update_news_status(news_id, "approved")
+            enrich_result = _do_process(news)
+            recommendation = enrich_result.get("recommendation", "")
+
+            # Stage 3: Filter — only publish_now proceeds
+            if recommendation != "publish_now":
+                _update_task(task_id, "done", {
+                    "stage": "filtered",
+                    "reason": f"LLM: {recommendation}",
+                    "score": total_score,
+                    "recommendation": recommendation,
+                })
+                continue
+
+            # Stage 4: Rewrite
+            _update_task(task_id, "running", {"stage": "rewriting", "score": total_score})
+            import config
+            style = getattr(config, "AUTO_REWRITE_STYLE", "news")
+            rewrite = rewrite_news(
+                title=news.get("title", ""),
+                text=news.get("plain_text", ""),
+                style=style,
+                language="русский",
+            )
+            if not rewrite:
+                _update_task(task_id, "error", {"stage": "rewriting", "error": "Rewrite returned None"})
+                continue
+
+            # Stage 5: Export to Sheets/Ready
+            _update_task(task_id, "running", {"stage": "exporting", "score": total_score})
+            analysis = _fetch_analysis_by_id(news_id)
+            sheet_row = write_ready_row(news, analysis, rewrite)
+
+            update_news_status(news_id, "ready")
+            _update_task(task_id, "done", {
+                "stage": "complete",
+                "score": total_score,
+                "recommendation": recommendation,
+                "sheet_row": sheet_row,
+                "rewrite_title": rewrite.get("title", "")[:100],
+            })
+            logger.info("Full-auto complete: %s → Ready row %s", news.get("title", "")[:50], sheet_row)
+
+        except Exception as e:
+            logger.error("Full-auto pipeline error for %s: %s", news_id, e)
+            _update_task(task_id, "error", {"stage": "unknown", "error": str(e)[:500]})
+
+
+# ─── Pipeline 2: No LLM (score → Sheets/NotReady + Moderation) ───
+
+def run_no_llm_pipeline(news_ids: list[str], task_ids: list[str]):
+    """Режим 2: Без LLM.
+
+    score → Sheets/NotReady + статус moderation (для ручной модерации).
+    """
+    from checks.pipeline import run_review_pipeline
+    from storage.sheets import write_not_ready_row
+
+    # Batch review for efficiency
+    all_news = [_fetch_news_by_id(nid) for nid in news_ids]
+    valid = [(n, tid) for n, tid in zip(all_news, task_ids) if n]
+    invalid = [(nid, tid) for nid, n, tid in zip(news_ids, all_news, task_ids) if not n]
+
+    for nid, tid in invalid:
+        _update_task(tid, "error", {"stage": "init", "error": "News not found"})
+
+    if not valid:
+        return
+
+    news_list = [n for n, _ in valid]
+    tids = [tid for _, tid in valid]
+
+    # Stage 1: Batch local scoring
+    for tid in tids:
+        _update_task(tid, "running", {"stage": "scoring"})
+
+    review_result = run_review_pipeline(news_list, update_status=True)
+    results = review_result.get("results", [])
+
+    # Stage 2: Export to Sheets/NotReady
+    for i, (news, tid) in enumerate(valid):
+        try:
+            check_result = results[i] if i < len(results) else {}
+            total_score = check_result.get("total_score", 0)
+            is_dup = check_result.get("is_duplicate", False)
+
+            if is_dup:
+                _update_task(tid, "skipped", {"stage": "scoring", "reason": "duplicate", "score": total_score})
+                continue
+
+            if check_result.get("auto_rejected"):
+                _update_task(tid, "skipped", {"stage": "scoring", "reason": "auto_rejected", "score": total_score})
+                continue
+
+            _update_task(tid, "running", {"stage": "exporting", "score": total_score})
+            sheet_row = write_not_ready_row(news, check_result)
+
+            # Set status to moderation
+            update_news_status(news["id"], "moderation")
+
+            _update_task(tid, "done", {
+                "stage": "complete",
+                "score": total_score,
+                "sheet_row": sheet_row,
+                "destination": "NotReady",
+            })
+            logger.info("No-LLM complete: %s → NotReady row %s, status=moderation", news.get("title", "")[:50], sheet_row)
+
+        except Exception as e:
+            logger.error("No-LLM pipeline error for %s: %s", news.get("id", "?"), e)
+            _update_task(tid, "error", {"stage": "unknown", "error": str(e)[:500]})
+
+
 def start_scheduler():
     """Запускает планировщик задач."""
     scheduler = BlockingScheduler(timezone="Europe/Moscow")

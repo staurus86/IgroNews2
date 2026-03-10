@@ -12,6 +12,8 @@ KEYSO_API_KEY = os.getenv("KEYSO_API_KEY", "")
 GOOGLE_SHEETS_ID = os.getenv("GOOGLE_SHEETS_ID", "")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 SHEETS_TAB = "Лист1"
+SHEETS_TAB_READY = os.getenv("SHEETS_TAB_READY", "Ready")
+SHEETS_TAB_NOT_READY = os.getenv("SHEETS_TAB_NOT_READY", "NotReady")
 
 # Database
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///news.db")

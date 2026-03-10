@@ -124,6 +124,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/rate_stats": lambda: self._json(self._get_rate_stats()),
             "/api/cache_stats": lambda: self._json(self._get_cache_stats()),
             "/api/editorial": lambda: self._json(self._get_editorial()),
+            "/api/moderation_list": lambda: self._json(self._get_moderation_list()),
         }
 
         # DOCX download (GET with query param)
@@ -215,6 +216,10 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/translate_title": lambda: self._translate_title(body),
             "/api/ai_recommend": lambda: self._ai_recommend(body),
             "/api/cache/clear": lambda: self._clear_cache(body),
+            "/api/pipeline/full_auto": lambda: self._pipeline_full_auto(body),
+            "/api/pipeline/no_llm": lambda: self._pipeline_no_llm(body),
+            "/api/moderation": lambda: self._get_moderation(body),
+            "/api/moderation/rewrite": lambda: self._moderation_rewrite(body),
         }
         handler = routes.get(path)
         if handler:
@@ -406,7 +411,7 @@ async function login() {
                 total += c
             stats["total"] = total
             # Ensure all expected statuses exist
-            for s in ["new", "in_review", "duplicate", "approved", "processed", "rejected", "ready"]:
+            for s in ["new", "in_review", "duplicate", "approved", "processed", "rejected", "ready", "moderation"]:
                 stats.setdefault(s, 0)
             cur.execute("SELECT COUNT(*) FROM news_analysis")
             stats["analyzed"] = cur.fetchone()[0]
@@ -1133,6 +1138,225 @@ async function login() {
             self._json({"status": "ok", "rejected": len(news_ids)})
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
+
+    # ─── Pipeline endpoints ───
+
+    def _pipeline_full_auto(self, body):
+        """Режим 1: Полный автомат — score → enrich → rewrite → Sheets/Ready."""
+        news_ids = body.get("news_ids", [])
+        select_all = body.get("all_new", False)
+
+        if select_all and not news_ids:
+            # Выбрать все new/in_review
+            conn = get_connection()
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT id FROM news WHERE status IN ('new', 'in_review') ORDER BY parsed_at DESC LIMIT 50")
+                if _is_postgres():
+                    news_ids = [r[0] for r in cur.fetchall()]
+                else:
+                    news_ids = [r["id"] for r in cur.fetchall()]
+            finally:
+                cur.close()
+
+        if not news_ids:
+            self._json({"status": "error", "message": "Нет новостей для обработки"})
+            return
+
+        # Create tasks
+        from scheduler import _create_task, run_full_auto_pipeline
+        task_ids = []
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        for nid in news_ids:
+            try:
+                cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
+                row = cur.fetchone()
+                title = (row[0] if _is_postgres() else row["title"]) if row else ""
+            except Exception:
+                title = ""
+            tid = _create_task("full_auto", nid, title)
+            task_ids.append(tid)
+        cur.close()
+
+        # Run in background
+        import threading
+        threading.Thread(
+            target=run_full_auto_pipeline,
+            args=(list(news_ids), list(task_ids)),
+            daemon=True
+        ).start()
+
+        self._json({"status": "ok", "queued": len(news_ids), "task_ids": task_ids})
+
+    def _pipeline_no_llm(self, body):
+        """Режим 2: Без LLM — score → Sheets/NotReady + Модерация."""
+        news_ids = body.get("news_ids", [])
+        select_all = body.get("all_new", False)
+
+        if select_all and not news_ids:
+            conn = get_connection()
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT id FROM news WHERE status IN ('new', 'in_review') ORDER BY parsed_at DESC LIMIT 50")
+                if _is_postgres():
+                    news_ids = [r[0] for r in cur.fetchall()]
+                else:
+                    news_ids = [r["id"] for r in cur.fetchall()]
+            finally:
+                cur.close()
+
+        if not news_ids:
+            self._json({"status": "error", "message": "Нет новостей для обработки"})
+            return
+
+        from scheduler import _create_task, run_no_llm_pipeline
+        task_ids = []
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        for nid in news_ids:
+            try:
+                cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
+                row = cur.fetchone()
+                title = (row[0] if _is_postgres() else row["title"]) if row else ""
+            except Exception:
+                title = ""
+            tid = _create_task("no_llm", nid, title)
+            task_ids.append(tid)
+        cur.close()
+
+        import threading
+        threading.Thread(
+            target=run_no_llm_pipeline,
+            args=(list(news_ids), list(task_ids)),
+            daemon=True
+        ).start()
+
+        self._json({"status": "ok", "queued": len(news_ids), "task_ids": task_ids})
+
+    def _get_moderation_list(self):
+        """Возвращает новости со статусом moderation (с данными локального анализа)."""
+        from urllib.parse import parse_qs
+        qs = parse_qs(urlparse(self.path).query)
+        limit = int(qs.get("limit", ["100"])[0])
+        offset = int(qs.get("offset", ["0"])[0])
+        source = qs.get("source", [""])[0]
+        min_score = int(qs.get("min_score", ["0"])[0])
+        q = qs.get("q", [""])[0]
+
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+
+        conditions = ["n.status = 'moderation'"]
+        params = []
+
+        if source:
+            conditions.append(f"n.source = {ph}")
+            params.append(source)
+        if min_score > 0:
+            conditions.append(f"COALESCE(na.total_score, 0) >= {ph}")
+            params.append(min_score)
+        if q:
+            conditions.append(f"LOWER(n.title) LIKE {ph}")
+            params.append(f"%{q.lower()}%")
+
+        where = " AND ".join(conditions)
+
+        try:
+            cur.execute(f"""
+                SELECT n.id, n.source, n.title, n.url, n.published_at, n.parsed_at, n.status,
+                       n.description,
+                       na.total_score, na.quality_score, na.relevance_score,
+                       na.freshness_hours, na.viral_score, na.sentiment_label,
+                       na.tags, na.entities, na.headline_score, na.momentum_score
+                FROM news n
+                LEFT JOIN news_analysis na ON na.news_id = n.id
+                WHERE {where}
+                ORDER BY na.total_score DESC NULLS LAST, n.parsed_at DESC
+                LIMIT {ph} OFFSET {ph}
+            """, (*params, limit, offset))
+
+            if _is_postgres():
+                columns = [d[0] for d in cur.description]
+                rows = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                rows = [dict(r) for r in cur.fetchall()]
+
+            # Count total
+            cur.execute(f"SELECT COUNT(*) FROM news n LEFT JOIN news_analysis na ON na.news_id = n.id WHERE {where}", tuple(params))
+            total = cur.fetchone()[0]
+        finally:
+            cur.close()
+
+        return {"status": "ok", "news": rows, "total": total}
+
+    def _get_moderation(self, body):
+        """POST версия для совместимости."""
+        self._json(self._get_moderation_list())
+
+    def _moderation_rewrite(self, body):
+        """Отправляет новости из Модерации на рерайт (без API анализа, только LLM рерайт)."""
+        news_ids = body.get("news_ids", [])
+        style = body.get("style", "news")
+        if not news_ids:
+            self._json({"status": "error", "message": "news_ids required"})
+            return
+
+        from scheduler import _create_task
+        task_ids = []
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        for nid in news_ids:
+            try:
+                cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
+                row = cur.fetchone()
+                title = (row[0] if _is_postgres() else row["title"]) if row else ""
+            except Exception:
+                title = ""
+            tid = _create_task("mod_rewrite", nid, title, style)
+            task_ids.append(tid)
+        cur.close()
+
+        # Process rewrites in background (no enrichment, just LLM rewrite)
+        import threading
+        def _bg_mod_rewrite(ids, tids, rewrite_style):
+            from apis.llm import rewrite_news
+            from scheduler import _update_task, _fetch_news_by_id
+            for nid, tid in zip(ids, tids):
+                try:
+                    news = _fetch_news_by_id(nid)
+                    if not news:
+                        _update_task(tid, "error", {"error": "News not found"})
+                        continue
+                    _update_task(tid, "running", {"stage": "rewriting"})
+                    result = rewrite_news(
+                        title=news.get("title", ""),
+                        text=news.get("plain_text", ""),
+                        style=rewrite_style,
+                        language="русский",
+                    )
+                    if result:
+                        _update_task(tid, "done", {
+                            "stage": "complete",
+                            "rewrite_title": result.get("title", "")[:100],
+                        })
+                        update_news_status(nid, "processed")
+                    else:
+                        _update_task(tid, "error", {"stage": "rewriting", "error": "Rewrite returned None"})
+                except Exception as e:
+                    _update_task(tid, "error", {"error": str(e)[:500]})
+
+        threading.Thread(
+            target=_bg_mod_rewrite,
+            args=(list(news_ids), list(task_ids), style),
+            daemon=True
+        ).start()
+
+        self._json({"status": "ok", "queued": len(news_ids), "task_ids": task_ids})
 
     def _test_sheets(self, body):
         try:
@@ -2877,6 +3101,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 <div class="container">
   <div class="tabs">
     <div class="tab active" data-tab="editorial">Редакция</div>
+    <div class="tab" data-tab="moderation">Модерация</div>
     <div class="tab" data-tab="news">Обогащённые</div>
     <div class="tab" data-tab="editor">Контент</div>
     <div class="tab" data-tab="viral">Виральность</div>
@@ -2934,6 +3159,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <span style="color:#38444d">|</span>
       <button class="btn btn-sm btn-secondary" onclick="edExportSheets()">&#9776; Sheets</button>
       <button class="btn btn-sm btn-secondary" onclick="edBatchRewrite()">&#9998; Рерайт</button>
+      <span style="color:#38444d">|</span>
+      <button class="btn btn-sm" style="background:#1da1f2;color:#fff" onclick="runFullAuto()">&#128640; Полный автомат</button>
+      <button class="btn btn-sm" style="background:#794bc4;color:#fff" onclick="runNoLLM()">&#128203; Без LLM</button>
       <span id="ed-selected-count" style="color:#8899a6;font-size:0.85em"></span>
     </div>
 
@@ -2957,6 +3185,58 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       </table>
     </div>
     <div id="ed-pagination" style="margin-top:10px;display:flex;gap:8px;justify-content:center"></div>
+  </div>
+
+  <!-- MODERATION -->
+  <div class="panel" id="panel-moderation">
+    <h2 style="margin-bottom:12px">Модерация <span style="font-size:0.7em;color:#8899a6">(без LLM анализа)</span></h2>
+    <div id="mod-stats" style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap"></div>
+
+    <div class="dash-filters" style="margin-bottom:12px">
+      <span class="filter-label">Поиск:</span>
+      <input type="search" id="mod-search" placeholder="По заголовку..." oninput="debounceModSearch()" autocomplete="off">
+      <span class="filter-sep"></span>
+      <span class="filter-label">Источник:</span>
+      <select id="mod-source" onchange="loadModeration()"><option value="">Все</option></select>
+      <span class="filter-sep"></span>
+      <span class="filter-label">Мин. скор:</span>
+      <input type="number" id="mod-min-score" min="0" max="100" value="0" style="width:60px" onchange="loadModeration()">
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-sm btn-primary" onclick="modRewriteSelected()">&#9998; Рерайт выбранных</button>
+      <button class="btn btn-sm btn-danger" onclick="modRejectSelected()">&#10007; Отклонить</button>
+      <button class="btn btn-sm btn-secondary" onclick="modExportSheets()">&#9776; В Sheets</button>
+      <select id="mod-rewrite-style" style="padding:4px 8px;border-radius:6px;background:#192734;color:#d9d9d9;border:1px solid #38444d">
+        <option value="news">news</option>
+        <option value="review">review</option>
+        <option value="guide">guide</option>
+        <option value="editorial">editorial</option>
+        <option value="seo">seo</option>
+        <option value="short">short</option>
+      </select>
+      <span id="mod-selected-count" style="color:#8899a6;font-size:0.85em"></span>
+    </div>
+
+    <div style="background:#192734;border-radius:10px;overflow:hidden">
+      <table>
+        <thead><tr>
+          <th style="width:30px"><input type="checkbox" onchange="modToggleAll(this)" style="width:16px;height:16px"></th>
+          <th style="width:90px">Источник</th>
+          <th>Заголовок</th>
+          <th style="width:50px">Скор</th>
+          <th style="width:45px">Кач.</th>
+          <th style="width:45px">Рел.</th>
+          <th style="width:50px">Вирал</th>
+          <th style="width:55px">Свеж.</th>
+          <th style="width:45px">Тон</th>
+          <th style="width:120px">Теги</th>
+          <th style="width:80px">Действия</th>
+        </tr></thead>
+        <tbody id="mod-table"></tbody>
+      </table>
+    </div>
+    <div id="mod-pagination" style="margin-top:10px;display:flex;gap:8px;justify-content:center"></div>
   </div>
 
   <div class="panel" id="panel-dashboard" style="display:none">
@@ -3889,6 +4169,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
             <option value="">Все типы</option>
             <option value="rewrite">Переписка</option>
             <option value="sheets">Sheets</option>
+            <option value="full_auto">Полный автомат</option>
+            <option value="no_llm">Без LLM</option>
+            <option value="mod_rewrite">Рерайт (модерация)</option>
           </select>
           <select id="queue-filter-status" onchange="renderQueueTable()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
             <option value="">Все статусы</option>
@@ -4000,6 +4283,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   document.getElementById('panel-' + t.dataset.tab).classList.add('active');
   // Refresh data when switching to key tabs
   if (t.dataset.tab === 'editorial') { loadEditorial(); }
+  if (t.dataset.tab === 'moderation') { loadModeration(); }
   if (t.dataset.tab === 'news') { loadNewsPage(); }
   if (t.dataset.tab === 'editor') { loadArticles(); }
   if (t.dataset.tab === 'viral') { loadViral(); }
@@ -5988,22 +6272,35 @@ function renderQueueTable() {
   // Stats
   const stats = {};
   _queueTasks.forEach(t => { stats[t.status] = (stats[t.status] || 0) + 1; });
-  const statLabels = {pending:'Ожидает',processing:'Обработка',done:'Готово',error:'Ошибка',cancelled:'Отменено',skipped:'Пропущено'};
-  const statColors = {pending:'#f5a623',processing:'#1da1f2',done:'#17bf63',error:'#e0245e',cancelled:'#71767b',skipped:'#8899a6'};
+  const statLabels = {pending:'Ожидает',processing:'Обработка',running:'Работает',done:'Готово',error:'Ошибка',cancelled:'Отменено',skipped:'Пропущено'};
+  const statColors = {pending:'#f5a623',processing:'#1da1f2',running:'#1da1f2',done:'#17bf63',error:'#e0245e',cancelled:'#71767b',skipped:'#8899a6'};
   document.getElementById('queue-stats').innerHTML = Object.entries(stats).map(([k,v]) =>
     `<span style="padding:4px 10px;background:${statColors[k]||'#38444d'}22;border:1px solid ${statColors[k]||'#38444d'};border-radius:12px;font-size:0.82em;color:${statColors[k]||'#8899a6'}">${statLabels[k]||k}: ${v}</span>`
   ).join('');
 
-  const typeLabels = {rewrite:'Переписка', sheets:'Sheets'};
-  const typeIcons = {rewrite:'&#9998;', sheets:'&#128196;'};
-  const statusIcons = {pending:'&#9203;',processing:'&#9881;',done:'&#9989;',error:'&#10060;',cancelled:'&#128683;',skipped:'&#8594;'};
+  const typeLabels = {rewrite:'Переписка', sheets:'Sheets', full_auto:'Полный автомат', no_llm:'Без LLM', mod_rewrite:'Рерайт (мод.)'};
+  const typeIcons = {rewrite:'&#9998;', sheets:'&#128196;', full_auto:'&#128640;', no_llm:'&#128203;', mod_rewrite:'&#9998;'};
+  const statusIcons = {pending:'&#9203;',processing:'&#9881;',running:'&#9881;',done:'&#9989;',error:'&#10060;',cancelled:'&#128683;',skipped:'&#8594;'};
 
   document.getElementById('queue-table').innerHTML = tasks.map(t => {
     const canCancel = t.status === 'pending';
     const timeAgo = t.created_at ? new Date(t.created_at).toLocaleString('ru') : '';
     let resultText = '';
     if (t.result) {
-      try { const rr = JSON.parse(t.result); resultText = rr.title || rr.row || t.result; } catch(e) { resultText = t.result; }
+      try {
+        const rr = JSON.parse(t.result);
+        if (rr.stage) {
+          const stageLabels = {scoring:'Скоринг',enriching:'Обогащение',rewriting:'Рерайт',exporting:'Экспорт',complete:'Готово',filtered:'Отфильтровано',init:'Инициализация'};
+          resultText = (stageLabels[rr.stage] || rr.stage);
+          if (rr.score !== undefined) resultText += ` (скор:${rr.score})`;
+          if (rr.reason) resultText += ` — ${rr.reason}`;
+          if (rr.sheet_row) resultText += ` → строка ${rr.sheet_row}`;
+          if (rr.rewrite_title) resultText += ` | ${rr.rewrite_title}`;
+          if (rr.error) resultText += ` ❌ ${rr.error}`;
+        } else {
+          resultText = rr.title || rr.row || rr.article_id || t.result;
+        }
+      } catch(e) { resultText = t.result; }
     }
     if (resultText.length > 60) resultText = resultText.substring(0, 60) + '...';
     return `<tr style="opacity:${t.status==='cancelled'?'0.5':'1'}">
@@ -6843,6 +7140,233 @@ setInterval(() => {
     loadEditorial();
   }
 }, 30000);
+
+// ═══════════════════════════════════════════
+// PIPELINE BUTTONS (Редакция)
+// ═══════════════════════════════════════════
+
+async function runFullAuto() {
+  let ids = getEdSelectedIds();
+  let allNew = false;
+  if (!ids.length) {
+    if (!confirm('Выбранных нет. Запустить полный автомат для ВСЕХ новых? (используются API)')) return;
+    allNew = true;
+  } else {
+    if (!confirm('Запустить полный автомат для ' + ids.length + ' новостей? Будут использованы Keys.so + Trends + LLM API.')) return;
+  }
+  toast('Запуск полного автомата...');
+  const r = await api('/api/pipeline/full_auto', {news_ids: ids, all_new: allNew});
+  if (r.status === 'ok') {
+    toast(r.queued + ' задач в очереди — откройте Очередь для мониторинга');
+    // Switch to settings > queue tab
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => { p.classList.remove('active'); p.style.display = 'none'; });
+    const st = document.querySelector('[data-tab="settings"]');
+    const sp = document.getElementById('panel-settings');
+    if (st) st.classList.add('active');
+    if (sp) { sp.classList.add('active'); sp.style.display = ''; }
+    document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.settings-section').forEach(s => s.classList.remove('active'));
+    const qt = document.querySelector('[data-stab="queue"]');
+    const qs = document.getElementById('stab-queue');
+    if (qt) qt.classList.add('active');
+    if (qs) qs.classList.add('active');
+    loadQueue();
+  } else {
+    toast(r.message || 'Ошибка', true);
+  }
+}
+
+async function runNoLLM() {
+  let ids = getEdSelectedIds();
+  let allNew = false;
+  if (!ids.length) {
+    if (!confirm('Выбранных нет. Запустить "Без LLM" для ВСЕХ новых?')) return;
+    allNew = true;
+  } else {
+    if (!confirm('Запустить "Без LLM" для ' + ids.length + ' новостей? Только локальный анализ + Sheets NotReady.')) return;
+  }
+  toast('Запуск анализа без LLM...');
+  const r = await api('/api/pipeline/no_llm', {news_ids: ids, all_new: allNew});
+  if (r.status === 'ok') {
+    toast(r.queued + ' задач в очереди → Модерация');
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => { p.classList.remove('active'); p.style.display = 'none'; });
+    const st = document.querySelector('[data-tab="settings"]');
+    const sp = document.getElementById('panel-settings');
+    if (st) st.classList.add('active');
+    if (sp) { sp.classList.add('active'); sp.style.display = ''; }
+    document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.settings-section').forEach(s => s.classList.remove('active'));
+    const qt = document.querySelector('[data-stab="queue"]');
+    const qs = document.getElementById('stab-queue');
+    if (qt) qt.classList.add('active');
+    if (qs) qs.classList.add('active');
+    loadQueue();
+  } else {
+    toast(r.message || 'Ошибка', true);
+  }
+}
+
+function getEdSelectedIds() {
+  return [...document.querySelectorAll('.ed-cb:checked')].map(cb => cb.value);
+}
+
+// ═══════════════════════════════════════════
+// MODERATION TAB
+// ═══════════════════════════════════════════
+
+let _modData = [];
+let _modPage = 0;
+let _modTotal = 0;
+const MOD_PAGE_SIZE = 50;
+let _modSearchTimer = null;
+
+function debounceModSearch() {
+  clearTimeout(_modSearchTimer);
+  _modSearchTimer = setTimeout(() => loadModeration(), 300);
+}
+
+async function loadModeration(page) {
+  if (page !== undefined) _modPage = page;
+  const params = new URLSearchParams({
+    limit: MOD_PAGE_SIZE,
+    offset: _modPage * MOD_PAGE_SIZE,
+  });
+  const src = document.getElementById('mod-source').value;
+  const q = document.getElementById('mod-search').value;
+  const ms = document.getElementById('mod-min-score').value;
+  if (src) params.set('source', src);
+  if (q) params.set('q', q);
+  if (ms && parseInt(ms) > 0) params.set('min_score', ms);
+
+  const r = await api('/api/moderation_list?' + params.toString());
+  _modData = r.news || [];
+  _modTotal = r.total || 0;
+
+  // Stats
+  document.getElementById('mod-stats').innerHTML =
+    `<div class="stat-card" style="background:#192734;padding:8px 14px;border-radius:8px;font-size:0.9em">` +
+    `<span style="color:#8899a6">Всего:</span> <b style="color:#d9d9d9">${_modTotal}</b></div>` +
+    `<div class="stat-card" style="background:#192734;padding:8px 14px;border-radius:8px;font-size:0.9em">` +
+    `<span style="color:#8899a6">На странице:</span> <b style="color:#d9d9d9">${_modData.length}</b></div>`;
+
+  // Populate source filter (once)
+  const srcSel = document.getElementById('mod-source');
+  if (srcSel.options.length <= 1) {
+    const sources = [...new Set(_modData.map(n => n.source))].sort();
+    sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; srcSel.appendChild(o); });
+  }
+
+  renderModTable();
+  renderModPagination();
+}
+
+function renderModTable() {
+  const sentimentEmoji = {'positive': '&#128994;', 'negative': '&#128308;', 'neutral': '&#9898;'};
+  const tbody = document.getElementById('mod-table');
+  if (!_modData.length) {
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:30px;color:#8899a6">Нет новостей на модерации. Используйте кнопку "Без LLM" в Редакции.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = _modData.map(n => {
+    const score = n.total_score || 0;
+    const scoreColor = score >= 70 ? '#17bf63' : score >= 40 ? '#ffad1f' : '#e0245e';
+    const tags = n.tags ? (typeof n.tags === 'string' ? JSON.parse(n.tags || '[]') : n.tags) : [];
+    const tagsHtml = (Array.isArray(tags) ? tags : []).slice(0, 3).map(t =>
+      `<span style="background:#253341;color:#8899a6;padding:2px 6px;border-radius:4px;font-size:0.75em">${t}</span>`
+    ).join(' ');
+    const freshH = n.freshness_hours != null && n.freshness_hours >= 0 ? n.freshness_hours.toFixed(1) + 'ч' : '?';
+    return `<tr>
+      <td><input type="checkbox" class="mod-cb" value="${n.id}" onchange="modUpdateSelected()"></td>
+      <td style="font-size:0.85em">${n.source || ''}</td>
+      <td><a href="${n.url || '#'}" target="_blank" style="color:#1da1f2;text-decoration:none">${(n.title || '').substring(0, 80)}</a></td>
+      <td style="color:${scoreColor};font-weight:bold;text-align:center">${score}</td>
+      <td style="text-align:center">${n.quality_score || 0}</td>
+      <td style="text-align:center">${n.relevance_score || 0}</td>
+      <td style="text-align:center">${n.viral_score || 0}</td>
+      <td style="text-align:center;font-size:0.85em">${freshH}</td>
+      <td style="text-align:center">${sentimentEmoji[n.sentiment_label] || '&#9898;'}</td>
+      <td>${tagsHtml}</td>
+      <td>
+        <button class="btn btn-sm btn-primary" onclick="modRewrite('${n.id}')" title="Рерайт">&#9998;</button>
+        <button class="btn btn-sm btn-danger" onclick="modReject('${n.id}')" title="Отклонить">&#10007;</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function renderModPagination() {
+  const totalPages = Math.ceil(_modTotal / MOD_PAGE_SIZE);
+  const div = document.getElementById('mod-pagination');
+  if (totalPages <= 1) { div.innerHTML = ''; return; }
+  let html = '';
+  if (_modPage > 0) html += `<button class="btn btn-sm btn-secondary" onclick="loadModeration(${_modPage - 1})">&laquo;</button>`;
+  for (let i = 0; i < totalPages && i < 10; i++) {
+    html += `<button class="btn btn-sm ${i === _modPage ? 'btn-primary' : 'btn-secondary'}" onclick="loadModeration(${i})">${i + 1}</button>`;
+  }
+  if (_modPage < totalPages - 1) html += `<button class="btn btn-sm btn-secondary" onclick="loadModeration(${_modPage + 1})">&raquo;</button>`;
+  div.innerHTML = html;
+}
+
+function modToggleAll(cb) {
+  document.querySelectorAll('.mod-cb').forEach(c => c.checked = cb.checked);
+  modUpdateSelected();
+}
+
+function modUpdateSelected() {
+  const n = document.querySelectorAll('.mod-cb:checked').length;
+  document.getElementById('mod-selected-count').textContent = n ? `Выбрано: ${n}` : '';
+}
+
+function getModSelectedIds() {
+  return [...document.querySelectorAll('.mod-cb:checked')].map(cb => cb.value);
+}
+
+async function modRewrite(id) {
+  const style = document.getElementById('mod-rewrite-style').value;
+  toast('Отправка на рерайт...');
+  const r = await api('/api/moderation/rewrite', {news_ids: [id], style: style});
+  if (r.status === 'ok') { toast('Рерайт в очереди'); } else toast(r.message, true);
+}
+
+async function modRewriteSelected() {
+  const ids = getModSelectedIds();
+  if (!ids.length) { toast('Сначала выберите новости', true); return; }
+  const style = document.getElementById('mod-rewrite-style').value;
+  if (!confirm(`Отправить ${ids.length} новостей на рерайт (${style})? Используется LLM API.`)) return;
+  toast(`Отправка ${ids.length} на рерайт...`);
+  const r = await api('/api/moderation/rewrite', {news_ids: ids, style: style});
+  if (r.status === 'ok') { toast(`${r.queued} задач в очереди`); loadModeration(); } else toast(r.message, true);
+}
+
+async function modReject(id) {
+  const r = await api('/api/reject', {news_ids: [id]});
+  if (r.status === 'ok') { toast('Отклонено'); loadModeration(); } else toast(r.message, true);
+}
+
+async function modRejectSelected() {
+  const ids = getModSelectedIds();
+  if (!ids.length) { toast('Сначала выберите новости', true); return; }
+  const r = await api('/api/reject', {news_ids: ids});
+  if (r.status === 'ok') { toast(`Отклонено: ${ids.length}`); loadModeration(); } else toast(r.message, true);
+}
+
+async function modExportSheets() {
+  const ids = getModSelectedIds();
+  if (!ids.length) { toast('Сначала выберите новости', true); return; }
+  const r = await api('/api/queue/sheets', {news_ids: ids});
+  if (r.status === 'ok') { toast(`${r.queued} задач в очереди Sheets`); } else toast(r.message, true);
+}
+
+// Auto-refresh moderation
+setInterval(() => {
+  const modPanel = document.getElementById('panel-moderation');
+  if (modPanel && modPanel.classList.contains('active')) {
+    loadModeration();
+  }
+}, 30000);
+
 </script>
 </body>
 </html>"""
