@@ -4341,7 +4341,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <th>Похожие</th>
         <th>Trends</th>
         <th>LLM</th>
-        <th class="sortable" data-sort="score" onclick="sortNewsTab('score')">Скор <span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort="total_score" onclick="sortNewsTab('total_score')">Скор <span class="sort-arrow">&#9650;</span></th>
         <th>Дата</th>
         <th>Действия</th>
       </tr></thead>
@@ -5020,12 +5020,12 @@ async function loadHealth() {
 
 // Generic sort for news/viral arrays
 function sortNews(arr, field, dir) {
+  const numFields = ['total_score','viral_score','momentum_score','headline_score','quality_score','relevance_score','sentiment_score','freshness_hours'];
+  const isNum = numFields.includes(field);
   return [...arr].sort((a, b) => {
     let va = a[field], vb = b[field];
-    if (va == null) va = '';
-    if (vb == null) vb = '';
-    if (typeof va === 'number' && typeof vb === 'number') return dir === 'asc' ? va - vb : vb - va;
-    va = String(va).toLowerCase(); vb = String(vb).toLowerCase();
+    if (isNum) { va = Number(va) || 0; vb = Number(vb) || 0; return dir === 'asc' ? va - vb : vb - va; }
+    va = String(va || '').toLowerCase(); vb = String(vb || '').toLowerCase();
     if (va < vb) return dir === 'asc' ? -1 : 1;
     if (va > vb) return dir === 'asc' ? 1 : -1;
     return 0;
