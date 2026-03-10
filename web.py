@@ -2832,11 +2832,8 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 <div class="container">
   <div class="tabs">
     <div class="tab active" data-tab="editorial">Редакция</div>
-    <div class="tab" data-tab="dashboard">Дашборд</div>
-    <div class="tab" data-tab="review">Проверка</div>
-    <div class="tab" data-tab="news">Новости</div>
-    <div class="tab" data-tab="editor">Редактор</div>
-    <div class="tab" data-tab="articles">Статьи <span id="articles-badge" class="badge badge-new" style="display:none">0</span></div>
+    <div class="tab" data-tab="news">Обогащённые</div>
+    <div class="tab" data-tab="editor">Контент</div>
     <div class="tab" data-tab="viral">Виральность</div>
     <div class="tab" data-tab="analytics">Аналитика</div>
     <div class="tab" data-tab="health">Здоровье</div>
@@ -2917,7 +2914,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div id="ed-pagination" style="margin-top:10px;display:flex;gap:8px;justify-content:center"></div>
   </div>
 
-  <div class="panel" id="panel-dashboard">
+  <div class="panel" id="panel-dashboard" style="display:none">
     <div class="stats" id="stats"></div>
 
     <!-- Dashboard Filters -->
@@ -3016,7 +3013,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   </div>
 
   <!-- REVIEW -->
-  <div class="panel" id="panel-review">
+  <div class="panel" id="panel-review" style="display:none">
     <div class="dash-filters" style="margin-bottom:12px">
       <span class="filter-label">Статус:</span>
       <select id="rev-status" onchange="loadReviewTab()">
@@ -3097,6 +3094,11 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 
   <!-- EDITOR -->
   <div class="panel" id="panel-editor">
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn btn-sm btn-primary" id="content-tab-rewrite" onclick="switchContentTab('rewrite')" style="opacity:1">Рерайт</button>
+      <button class="btn btn-sm btn-secondary" id="content-tab-articles" onclick="switchContentTab('articles')" style="opacity:0.6">Статьи</button>
+    </div>
+    <div id="content-section-rewrite">
     <style>
       .editor-layout { display:grid; grid-template-columns:340px 1fr; gap:15px; }
       .editor-list-card { background:#192734; border-radius:10px; padding:15px; min-height:600px; display:flex; flex-direction:column; }
@@ -3280,10 +3282,13 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         </div>
       </div>
     </div>
+  </div><!-- /content-section-rewrite -->
+  <div id="content-section-articles" style="display:none">
+  </div>
   </div>
 
-  <!-- ARTICLES -->
-  <div class="panel" id="panel-articles">
+  <!-- ARTICLES (hidden, content loaded into content-section-articles) -->
+  <div class="panel" id="panel-articles" style="display:none">
     <style>
       .art-card { background:#192734; border-radius:10px; padding:16px; margin-bottom:12px; transition:box-shadow .15s; cursor:pointer; border-left:3px solid transparent; }
       .art-card:hover { box-shadow:0 2px 12px rgba(0,0,0,0.2); }
@@ -3622,14 +3627,10 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <span class="filter-sep"></span>
       <span class="filter-label">Статус:</span>
       <select id="filter-status" onchange="loadNewsPage(0)">
+        <option value="processed" selected>Обогащённые</option>
+        <option value="ready">Готовые</option>
+        <option value="approved">Одобренные</option>
         <option value="">Все статусы</option>
-        <option value="new">Новые</option>
-        <option value="in_review">На проверке</option>
-        <option value="duplicate">Дубликаты</option>
-        <option value="approved">Одобрены</option>
-        <option value="processed">Обогащены</option>
-        <option value="rejected">Отклонены</option>
-        <option value="ready">Готовы</option>
       </select>
       <span class="filter-sep"></span>
       <span class="filter-label">Источник:</span>
@@ -3930,11 +3931,8 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   document.getElementById('panel-' + t.dataset.tab).classList.add('active');
   // Refresh data when switching to key tabs
   if (t.dataset.tab === 'editorial') { loadEditorial(); }
-  if (t.dataset.tab === 'dashboard') { loadStats(); loadNews(); }
-  if (t.dataset.tab === 'review') { loadReviewTab(); }
-  if (t.dataset.tab === 'news') { loadNewsPage(0); }
+  if (t.dataset.tab === 'news') { loadNewsPage(); }
   if (t.dataset.tab === 'editor') { loadArticles(); }
-  if (t.dataset.tab === 'articles') { loadArticles(); }
   if (t.dataset.tab === 'viral') { loadViral(); }
   if (t.dataset.tab === 'analytics') { loadAnalytics(); }
   if (t.dataset.tab === 'health') { loadHealth(); }
@@ -4170,7 +4168,7 @@ function renderDashPagination() {
 }
 
 async function loadNewsPage(offset) {
-  _newsOffset = offset || 0;
+  if (offset !== undefined) _newsOffset = offset;
   const limit = parseInt(document.getElementById('filter-limit')?.value) || 100;
   const status = document.getElementById('filter-status')?.value || '';
   const source = document.getElementById('filter-source')?.value || '';
@@ -4454,8 +4452,8 @@ async function sendToReview() {
   if (r.status !== 'ok') { toast(r.message, true); return; }
   _reviewResults = r.results || [];
   renderReviewResults(r);
-  switchToTab('review');
-  loadAll();
+  switchToTab('editorial');
+  loadEditorial();
 }
 
 function renderReviewResults(r) {
@@ -6074,7 +6072,7 @@ async function aiRecommend(newsId) {
 }
 
 // Init
-function loadAll() { loadStats(); loadNews(); }
+function loadAll() { /* Dashboard hidden — skip loadStats/loadNews */ }
 
 let _dashSearchTimer = null;
 function debounceDashSearch() {
@@ -6320,7 +6318,6 @@ loadEditorial().then(() => {
     edRunAutoReview();
   }
 });
-setInterval(loadAll, 30000);
 setInterval(loadHealth, 60000);
 setInterval(loadQueue, 15000);
 
@@ -6659,6 +6656,35 @@ async function edBatchRewrite() {
 }
 
 // Force parse all sources from editorial empty state
+// Content tab switcher (Рерайт / Статьи)
+function switchContentTab(tab) {
+  const rewriteSection = document.getElementById('content-section-rewrite');
+  const articlesSection = document.getElementById('content-section-articles');
+  const btnRewrite = document.getElementById('content-tab-rewrite');
+  const btnArticles = document.getElementById('content-tab-articles');
+  if (tab === 'articles') {
+    rewriteSection.style.display = 'none';
+    // Move articles panel content into content-section-articles
+    const artPanel = document.getElementById('panel-articles');
+    if (articlesSection.children.length === 0 && artPanel) {
+      while (artPanel.firstChild) articlesSection.appendChild(artPanel.firstChild);
+    }
+    articlesSection.style.display = 'block';
+    btnRewrite.style.opacity = '0.6';
+    btnRewrite.className = 'btn btn-sm btn-secondary';
+    btnArticles.style.opacity = '1';
+    btnArticles.className = 'btn btn-sm btn-primary';
+    loadArticles();
+  } else {
+    rewriteSection.style.display = 'block';
+    articlesSection.style.display = 'none';
+    btnRewrite.style.opacity = '1';
+    btnRewrite.className = 'btn btn-sm btn-primary';
+    btnArticles.style.opacity = '0.6';
+    btnArticles.className = 'btn btn-sm btn-secondary';
+  }
+}
+
 async function edForceParse() {
   toast('Парсинг всех источников...');
   const r = await api('/api/reparse_all', {});
