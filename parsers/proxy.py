@@ -13,6 +13,29 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# Round-robin counter for proxy rotation
+_proxy_index = 0
+
+
+def get_proxy() -> str | None:
+    """Return next proxy URL via round-robin, or None if no proxies configured."""
+    global _proxy_index
+    proxies = _get_proxy_list()
+    if not proxies:
+        return None
+    proxy = proxies[_proxy_index % len(proxies)]
+    _proxy_index += 1
+    return proxy
+
+
+def get_proxies_dict() -> dict | None:
+    """Return {"http": proxy, "https": proxy} for requests, or None if no proxies configured."""
+    proxy = get_proxy()
+    if not proxy:
+        return None
+    return {"http": proxy, "https": proxy}
+
+
 # Common browser User-Agent strings for rotation
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",

@@ -217,6 +217,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/articles/rewrite": lambda: self._rewrite_article(body),
             "/api/articles/improve": lambda: self._improve_article(body),
             "/api/articles/detail": lambda: self._article_detail(body),
+            "/api/articles/schedule": lambda: self._schedule_article(body),
             "/api/prompt_versions/save": lambda: self._save_prompt_version(body),
             "/api/prompt_versions/activate": lambda: self._activate_prompt_version(body),
             "/api/generate_digest": lambda: self._generate_digest(body),
@@ -241,6 +242,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/pipeline/stop": lambda: self._pipeline_stop(body),
             "/api/moderation": lambda: self._get_moderation(body),
             "/api/moderation/rewrite": lambda: self._moderation_rewrite(body),
+            "/api/seo_check": lambda: self._seo_check(body),
         }
         handler = routes.get(path)
         if handler:
@@ -1680,6 +1682,17 @@ async function login() {
         """POST версия для совместимости."""
         self._json(self._get_moderation_list())
 
+    def _seo_check(self, body):
+        """SEO-анализ статьи."""
+        from checks.seo_check import analyze_seo
+        title = body.get("title", "")
+        seo_title = body.get("seo_title", "")
+        seo_description = body.get("seo_description", "")
+        text = body.get("text", "")
+        tags = body.get("tags", [])
+        result = analyze_seo(title, seo_title, seo_description, text, tags)
+        self._json({"status": "ok", **result})
+
     def _moderation_rewrite(self, body):
         """Отправляет новости из Модерации на рерайт (без API анализа, только LLM рерайт)."""
         news_ids = body.get("news_ids", [])
@@ -2310,6 +2323,52 @@ async function login() {
                 else:
                     art_stats[row["status"]] = row["cnt"]
 
+            # 10. Avg score per day (14 days)
+            if _is_postgres():
+                cur.execute("""SELECT DATE(n.parsed_at::timestamp) as d,
+                    ROUND(AVG(COALESCE(a.total_score,0))::numeric, 1) as avg_score,
+                    COUNT(*) as cnt
+                    FROM news n LEFT JOIN news_analysis a ON n.id = a.news_id
+                    WHERE n.parsed_at::timestamptz > (NOW() - INTERVAL '14 days') AND a.total_score > 0
+                    GROUP BY d ORDER BY d""")
+            else:
+                cur.execute("""SELECT DATE(n.parsed_at) as d,
+                    ROUND(AVG(COALESCE(a.total_score,0)), 1) as avg_score,
+                    COUNT(*) as cnt
+                    FROM news n LEFT JOIN news_analysis a ON n.id = a.news_id
+                    WHERE n.parsed_at > datetime('now', '-14 days') AND a.total_score > 0
+                    GROUP BY d ORDER BY d""")
+            score_trend = []
+            for row in cur.fetchall():
+                if _is_postgres():
+                    score_trend.append({"date": str(row[0]), "avg_score": float(row[1]), "count": row[2]})
+                else:
+                    score_trend.append({"date": row["d"], "avg_score": float(row["avg_score"]), "count": row["cnt"]})
+
+            # 11. Conversion per day (approved vs rejected, 14 days)
+            if _is_postgres():
+                cur.execute("""SELECT DATE(parsed_at::timestamp) as d, status, COUNT(*) as cnt FROM news
+                    WHERE parsed_at::timestamptz > (NOW() - INTERVAL '14 days')
+                    AND status IN ('approved','processed','ready','rejected','duplicate')
+                    GROUP BY d, status ORDER BY d""")
+            else:
+                cur.execute("""SELECT DATE(parsed_at) as d, status, COUNT(*) as cnt FROM news
+                    WHERE parsed_at > datetime('now', '-14 days')
+                    AND status IN ('approved','processed','ready','rejected','duplicate')
+                    GROUP BY d, status ORDER BY d""")
+            conv_raw = {}
+            for row in cur.fetchall():
+                d = str(row[0]) if _is_postgres() else row["d"]
+                st = row[1] if _is_postgres() else row["status"]
+                cnt = row[2] if _is_postgres() else row["cnt"]
+                if d not in conv_raw:
+                    conv_raw[d] = {"date": d, "approved": 0, "rejected": 0}
+                if st in ("approved", "processed", "ready"):
+                    conv_raw[d]["approved"] += cnt
+                elif st in ("rejected", "duplicate"):
+                    conv_raw[d]["rejected"] += cnt
+            conversion_daily = sorted(conv_raw.values(), key=lambda x: x["date"])
+
             return {
                 "status": "ok",
                 "top_sources": top_sources,
@@ -2323,6 +2382,8 @@ async function login() {
                 "article_stats": art_stats,
                 "total_news": sum(statuses.values()),
                 "total_articles": sum(art_stats.values()),
+                "score_trend": score_trend,
+                "conversion_daily": conversion_daily,
             }
 
         finally:
@@ -3194,6 +3255,29 @@ async function login() {
 
         finally:
             cur.close()
+    def _schedule_article(self, body):
+        """Запланировать публикацию статьи на указанное время."""
+        from datetime import datetime, timezone
+        aid = body.get("article_id") or body.get("id")
+        scheduled_at = body.get("scheduled_at")
+        if not aid:
+            self._json({"status": "error", "message": "article_id required"})
+            return
+        if not scheduled_at:
+            self._json({"status": "error", "message": "scheduled_at required"})
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"UPDATE articles SET scheduled_at={ph}, status='scheduled', updated_at={ph} WHERE id={ph}",
+                        (scheduled_at, now, aid))
+            if not _is_postgres():
+                conn.commit()
+            self._json({"status": "ok", "scheduled_at": scheduled_at})
+        finally:
+            cur.close()
     def _rewrite_article(self, body):
         """Переписать существующую статью в другом стиле."""
         aid = body.get("id")
@@ -3864,6 +3948,10 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <h1>IgroNews <span style="font-weight:300;font-size:0.7em;color:#8899a6">Admin</span></h1>
   </div>
   <span style="color:#8899a6;font-size:0.85em" id="clock"></span>
+  <label style="display:inline-flex;align-items:center;gap:4px;margin-left:12px;cursor:pointer;font-size:0.82em;color:#8899a6" title="Браузерные уведомления">
+    <input type="checkbox" id="notif-toggle" style="width:14px;height:14px;cursor:pointer" onchange="toggleNotifications(this.checked)">
+    &#128276; Уведомления
+  </label>
 </header>
 
 <div class="container">
@@ -3978,6 +4066,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       .art-status-draft { background:#38444d; color:#8899a6; }
       .art-status-ready { background:#17bf6320; color:#17bf63; }
       .art-status-published { background:#1da1f220; color:#1da1f2; }
+      .art-status-scheduled { background:#ffad1f20; color:#ffad1f; }
       .art-actions-bar { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
       .art-editor { background:#192734; border-radius:10px; padding:16px; }
       .art-field { margin-bottom:12px; }
@@ -4013,6 +4102,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
               <option value="">Все</option>
               <option value="draft">Черновики</option>
               <option value="ready">Готовые</option>
+              <option value="scheduled">Запланированные</option>
               <option value="published">Опубликованные</option>
             </select>
           </div>
@@ -4062,6 +4152,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
               <select id="art-edit-status" style="padding:4px 8px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.82em">
                 <option value="draft">Черновик</option>
                 <option value="ready">Готово</option>
+                <option value="scheduled">Запланировано</option>
                 <option value="published">Опубликовано</option>
               </select>
             </div>
@@ -4125,6 +4216,27 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
               <span id="art-ai-loading-text">Обрабатываем...</span>
             </div>
             <div id="art-ai-changes" style="display:none;margin-top:8px;padding:8px 12px;background:#17bf6315;border-radius:6px;font-size:0.83em;color:#17bf63"></div>
+          </div>
+
+          <!-- SEO Analysis -->
+          <div style="margin-top:8px;padding:12px;background:#22303c;border-radius:8px">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+              <div style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px">SEO-анализ</div>
+              <button class="art-improve-btn" onclick="runSeoCheck()">&#128202; SEO-анализ</button>
+              <span id="seo-score-badge" style="display:none;padding:2px 10px;border-radius:12px;font-size:0.85em;font-weight:600"></span>
+            </div>
+            <div id="seo-results" style="display:none;margin-top:6px"></div>
+          </div>
+
+          <!-- Schedule publication -->
+          <div style="margin-top:8px;padding:12px;background:#22303c;border-radius:8px">
+            <div style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Запланировать публикацию</div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input type="datetime-local" id="art-schedule-datetime" style="padding:5px 8px;background:#192734;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
+              <button class="btn btn-sm btn-primary" onclick="scheduleArticle()">Запланировать</button>
+              <button class="btn btn-sm btn-secondary" onclick="cancelScheduleArticle()" id="art-cancel-schedule-btn" style="display:none">Отменить</button>
+              <span id="art-schedule-info" style="font-size:0.8em;color:#ffad1f;display:none"></span>
+            </div>
           </div>
 
           <!-- Original text (collapsed) -->
@@ -4290,6 +4402,21 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <div class="card">
         <h3 style="font-size:0.95em;margin-bottom:10px">Топ ключевые слова</h3>
         <div id="analytics-bigrams" style="display:flex;flex-wrap:wrap;gap:4px"></div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="gap:12px;margin-bottom:16px">
+      <div class="card">
+        <h3 style="font-size:0.95em;margin-bottom:10px">Средний скор по дням</h3>
+        <div id="analytics-score-trend" style="display:flex;align-items:flex-end;gap:3px;height:120px"></div>
+      </div>
+      <div class="card">
+        <h3 style="font-size:0.95em;margin-bottom:10px">Конверсия по дням</h3>
+        <div id="analytics-conversion" style="display:flex;align-items:flex-end;gap:3px;height:120px"></div>
+        <div style="margin-top:6px;display:flex;gap:12px;font-size:0.75em;color:#8899a6">
+          <span><span style="display:inline-block;width:10px;height:10px;background:#17bf63;border-radius:2px;margin-right:3px"></span>Одобрено</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:#e0245e;border-radius:2px;margin-right:3px"></span>Отклонено</span>
+        </div>
       </div>
     </div>
 
@@ -4477,10 +4604,10 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <h2>Финал <span style="font-size:0.65em;color:#8899a6;font-weight:normal">только publish_now</span></h2>
       <div style="display:flex;gap:8px;align-items:center">
         <span class="filter-label">Источник:</span>
-        <select id="fin-source" onchange="loadFinal()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+        <select id="fin-source" onchange="loadFinal(0)" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
           <option value="">Все</option>
         </select>
-        <button class="btn btn-sm btn-secondary" onclick="loadFinal()">Обновить</button>
+        <button class="btn btn-sm btn-secondary" onclick="loadFinal(0)">Обновить</button>
         <button class="btn btn-sm" onclick="finSelectAbove60()" style="background:#17bf63;color:#fff" title="Отметить все новости с финальным скором >= 60">&#10003; Отметить &gt;60</button>
         <button class="btn btn-sm btn-primary" onclick="finSendSelected()" style="background:#9b59b6;border-color:#9b59b6">&#9998; В контент</button>
         <span id="fin-selected-count" style="color:#1da1f2;font-size:0.85em"></span>
@@ -4861,6 +4988,56 @@ async function api(url, body) {
 setInterval(() => {
   document.getElementById('clock').textContent = new Date().toLocaleString('ru-RU');
 }, 1000);
+
+// ---- Browser Notifications ----
+let _notificationsEnabled = localStorage.getItem('notif_enabled') === 'true';
+let _prevFinalIds = new Set();
+let _prevQueueStatuses = {};
+
+function requestNotificationPermission() {
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
+function showNotification(title, body) {
+  if (!_notificationsEnabled) return;
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  try {
+    const n = new Notification(title, { body, icon: '/favicon.ico', tag: title.slice(0, 20) });
+    setTimeout(() => n.close(), 8000);
+  } catch(e) {}
+}
+
+function toggleNotifications(on) {
+  _notificationsEnabled = on;
+  localStorage.setItem('notif_enabled', on ? 'true' : 'false');
+  if (on) {
+    if (!('Notification' in window)) { alert('Браузер не поддерживает уведомления'); return; }
+    if (Notification.permission === 'default') {
+      Notification.requestPermission().then(p => {
+        if (p !== 'granted') {
+          _notificationsEnabled = false;
+          localStorage.setItem('notif_enabled', 'false');
+          document.getElementById('notif-toggle').checked = false;
+        }
+      });
+    } else if (Notification.permission === 'denied') {
+      alert('Уведомления заблокированы в настройках браузера');
+      _notificationsEnabled = false;
+      localStorage.setItem('notif_enabled', 'false');
+      document.getElementById('notif-toggle').checked = false;
+    }
+  }
+}
+
+// Restore toggle state on load
+document.addEventListener('DOMContentLoaded', () => {
+  const toggle = document.getElementById('notif-toggle');
+  if (toggle) toggle.checked = _notificationsEnabled;
+  if (_notificationsEnabled) requestNotificationPermission();
+});
 
 // News tab state (used by Обогащённые panel)
 let _allNews = [];
@@ -5661,11 +5838,11 @@ function renderArticlesList(articles) {
         <div style="flex:1;min-width:0">
           <div style="font-size:0.92em;font-weight:500;line-height:1.3;margin-bottom:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(a.title||'Без заголовка')}</div>
           <div style="font-size:0.75em;color:#8899a6;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <span class="${statusCls}">${{draft:'Черновик',ready:'Готово',published:'Опубликовано'}[a.status]||a.status}</span>
+            <span class="${statusCls}">${{draft:'Черновик',ready:'Готово',scheduled:'Запланировано',published:'Опубликовано'}[a.status]||a.status}</span>
             <span>${a.style||''}</span>
             <span>${textLen} симв.</span>
             <span>${date}</span>
-          </div>
+          </div>${a.scheduled_at ? '<div style="font-size:0.7em;color:#ffad1f;margin-top:2px">&#128197; ' + new Date(a.scheduled_at).toLocaleString('ru-RU') + '</div>' : ''}
         </div>
       </div>
     </div>`;
@@ -5704,6 +5881,19 @@ async function selectArticle(id) {
   document.getElementById('art-edit-text').value = a.text || '';
   document.getElementById('art-edit-status').value = a.status || 'draft';
   document.getElementById('art-edit-header').textContent = (a.style ? a.style + ' | ' : '') + (a.language || '');
+
+  // Schedule info
+  _updateScheduleInfo(a.scheduled_at || null);
+  if (a.scheduled_at) {
+    try {
+      const local = new Date(a.scheduled_at);
+      const pad = n => String(n).padStart(2,'0');
+      const localStr = local.getFullYear()+'-'+pad(local.getMonth()+1)+'-'+pad(local.getDate())+'T'+pad(local.getHours())+':'+pad(local.getMinutes());
+      document.getElementById('art-schedule-datetime').value = localStr;
+    } catch(e){}
+  } else {
+    document.getElementById('art-schedule-datetime').value = '';
+  }
 
   // Original
   const origBlock = document.getElementById('art-original-block');
@@ -5774,6 +5964,93 @@ function copyArticleText() {
   const text = document.getElementById('art-edit-text').value;
   navigator.clipboard.writeText(title + '\n\n' + text);
   toast('Скопировано!');
+}
+
+async function scheduleArticle() {
+  if (!_currentArticleId) { toast('Сначала выберите статью', true); return; }
+  const dt = document.getElementById('art-schedule-datetime').value;
+  if (!dt) { toast('Укажите дату и время', true); return; }
+  const scheduled_at = new Date(dt).toISOString();
+  const r = await api('/api/articles/schedule', {article_id: _currentArticleId, scheduled_at});
+  if (r.status === 'ok') {
+    toast('Публикация запланирована!');
+    document.getElementById('art-edit-status').value = 'scheduled';
+    _updateScheduleInfo(scheduled_at);
+    loadArticles();
+  } else {
+    toast(r.message || 'Ошибка', true);
+  }
+}
+
+async function cancelScheduleArticle() {
+  if (!_currentArticleId) return;
+  const r = await api('/api/articles/update', {
+    id: _currentArticleId,
+    title: document.getElementById('art-edit-title').value,
+    text: document.getElementById('art-edit-text').value,
+    seo_title: document.getElementById('art-edit-seo-title').value,
+    seo_description: document.getElementById('art-edit-seo-desc').value,
+    tags: document.getElementById('art-edit-tags').value.split(',').map(t=>t.trim()).filter(Boolean),
+    status: 'draft',
+  });
+  if (r.status === 'ok') {
+    toast('Планирование отменено');
+    document.getElementById('art-edit-status').value = 'draft';
+    _updateScheduleInfo(null);
+    loadArticles();
+  }
+}
+
+function _updateScheduleInfo(scheduled_at) {
+  const info = document.getElementById('art-schedule-info');
+  const cancelBtn = document.getElementById('art-cancel-schedule-btn');
+  if (scheduled_at) {
+    const d = new Date(scheduled_at);
+    info.textContent = 'Запланировано: ' + d.toLocaleString('ru-RU');
+    info.style.display = 'inline';
+    cancelBtn.style.display = 'inline-block';
+  } else {
+    info.style.display = 'none';
+    cancelBtn.style.display = 'none';
+  }
+}
+
+async function runSeoCheck() {
+  const title = document.getElementById('art-edit-title').value;
+  const seo_title = document.getElementById('art-edit-seo-title').value;
+  const seo_description = document.getElementById('art-edit-seo-desc').value;
+  const text = document.getElementById('art-edit-text').value;
+  const tagsRaw = document.getElementById('art-edit-tags').value;
+  const tags = tagsRaw ? tagsRaw.split(',').map(t => t.trim()).filter(Boolean) : [];
+  const badge = document.getElementById('seo-score-badge');
+  const panel = document.getElementById('seo-results');
+  badge.style.display = 'none';
+  panel.style.display = 'none';
+  panel.innerHTML = '<span style="color:#8899a6;font-size:0.85em">Анализируем...</span>';
+  panel.style.display = 'block';
+  try {
+    const r = await api('/api/seo_check', {title, seo_title, seo_description, text, tags});
+    if (r.status !== 'ok') { panel.innerHTML = '<span style="color:#e0245e">Ошибка анализа</span>'; return; }
+    const score = r.score;
+    const color = score >= 70 ? '#17bf63' : score >= 40 ? '#ffad1f' : '#e0245e';
+    badge.textContent = score + '/100';
+    badge.style.background = color + '22';
+    badge.style.color = color;
+    badge.style.display = 'inline-block';
+    let html = '';
+    for (const c of r.checks) {
+      const icon = c.status === 'pass' ? '&#9989;' : c.status === 'warn' ? '&#9888;&#65039;' : '&#10060;';
+      const clr = c.status === 'pass' ? '#17bf63' : c.status === 'warn' ? '#ffad1f' : '#e0245e';
+      html += '<div style="display:flex;align-items:center;gap:6px;padding:4px 0;font-size:0.83em;border-bottom:1px solid #38444d22">';
+      html += '<span>' + icon + '</span>';
+      html += '<span style="color:#e1e8ed;min-width:140px;font-weight:500">' + c.name + '</span>';
+      html += '<span style="color:' + clr + '">' + c.message + '</span>';
+      html += '</div>';
+    }
+    panel.innerHTML = html;
+  } catch(e) {
+    panel.innerHTML = '<span style="color:#e0245e">Ошибка: ' + e.message + '</span>';
+  }
 }
 
 async function improveArticle(action) {
@@ -5925,6 +6202,39 @@ async function loadAnalytics() {
   document.getElementById('analytics-bigrams').innerHTML = (r.top_bigrams||[]).map(([term, cnt]) =>
     `<span style="padding:3px 8px;background:#1da1f218;border:1px solid #1da1f2;border-radius:12px;font-size:0.78em;color:#1da1f2">${term} <span style="color:#8899a6">${cnt}</span></span>`
   ).join('');
+
+  // Score trend (line chart via bars with dots)
+  const scoreTrend = r.score_trend || [];
+  const maxSc = Math.max(...scoreTrend.map(d => d.avg_score), 1);
+  document.getElementById('analytics-score-trend').innerHTML = scoreTrend.map(d => {
+    const h = Math.max(4, d.avg_score / maxSc * 100);
+    const day = d.date ? d.date.slice(5) : '';
+    const color = d.avg_score >= 50 ? '#17bf63' : d.avg_score >= 30 ? '#ffad1f' : '#e0245e';
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px" title="${day}: ${d.avg_score} (${d.count} шт)">
+      <span style="font-size:0.7em;color:${color};font-weight:500">${d.avg_score}</span>
+      <div style="width:100%;height:${h}px;background:${color};border-radius:3px 3px 0 0;opacity:0.8"></div>
+      <span style="font-size:0.65em;color:#657786">${day}</span>
+    </div>`;
+  }).join('');
+
+  // Conversion daily (stacked bars)
+  const convDaily = r.conversion_daily || [];
+  const maxConv = Math.max(...convDaily.map(d => d.approved + d.rejected), 1);
+  document.getElementById('analytics-conversion').innerHTML = convDaily.map(d => {
+    const total = d.approved + d.rejected;
+    const hA = Math.max(0, d.approved / maxConv * 100);
+    const hR = Math.max(0, d.rejected / maxConv * 100);
+    const day = d.date ? d.date.slice(5) : '';
+    const pct = total > 0 ? Math.round(d.approved / total * 100) : 0;
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:0" title="${day}: ${d.approved} одобр / ${d.rejected} откл (${pct}%)">
+      <span style="font-size:0.65em;color:#8899a6">${pct}%</span>
+      <div style="width:100%;display:flex;flex-direction:column;gap:1px">
+        <div style="width:100%;height:${hR}px;background:#e0245e;border-radius:3px 3px 0 0;opacity:0.7"></div>
+        <div style="width:100%;height:${hA}px;background:#17bf63;border-radius:0 0 3px 3px;opacity:0.8"></div>
+      </div>
+      <span style="font-size:0.65em;color:#657786">${day}</span>
+    </div>`;
+  }).join('');
 
   // Source weights
   document.getElementById('analytics-source-weights').innerHTML = (r.source_stats||[]).map(s => {
@@ -6177,7 +6487,22 @@ document.addEventListener('change', e => { if (e.target.classList.contains('queu
 async function loadQueueStandalone() {
   const r = await api('/api/queue');
   if (r.status === 'ok') {
-    _queueTasks = r.tasks || [];
+    const newTasks = r.tasks || [];
+    // Notify on status changes to done/error
+    if (Object.keys(_prevQueueStatuses).length > 0) {
+      let doneCount = 0, errCount = 0;
+      newTasks.forEach(t => {
+        const prev = _prevQueueStatuses[t.id];
+        if (prev && prev !== t.status) {
+          if (t.status === 'done') doneCount++;
+          else if (t.status === 'error') errCount++;
+        }
+      });
+      if (doneCount > 0) showNotification('Очередь: готово', doneCount + ' задач завершено');
+      if (errCount > 0) showNotification('Очередь: ошибка', errCount + ' задач с ошибкой');
+    }
+    newTasks.forEach(t => { _prevQueueStatuses[t.id] = t.status; });
+    _queueTasks = newTasks;
     renderQueueStandalone();
     updateQueueBadge();
   }
@@ -6704,6 +7029,8 @@ let _finData = [];
 let _finSortField = 'final_score';
 let _finSortDir = 'desc';
 let _finTotal = 0;
+let _finPage = 0;
+const _finLimit = 50;
 
 function calcFinalScore(n) {
   // Финальный скор: internal(40%) + viral(20%) + keyso_bonus(15%) + trends_bonus(10%) + headline(15%)
@@ -6732,13 +7059,26 @@ function calcFinalScore(n) {
   return Math.round(internal * 0.4 + viral * 0.2 + keysoBonus * 0.15 + trendsBonus * 0.1 + headline * 0.15);
 }
 
-async function loadFinal() {
+async function loadFinal(page) {
+  if (page !== undefined) _finPage = page;
   const source = document.getElementById('fin-source')?.value || '';
-  let url = '/api/final?limit=200';
+  const offset = _finPage * _finLimit;
+  let url = `/api/final?limit=${_finLimit}&offset=${offset}`;
   if (source) url += '&source=' + encodeURIComponent(source);
   const resp = await api(url);
   _finData = (resp.news || []).map(n => ({...n, final_score: calcFinalScore(n)}));
   _finTotal = resp.total || _finData.length;
+
+  // Notify about new high-score items
+  if (_prevFinalIds.size > 0) {
+    const newHigh = _finData.filter(n => n.final_score >= 60 && !_prevFinalIds.has(n.id));
+    if (newHigh.length === 1) {
+      showNotification('Новая топ-новость!', newHigh[0].title + ' (скор: ' + newHigh[0].final_score + ')');
+    } else if (newHigh.length > 1) {
+      showNotification('Новые топ-новости: ' + newHigh.length, newHigh.slice(0, 3).map(n => n.title.slice(0, 50)).join('; '));
+    }
+  }
+  _prevFinalIds = new Set(_finData.map(n => n.id));
 
   // Populate source filter
   const srcEl = document.getElementById('fin-source');
@@ -6756,6 +7096,38 @@ async function loadFinal() {
   `;
 
   renderFinalTable();
+  renderFinalPagination(_finTotal);
+}
+
+function renderFinalPagination(total) {
+  const pages = Math.ceil(total / _finLimit);
+  const el = document.getElementById('fin-pagination');
+  if (!el) return;
+  if (pages <= 1) { el.innerHTML = ''; return; }
+  let html = '';
+  if (_finPage > 0) {
+    html += `<button onclick="loadFinal(${_finPage - 1})" style="padding:4px 10px;border:1px solid #38444d;border-radius:4px;cursor:pointer;background:#192734;color:#8899a6">&laquo;</button>`;
+  }
+  const maxVisible = 7;
+  let start = Math.max(0, _finPage - Math.floor(maxVisible / 2));
+  let end = Math.min(pages, start + maxVisible);
+  if (end - start < maxVisible) start = Math.max(0, end - maxVisible);
+  if (start > 0) {
+    html += `<button onclick="loadFinal(0)" style="padding:4px 10px;border:1px solid #38444d;border-radius:4px;cursor:pointer;background:#192734;color:#8899a6">1</button>`;
+    if (start > 1) html += `<span style="color:#657786;padding:4px">...</span>`;
+  }
+  for (let i = start; i < end; i++) {
+    const active = i === _finPage ? 'background:#1da1f2;color:#fff' : 'background:#192734;color:#8899a6';
+    html += `<button onclick="loadFinal(${i})" style="padding:4px 10px;border:1px solid #38444d;border-radius:4px;cursor:pointer;${active}">${i+1}</button>`;
+  }
+  if (end < pages) {
+    if (end < pages - 1) html += `<span style="color:#657786;padding:4px">...</span>`;
+    html += `<button onclick="loadFinal(${pages - 1})" style="padding:4px 10px;border:1px solid #38444d;border-radius:4px;cursor:pointer;background:#192734;color:#8899a6">${pages}</button>`;
+  }
+  if (_finPage < pages - 1) {
+    html += `<button onclick="loadFinal(${_finPage + 1})" style="padding:4px 10px;border:1px solid #38444d;border-radius:4px;cursor:pointer;background:#192734;color:#8899a6">&raquo;</button>`;
+  }
+  el.innerHTML = html;
 }
 
 function renderFinalTable() {
@@ -6891,8 +7263,15 @@ loadArticles();
 loadQueue();
 loadAnalytics();
 loadLogs();
-setInterval(loadHealth, 60000);
-setInterval(() => { loadQueue(); if (document.getElementById('panel-queue')?.classList.contains('active')) loadQueueStandalone(); }, 15000);
+// Smart polling — pause when tab is hidden
+let _tabVisible = true;
+document.addEventListener('visibilitychange', () => { _tabVisible = !document.hidden; });
+
+function smartInterval(fn, ms) {
+  setInterval(() => { if (_tabVisible) fn(); }, ms);
+}
+smartInterval(loadHealth, 60000);
+smartInterval(() => { loadQueue(); if (document.getElementById('panel-queue')?.classList.contains('active')) loadQueueStandalone(); }, 15000);
 
 let _edSearchTimer;
 function debounceEdSearch() {
@@ -7353,7 +7732,7 @@ async function edExportOne(id) {
 }
 
 // Auto-refresh editorial every 30s (shows enrichment progress)
-setInterval(() => {
+smartInterval(() => {
   const edPanel = document.getElementById('panel-editorial');
   if (edPanel && edPanel.classList.contains('active')) {
     loadEditorial();

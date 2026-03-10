@@ -1,15 +1,22 @@
 """Гибридное извлечение ключевых фраз: словарь сущностей + TF-IDF.
 
-Оптимизировано: vectorizer кешируется, transform вместо fit_transform.
+Оптимизировано: vectorizer кешируется в памяти и на диске (JSON).
+При старте загружается vocabulary из storage/tfidf_vocab_cache.json,
+что позволяет использовать transform вместо fit_transform.
 """
 
+import json
 import logging
+import os
 import re
+from datetime import datetime, timezone
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from nlp.game_entities import find_entities, TIER_BOOST
 
 logger = logging.getLogger(__name__)
+
+# --- Constants ---
 
 # Стоп-слова для игровых новостей (рус + англ)
 STOP_WORDS = {
@@ -107,6 +114,132 @@ _RE_SPACES = re.compile(r"\s+")
 # Regex for Cyrillic token pattern (allows words from both alphabets)
 _TOKEN_PATTERN = r"(?u)\b[a-zA-Zа-яА-ЯёЁ0-9][a-zA-Zа-яА-ЯёЁ0-9\-]+\b"
 
+# --- Persistent disk cache for TF-IDF vocabulary ---
+_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "storage")
+_CACHE_PATH = os.path.join(_CACHE_DIR, "tfidf_vocab_cache.json")
+
+# In-memory cached vectorizers keyed by ngram_range
+_cached_vectorizers: dict[tuple, TfidfVectorizer] = {}
+
+
+# --- Disk cache helpers ---
+
+def _load_vocab_cache() -> dict | None:
+    """Load vocabulary cache from disk. Returns dict or None."""
+    try:
+        with open(_CACHE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if "vocabulary" in data and isinstance(data["vocabulary"], dict):
+            logger.info("TF-IDF vocab cache loaded from disk (%d terms, updated %s)",
+                        len(data["vocabulary"]), data.get("updated_at", "?"))
+            return data
+        return None
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def _save_vocab_cache(vocabulary: dict, doc_count: int) -> None:
+    """Save vocabulary to disk cache."""
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(_CACHE_PATH)), exist_ok=True)
+        data = {
+            "vocabulary": vocabulary,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "doc_count": doc_count,
+        }
+        with open(_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        logger.info("TF-IDF vocab cache saved to disk (%d terms)", len(vocabulary))
+    except OSError as e:
+        logger.warning("Failed to save TF-IDF vocab cache: %s", e)
+
+
+def _get_vectorizer(ngram_range: tuple, force_refit: bool = False) -> TfidfVectorizer | None:
+    """Get a fitted vectorizer, using disk cache if available.
+
+    Returns a vectorizer fitted on the background corpus, or None if
+    force_refit is requested (caller should fit manually).
+    """
+    # Check in-memory cache first
+    if not force_refit and ngram_range in _cached_vectorizers:
+        return _cached_vectorizers[ngram_range]
+
+    # Try loading from disk cache
+    if not force_refit:
+        cache_data = _load_vocab_cache()
+        if cache_data is not None:
+            vocab = cache_data["vocabulary"]
+            # Filter vocabulary by ngram_range (check word count in each term)
+            n_min, n_max = ngram_range
+            filtered_vocab = {
+                term: idx for term, idx in vocab.items()
+                if n_min <= len(term.split()) <= n_max
+            }
+            if filtered_vocab:
+                vectorizer = TfidfVectorizer(
+                    ngram_range=ngram_range,
+                    max_features=200,
+                    stop_words=_STOP_WORDS_LIST,
+                    min_df=1,
+                    token_pattern=_TOKEN_PATTERN,
+                    vocabulary=filtered_vocab,
+                )
+                # fit on background corpus to compute IDF weights with the fixed vocabulary
+                vectorizer.fit(BACKGROUND_CORPUS)
+                _cached_vectorizers[ngram_range] = vectorizer
+                return vectorizer
+
+    return None
+
+
+def _save_after_fit(vectorizer: TfidfVectorizer) -> None:
+    """Merge newly fitted vocabulary into disk cache and save."""
+    existing = _load_vocab_cache()
+    if existing and "vocabulary" in existing:
+        vocab = existing["vocabulary"]
+    else:
+        vocab = {}
+
+    next_idx = max(vocab.values(), default=-1) + 1
+    for term in vectorizer.get_feature_names_out():
+        if term not in vocab:
+            vocab[term] = next_idx
+            next_idx += 1
+
+    _save_vocab_cache(vocab, len(BACKGROUND_CORPUS))
+
+
+def rebuild_vocab_cache() -> None:
+    """Force re-fit on background corpus and save vocabulary to disk.
+
+    Call this when the background corpus or stop words change.
+    """
+    global _cached_vectorizers
+    _cached_vectorizers.clear()
+
+    all_vocab: dict[str, int] = {}
+    idx = 0
+
+    for ngram_range in [(2, 2), (3, 3)]:
+        vectorizer = TfidfVectorizer(
+            ngram_range=ngram_range,
+            max_features=200,
+            stop_words=_STOP_WORDS_LIST,
+            min_df=1,
+            token_pattern=_TOKEN_PATTERN,
+        )
+        vectorizer.fit_transform(BACKGROUND_CORPUS)
+        for term in vectorizer.get_feature_names_out():
+            if term not in all_vocab:
+                all_vocab[term] = idx
+                idx += 1
+        _cached_vectorizers[ngram_range] = vectorizer
+
+    _save_vocab_cache(all_vocab, len(BACKGROUND_CORPUS))
+    logger.info("TF-IDF vocab cache rebuilt: %d terms across all ngram ranges", len(all_vocab))
+
+
+# --- Core functions ---
 
 def clean_text(text: str) -> str:
     """Очищает текст от HTML, лишних символов."""
@@ -116,24 +249,41 @@ def clean_text(text: str) -> str:
     return text.strip().lower()
 
 
-def _tfidf_with_background(text: str, ngram_range: tuple, top_n: int) -> list[list]:
+def _tfidf_with_background(text: str, ngram_range: tuple, top_n: int,
+                            force_refit: bool = False) -> list[list]:
     """TF-IDF с фоновым корпусом.
 
-    Fit each time on corpus+text to capture all n-grams including Russian.
+    Uses cached vectorizer (from disk or memory) when available.
+    Falls back to full fit_transform on corpus+text for new terms.
     Background corpus provides IDF dampening for common gaming phrases.
     """
-    corpus = [text] + BACKGROUND_CORPUS
     try:
-        vectorizer = TfidfVectorizer(
-            ngram_range=ngram_range,
-            max_features=200,
-            stop_words=_STOP_WORDS_LIST,
-            min_df=1,
-            token_pattern=_TOKEN_PATTERN,
-        )
-        tfidf_matrix = vectorizer.fit_transform(corpus)
-        feature_names = vectorizer.get_feature_names_out()
-        scores = tfidf_matrix.toarray()[0]
+        cached = _get_vectorizer(ngram_range, force_refit=force_refit)
+        if cached is not None:
+            # Use cached vocabulary — transform only (much faster)
+            corpus = [text] + BACKGROUND_CORPUS
+            tfidf_matrix = cached.transform(corpus)
+            feature_names = cached.get_feature_names_out()
+            scores = tfidf_matrix.toarray()[0]
+        else:
+            # No cache — full fit_transform, then save cache
+            corpus = [text] + BACKGROUND_CORPUS
+            vectorizer = TfidfVectorizer(
+                ngram_range=ngram_range,
+                max_features=200,
+                stop_words=_STOP_WORDS_LIST,
+                min_df=1,
+                token_pattern=_TOKEN_PATTERN,
+            )
+            tfidf_matrix = vectorizer.fit_transform(corpus)
+            feature_names = vectorizer.get_feature_names_out()
+            scores = tfidf_matrix.toarray()[0]
+
+            # Cache in memory
+            _cached_vectorizers[ngram_range] = vectorizer
+
+            # Save vocabulary to disk (merge with existing if any)
+            _save_after_fit(vectorizer)
 
         ranked = sorted(
             zip(feature_names, scores),

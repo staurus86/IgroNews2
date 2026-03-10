@@ -195,6 +195,9 @@ def init_db():
     _add_column_if_missing(cur, "news_analysis", "entity_best_tier", "TEXT DEFAULT ''")
     _add_column_if_missing(cur, "news_analysis", "reviewed_at", "TEXT DEFAULT ''")
 
+    # Articles: scheduled publication time
+    _add_column_if_missing(cur, "articles", "scheduled_at", "TEXT")
+
     if not _is_postgres():
         conn.commit()
 

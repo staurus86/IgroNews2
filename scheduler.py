@@ -743,6 +743,50 @@ def generate_auto_digest():
         logger.error("Auto-digest error: %s", e)
 
 
+def publish_scheduled_articles():
+    """Проверяет запланированные статьи и публикует те, у которых наступило время."""
+    try:
+        from storage.database import get_connection, _is_postgres
+        from datetime import datetime, timezone
+
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        now = datetime.now(timezone.utc).isoformat()
+
+        try:
+            cur.execute(
+                f"SELECT id, title FROM articles WHERE status = 'scheduled' AND scheduled_at <= {ph}",
+                (now,)
+            )
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                due_articles = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                due_articles = [dict(row) for row in cur.fetchall()]
+
+            if not due_articles:
+                return
+
+            for article in due_articles:
+                aid = article["id"]
+                cur.execute(
+                    f"UPDATE articles SET status = 'published', updated_at = {ph} WHERE id = {ph}",
+                    (now, aid)
+                )
+                logger.info("Auto-published scheduled article: %s", article.get("title", "")[:60])
+
+            if not _is_postgres():
+                conn.commit()
+
+            logger.info("Published %d scheduled articles", len(due_articles))
+        finally:
+            cur.close()
+
+    except Exception as e:
+        logger.error("Scheduled publish error: %s", e)
+
+
 def start_scheduler():
     """Запускает планировщик задач."""
     scheduler = BlockingScheduler(timezone="Europe/Moscow")
@@ -757,6 +801,9 @@ def start_scheduler():
 
     # Очистка старого plain_text раз в сутки (экономия памяти БД)
     scheduler.add_job(cleanup_old_plaintext, "interval", hours=24, id="cleanup_plaintext")
+
+    # Публикация запланированных статей: каждую минуту
+    scheduler.add_job(publish_scheduled_articles, "interval", minutes=1, id="publish_scheduled")
 
     # Авто-дайджест: ежедневно в 23:00 по Москве
     scheduler.add_job(generate_auto_digest, "cron", hour=23, minute=0, id="auto_digest")
