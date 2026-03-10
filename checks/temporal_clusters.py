@@ -18,23 +18,26 @@ def get_event_chain(news: dict, days: int = 7) -> dict:
     now = datetime.now(timezone.utc)
     cutoff = (now - timedelta(days=days)).isoformat()
 
-    cur.execute(f"""
-        SELECT id, source, title, published_at, status FROM news
-        WHERE parsed_at > {ph}
-        ORDER BY published_at ASC
-        LIMIT 1000
-    """, (cutoff,))
+    try:
+        cur.execute(f"""
+            SELECT id, source, title, published_at, status FROM news
+            WHERE parsed_at > {ph}
+            ORDER BY published_at ASC
+            LIMIT 1000
+        """, (cutoff,))
 
-    if _is_postgres():
-        columns = [desc[0] for desc in cur.description]
-        all_news = [dict(zip(columns, row)) for row in cur.fetchall()]
-    else:
-        all_news = [dict(row) for row in cur.fetchall()]
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            all_news = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            all_news = [dict(row) for row in cur.fetchall()]
+    finally:
+        cur.close()
 
     if len(all_news) < 2:
         return {"chain": [], "chain_length": 0, "days_span": 0, "phase": "single"}
 
-    # Compare our title with all others
+    # Compare our title with all others (index 0 = our title)
     titles = [title] + [n["title"] for n in all_news]
     try:
         pairs = tfidf_similarity(titles)
@@ -44,9 +47,9 @@ def get_event_chain(news: dict, days: int = 7) -> dict:
     # Find matches to our news (index 0)
     similar_indices = set()
     for i, j, score in pairs:
-        if i == 0:
+        if i == 0 and j > 0:
             similar_indices.add(j - 1)
-        elif j == 0:
+        elif j == 0 and i > 0:
             similar_indices.add(i - 1)
 
     if not similar_indices:

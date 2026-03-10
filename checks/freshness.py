@@ -42,7 +42,7 @@ def _parse_date(date_str: str) -> datetime | None:
     ]
     for fmt in formats:
         try:
-            dt = datetime.strptime(date_str[:len(date_str)], fmt)
+            dt = datetime.strptime(date_str, fmt)
             return dt.replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
             pass
@@ -68,7 +68,7 @@ def check_freshness(news: dict) -> dict:
     if pub is None:
         pub = _parse_date(parsed_at)
     if pub is None:
-        return {"age_hours": -1, "status": "unknown", "score": 30, "pass": True}
+        return {"age_hours": -1, "status": "unknown", "score": 30, "pass": False}
 
     now = datetime.now(timezone.utc)
     if pub.tzinfo is None:

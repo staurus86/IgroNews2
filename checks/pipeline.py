@@ -44,7 +44,7 @@ def _check_single(news: dict) -> dict:
         result["source_weight"] = 1.0
         result["game_entities"] = []
         result["overall_pass"] = False
-        result["total_score"] = q_score // 4
+        result["total_score"] = max(0, q_score // 5)  # scale 0-100 quality to ~0-20 total
         result["status"] = news.get("status", "new")
         result["early_exit"] = True
         return result

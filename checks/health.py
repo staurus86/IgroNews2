@@ -19,22 +19,25 @@ def get_sources_health() -> list[dict]:
 
     ph = "%s" if _is_postgres() else "?"
 
-    # Количество новостей за 24ч по источникам
-    cur.execute(f"""
-        SELECT source,
-               COUNT(*) as count_24h,
-               MAX(parsed_at) as last_parsed
-        FROM news
-        WHERE parsed_at > {ph}
-        GROUP BY source
-        ORDER BY count_24h DESC
-    """, (cutoff_24h,))
+    try:
+        # Количество новостей за 24ч по источникам
+        cur.execute(f"""
+            SELECT source,
+                   COUNT(*) as count_24h,
+                   MAX(parsed_at) as last_parsed
+            FROM news
+            WHERE parsed_at > {ph}
+            GROUP BY source
+            ORDER BY count_24h DESC
+        """, (cutoff_24h,))
 
-    if _is_postgres():
-        columns = [desc[0] for desc in cur.description]
-        rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-    else:
-        rows = [dict(row) for row in cur.fetchall()]
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            rows = [dict(row) for row in cur.fetchall()]
+    finally:
+        cur.close()
 
     # Build lookup by source name
     db_sources = {row["source"]: row for row in rows}

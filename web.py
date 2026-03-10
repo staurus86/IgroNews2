@@ -430,10 +430,13 @@ async function login() {
         source_filter = qs.get("source", [None])[0]
         date_from = qs.get("date_from", [None])[0]
         date_to = qs.get("date_to", [None])[0]
+        llm_filter = qs.get("llm", [None])[0]
 
         ph = "%s" if _is_postgres() else "?"
         conditions = []
         params = []
+        # Need LEFT JOIN for LLM filter on count query too
+        need_join_for_count = False
         if status_filter:
             conditions.append(f"n.status = {ph}")
             params.append(status_filter)
@@ -446,11 +449,21 @@ async function login() {
         if date_to:
             conditions.append(f"n.parsed_at <= {ph}")
             params.append(date_to + "T23:59:59")
+        if llm_filter:
+            need_join_for_count = True
+            if llm_filter == "has_rec":
+                conditions.append("a.llm_recommendation IS NOT NULL AND a.llm_recommendation != ''")
+            elif llm_filter == "no_rec":
+                conditions.append("(a.llm_recommendation IS NULL OR a.llm_recommendation = '')")
+            else:
+                conditions.append(f"LOWER(a.llm_recommendation) LIKE {ph}")
+                params.append(f"%{llm_filter.lower()}%")
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
         # Count total matching
-        cur.execute(f"SELECT COUNT(*) FROM news n {where}", params[:])
+        count_join = "LEFT JOIN news_analysis a ON n.id = a.news_id" if need_join_for_count else ""
+        cur.execute(f"SELECT COUNT(*) FROM news n {count_join} {where}", params[:])
         total_count = cur.fetchone()[0]
 
         query = f"""
@@ -3658,6 +3671,16 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <option value="">Все источники</option>
       </select>
       <span class="filter-sep"></span>
+      <span class="filter-label">LLM:</span>
+      <select id="filter-llm" onchange="loadNewsPage(0)">
+        <option value="">Все</option>
+        <option value="publish_now">publish_now</option>
+        <option value="schedule">schedule</option>
+        <option value="skip">skip</option>
+        <option value="has_rec">Есть рекомендация</option>
+        <option value="no_rec">Нет рекомендации</option>
+      </select>
+      <span class="filter-sep"></span>
       <span class="filter-label">Кол-во:</span>
       <input type="number" id="filter-limit" value="100" min="10" max="500" style="width:80px" onchange="loadNewsPage(0)" autocomplete="off">
       <span class="filter-sep"></span>
@@ -3679,6 +3702,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <button class="btn btn-danger btn-sm" onclick="deleteSelectedNews()" style="margin-left:4px">Удалить выбранные</button>
       <button class="btn btn-primary btn-sm" onclick="analyzeSelectedNews()">&#9654; Анализировать выбранные</button>
       <button class="btn btn-success btn-sm" onclick="exportSelectedToSheets()">&#9776; В Sheets</button>
+      <button class="btn btn-primary btn-sm" onclick="sendSelectedToContent()" style="background:#9b59b6;border-color:#9b59b6" title="Отправить выбранные на рерайт в Контент">&#9998; В контент</button>
       <span id="news-selected-count" style="color:#1da1f2;font-size:0.85em;margin-left:8px"></span>
       <span id="news-count" style="color:#8899a6;font-size:0.85em;margin-left:auto"></span>
     </div>
@@ -4192,11 +4216,13 @@ async function loadNewsPage(offset) {
   const limit = parseInt(document.getElementById('filter-limit')?.value) || 100;
   const status = document.getElementById('filter-status')?.value || '';
   const source = document.getElementById('filter-source')?.value || '';
+  const llmFilter = document.getElementById('filter-llm')?.value || '';
   const dateFrom = document.getElementById('news-date-from')?.value || '';
   const dateTo = document.getElementById('news-date-to')?.value || '';
   let url = `/api/news?limit=${limit}&offset=${_newsOffset}`;
   if (status) url += `&status=${status}`;
   if (source) url += `&source=${encodeURIComponent(source)}`;
+  if (llmFilter) url += `&llm=${encodeURIComponent(llmFilter)}`;
   if (dateFrom) url += `&date_from=${dateFrom}`;
   if (dateTo) url += `&date_to=${dateTo}`;
   const resp = await api(url);
@@ -4908,11 +4934,15 @@ function renderNewsFiltered() {
   const search = (document.getElementById('news-search')?.value || '').toLowerCase();
   const status = document.getElementById('filter-status')?.value || '';
   const source = document.getElementById('filter-source')?.value || '';
+  const llmFilter = document.getElementById('filter-llm')?.value || '';
   const limit = parseInt(document.getElementById('filter-limit')?.value) || 100;
   let filtered = _allNews;
   if (status) filtered = filtered.filter(n => n.status === status);
   if (source) filtered = filtered.filter(n => n.source === source);
   if (search) filtered = filtered.filter(n => (n.title||'').toLowerCase().includes(search));
+  if (llmFilter === 'has_rec') filtered = filtered.filter(n => n.llm_recommendation && n.llm_recommendation !== '-' && n.llm_recommendation.trim());
+  else if (llmFilter === 'no_rec') filtered = filtered.filter(n => !n.llm_recommendation || n.llm_recommendation === '-' || !n.llm_recommendation.trim());
+  else if (llmFilter) filtered = filtered.filter(n => (n.llm_recommendation||'').toLowerCase().includes(llmFilter));
   _newsFiltered = filtered;
   const sorted = sortNews(filtered, _newsSortField, _newsSortDir).slice(0, limit);
   const newsTb = document.getElementById('news-table');
@@ -5008,6 +5038,24 @@ async function exportSelectedToSheetsDash() {
   const r = await api('/api/queue/sheets', {news_ids: ids});
   if (r.status === 'ok') { toast(`${r.queued} задач добавлено в очередь Sheets`); loadQueue(); }
   else toast(r.message, true);
+}
+
+async function sendSelectedToContent() {
+  const ids = getNewsSelectedIds();
+  if (!ids.length) { toast('Сначала выберите новости', true); return; }
+  const style = prompt('Стиль рерайта (news / seo / review / clickbait / short / social):', 'news');
+  if (!style) return;
+  const validStyles = ['news','seo','review','clickbait','short','social'];
+  if (!validStyles.includes(style)) { toast('Неизвестный стиль: ' + style, true); return; }
+  if (!confirm('Отправить ' + ids.length + ' новостей на рерайт в стиле "' + style + '"? Используется LLM API.')) return;
+  toast('Отправка ' + ids.length + ' новостей в очередь рерайта...');
+  const r = await api('/api/queue/rewrite', {news_ids: ids, style: style, language: 'русский'});
+  if (r.status === 'ok') {
+    toast(r.queued + ' задач добавлено в очередь рерайта');
+    // Switch to settings > queue tab to show progress
+    document.querySelector('[data-tab="settings"]')?.click();
+    setTimeout(() => document.querySelector('[data-stab="queue"]')?.click(), 200);
+  } else toast(r.message || 'Ошибка', true);
 }
 
 async function deleteSelectedNews() {

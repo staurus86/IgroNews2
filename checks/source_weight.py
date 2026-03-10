@@ -15,6 +15,8 @@ DEFAULT_WEIGHTS = {
     "Polygon": 1.1,
     "RockPaperShotgun": 1.0,
     "GameRant": 1.0,
+    "Kotaku": 1.1,
+    "Destructoid": 1.0,
     "StopGame": 1.1,
     "Cybersport": 0.9,
     "Playground": 1.0,
@@ -32,36 +34,35 @@ def get_source_weight(source: str) -> float:
     try:
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
+        try:
+            ph = "%s" if _is_postgres() else "?"
 
-        # Считаем approved/rejected за последние 30 дней
-        cur.execute(f"""
-            SELECT status, COUNT(*) as cnt FROM news
-            WHERE source = {ph}
-            AND parsed_at > datetime('now', '-30 days')
-            GROUP BY status
-        """ if not _is_postgres() else f"""
-            SELECT status, COUNT(*) as cnt FROM news
-            WHERE source = {ph}
-            AND parsed_at > (NOW() - INTERVAL '30 days')::text
-            GROUP BY status
-        """, (source,))
+            if _is_postgres():
+                cur.execute("""
+                    SELECT status, COUNT(*) as cnt FROM news
+                    WHERE source = %s
+                    AND parsed_at > (NOW() - INTERVAL '30 days')
+                    GROUP BY status
+                """, (source,))
+                rows = cur.fetchall()
+                stats = {row[0]: row[1] for row in rows}
+            else:
+                cur.execute(f"""
+                    SELECT status, COUNT(*) as cnt FROM news
+                    WHERE source = {ph}
+                    AND parsed_at > datetime('now', '-30 days')
+                    GROUP BY status
+                """, (source,))
+                stats = {row["status"]: row["cnt"] for row in cur.fetchall()}
+        finally:
+            cur.close()
 
-        stats = {}
-        if _is_postgres():
-            for row in cur.fetchall():
-                stats[row[0]] = row[1]
-        else:
-            for row in cur.fetchall():
-                stats[row["status"]] = row["cnt"]
-
-        approved = stats.get("approved", 0) + stats.get("processed", 0)
-        rejected = stats.get("rejected", 0) + stats.get("duplicate", 0)
+        approved = stats.get("approved", 0) + stats.get("processed", 0) + stats.get("ready", 0)
+        rejected = stats.get("rejected", 0)
         total = approved + rejected
 
         if total >= 10:
             approval_rate = approved / total
-            # Adjust weight: +0.2 for 80%+ approval, -0.2 for <30% approval
             if approval_rate >= 0.8:
                 base += 0.2
             elif approval_rate >= 0.6:
@@ -89,24 +90,26 @@ def get_source_stats() -> list[dict]:
     try:
         conn = get_connection()
         cur = conn.cursor()
-
-        if _is_postgres():
-            cur.execute("""
-                SELECT source, status, COUNT(*) as cnt FROM news
-                WHERE parsed_at > (NOW() - INTERVAL '30 days')::text
-                GROUP BY source, status
-                ORDER BY source
-            """)
-            columns = [desc[0] for desc in cur.description]
-            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-        else:
-            cur.execute("""
-                SELECT source, status, COUNT(*) as cnt FROM news
-                WHERE parsed_at > datetime('now', '-30 days')
-                GROUP BY source, status
-                ORDER BY source
-            """)
-            rows = [dict(row) for row in cur.fetchall()]
+        try:
+            if _is_postgres():
+                cur.execute("""
+                    SELECT source, status, COUNT(*) as cnt FROM news
+                    WHERE parsed_at > (NOW() - INTERVAL '30 days')
+                    GROUP BY source, status
+                    ORDER BY source
+                """)
+                columns = [desc[0] for desc in cur.description]
+                rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                cur.execute("""
+                    SELECT source, status, COUNT(*) as cnt FROM news
+                    WHERE parsed_at > datetime('now', '-30 days')
+                    GROUP BY source, status
+                    ORDER BY source
+                """)
+                rows = [dict(row) for row in cur.fetchall()]
+        finally:
+            cur.close()
 
         # Aggregate by source
         sources = {}
@@ -115,9 +118,9 @@ def get_source_stats() -> list[dict]:
             if src not in sources:
                 sources[src] = {"source": src, "total": 0, "approved": 0, "rejected": 0, "new": 0}
             sources[src]["total"] += row["cnt"]
-            if row["status"] in ("approved", "processed"):
+            if row["status"] in ("approved", "processed", "ready"):
                 sources[src]["approved"] += row["cnt"]
-            elif row["status"] in ("rejected", "duplicate"):
+            elif row["status"] in ("rejected",):
                 sources[src]["rejected"] += row["cnt"]
             elif row["status"] == "new":
                 sources[src]["new"] += row["cnt"]

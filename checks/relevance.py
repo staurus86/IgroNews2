@@ -18,9 +18,11 @@ def check_relevance(news: dict) -> dict:
     noise_hits = sum(1 for kw in NOISE_KEYWORDS if kw in text)
 
     score = min(100, gaming_hits * 10) - noise_hits * 20
+    # Pass if enough gaming signal, even with some noise
+    passes = gaming_hits >= 2 and (noise_hits == 0 or gaming_hits >= noise_hits * 3)
     return {
         "score": max(0, score),
         "gaming_hits": gaming_hits,
         "noise_hits": noise_hits,
-        "pass": gaming_hits >= 2 and noise_hits == 0,
+        "pass": passes,
     }
