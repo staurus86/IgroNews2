@@ -289,12 +289,14 @@ def _do_process(news: dict) -> dict:
     bigrams = keywords.get("bigrams", [])
     trigrams = keywords.get("trigrams", [])
 
-    # 2. Keys.so (with rate limit)
+    # 2. Keys.so (with rate limit) — region по источнику
     top_bigram = bigrams[0][0] if bigrams else title
+    source = news.get("source", "")
+    keyso_region = config.keyso_region_for_source(source)
     try:
-        keyso_info = get_keyword_info(top_bigram)
+        keyso_info = get_keyword_info(top_bigram, region=keyso_region)
         time.sleep(2)
-        similar = get_similar_keywords(top_bigram, limit=10)
+        similar = get_similar_keywords(top_bigram, limit=10, region=keyso_region)
         time.sleep(2)
     except Exception as e:
         logger.warning("Keys.so error: %s", e)

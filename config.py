@@ -34,6 +34,13 @@ USER_AGENT_ROTATE = os.getenv("USER_AGENT_ROTATE", "true").lower() == "true"
 KEYSO_REGION = os.getenv("KEYSO_REGION", "ru")
 KEYSO_BASE_URL = "https://api.keys.so/api/v2"
 
+# Русскоязычные источники (Keys.so region=ru, остальные — us)
+RU_SOURCES = {"StopGame", "DTF", "Playground", "iXBT.games", "VGTimes"}
+
+def keyso_region_for_source(source: str) -> str:
+    """Возвращает регион Keys.so по источнику."""
+    return "ru" if source in RU_SOURCES else "us"
+
 # Google Trends regions
 REGIONS = ["RU", "US", "GB", "DE"]
 

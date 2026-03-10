@@ -7,11 +7,11 @@ logger = logging.getLogger(__name__)
 HEADERS = {"Content-Type": "application/json"}
 
 
-def _make_request(endpoint: str, params: dict) -> dict | None:
+def _make_request(endpoint: str, params: dict, region: str = None) -> dict | None:
     """Выполняет запрос к Keys.so API."""
     params["auth-token"] = config.KEYSO_API_KEY
     if "base" not in params:
-        params["base"] = config.KEYSO_REGION
+        params["base"] = region or config.KEYSO_REGION
     try:
         url = f"{config.KEYSO_BASE_URL}{endpoint}"
         resp = requests.get(url, params=params, timeout=15)
@@ -22,10 +22,10 @@ def _make_request(endpoint: str, params: dict) -> dict | None:
         return None
 
 
-def get_keyword_info(keyword: str) -> dict:
+def get_keyword_info(keyword: str, region: str = None) -> dict:
     """Получает частотность ключевого слова (с кэшем 24ч)."""
     from apis.cache import cache_get, cache_set, cache_key, rate_check, rate_increment
-    ck = cache_key("keyso_info", keyword)
+    ck = cache_key("keyso_info", keyword, region or config.KEYSO_REGION)
     cached = cache_get(ck)
     if cached is not None:
         return cached
@@ -33,7 +33,7 @@ def get_keyword_info(keyword: str) -> dict:
         logger.warning("Keys.so rate limit exceeded")
         return {"ws": 0, "wsk": 0}
     rate_increment("keyso")
-    data = _make_request("/report/simple/keyword_dashboard", {"keyword": keyword})
+    data = _make_request("/report/simple/keyword_dashboard", {"keyword": keyword}, region=region)
     if not data:
         return {"ws": 0, "wsk": 0}
     result = {
@@ -44,10 +44,10 @@ def get_keyword_info(keyword: str) -> dict:
     return result
 
 
-def get_similar_keywords(keyword: str, limit: int = 10) -> list[dict]:
+def get_similar_keywords(keyword: str, limit: int = 10, region: str = None) -> list[dict]:
     """Получает похожие поисковые запросы (с кэшем 24ч)."""
     from apis.cache import cache_get, cache_set, cache_key, rate_check, rate_increment
-    ck = cache_key("keyso_similar", keyword, limit)
+    ck = cache_key("keyso_similar", keyword, limit, region or config.KEYSO_REGION)
     cached = cache_get(ck)
     if cached is not None:
         return cached
@@ -58,7 +58,7 @@ def get_similar_keywords(keyword: str, limit: int = 10) -> list[dict]:
     data = _make_request("/report/simple/similarkeys", {
         "keyword": keyword,
         "per_page": limit,
-    })
+    }, region=region)
     if not data or "data" not in data:
         return []
     result = [
