@@ -468,6 +468,9 @@ async function login() {
         if status_filter:
             conditions.append(f"n.status = {ph}")
             params.append(status_filter)
+        else:
+            # Default: show only enrichment-relevant statuses
+            conditions.append("n.status IN ('approved', 'processed', 'ready')")
         if source_filter:
             conditions.append(f"n.source = {ph}")
             params.append(source_filter)
@@ -3789,7 +3792,6 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 <div class="container">
   <div class="tabs">
     <div class="tab active" data-tab="editorial">Редакция</div>
-    <div class="tab" data-tab="moderation">Модерация</div>
     <div class="tab" data-tab="news">Обогащённые</div>
     <div class="tab" data-tab="editor">Контент</div>
     <div class="tab" data-tab="viral">Виральность</div>
@@ -3883,260 +3885,13 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   </div>
 
   <!-- MODERATION -->
-  <div class="panel" id="panel-moderation">
-    <h2 style="margin-bottom:12px">Модерация <span style="font-size:0.7em;color:#8899a6">(без LLM анализа)</span></h2>
-    <div id="mod-stats" style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap"></div>
-
-    <div class="dash-filters" style="margin-bottom:12px">
-      <span class="filter-label">Поиск:</span>
-      <input type="search" id="mod-search" placeholder="По заголовку..." oninput="debounceModSearch()" autocomplete="off">
-      <span class="filter-sep"></span>
-      <span class="filter-label">Источник:</span>
-      <select id="mod-source" onchange="loadModeration()"><option value="">Все</option></select>
-      <span class="filter-sep"></span>
-      <span class="filter-label">Мин. скор:</span>
-      <input type="number" id="mod-min-score" min="0" max="100" value="0" style="width:60px" onchange="loadModeration()">
-      <span class="filter-sep"></span>
-      <button class="btn btn-sm btn-secondary" onclick="resetModFilters()" title="Сбросить фильтры">&#10005;</button>
-    </div>
-
-    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
-      <button class="btn btn-sm" style="background:#17bf63;color:#fff" onclick="modApproveSelected()">&#10003; Одобрить</button>
-      <button class="btn btn-sm btn-primary" onclick="modRewriteSelected()">&#9998; Рерайт выбранных</button>
-      <button class="btn btn-sm btn-danger" onclick="modRejectSelected()">&#10007; Отклонить</button>
-      <button class="btn btn-sm btn-secondary" onclick="modExportSheets()">&#9776; В Sheets</button>
-      <select id="mod-rewrite-style" style="padding:4px 8px;border-radius:6px;background:#192734;color:#d9d9d9;border:1px solid #38444d">
-        <option value="news">news</option>
-        <option value="review">review</option>
-        <option value="guide">guide</option>
-        <option value="editorial">editorial</option>
-        <option value="seo">seo</option>
-        <option value="short">short</option>
-      </select>
-      <span id="mod-selected-count" style="color:#8899a6;font-size:0.85em"></span>
-    </div>
-
-    <div style="background:#192734;border-radius:10px;overflow:hidden">
-      <table>
-        <thead><tr>
-          <th style="width:30px"><input type="checkbox" onchange="modToggleAll(this)" style="width:16px;height:16px"></th>
-          <th class="sortable" onclick="sortModTable('source')" style="width:90px">Источник</th>
-          <th class="sortable" onclick="sortModTable('title')">Заголовок</th>
-          <th class="sortable" onclick="sortModTable('total_score')" style="width:50px">Скор</th>
-          <th class="sortable" onclick="sortModTable('quality_score')" style="width:45px">Кач.</th>
-          <th class="sortable" onclick="sortModTable('relevance_score')" style="width:45px">Рел.</th>
-          <th class="sortable" onclick="sortModTable('viral_score')" style="width:50px">Вирал</th>
-          <th class="sortable" onclick="sortModTable('freshness_hours')" style="width:55px">Свеж.</th>
-          <th style="width:45px">Тон</th>
-          <th style="width:120px">Теги</th>
-          <th style="width:100px">Действия</th>
-        </tr></thead>
-        <tbody id="mod-table"></tbody>
-      </table>
-    </div>
-    <div id="mod-pagination" style="margin-top:10px;display:flex;gap:8px;justify-content:center"></div>
-  </div>
-
-  <!-- Dashboard and Review panels removed (dead code) -->
+  <!-- Moderation tab removed: use Редакция filter "Модерация" instead -->
 
   <!-- EDITOR -->
   <div class="panel" id="panel-editor">
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <button class="btn btn-sm btn-primary" id="content-tab-rewrite" onclick="switchContentTab('rewrite')" style="opacity:1">Рерайт</button>
-      <button class="btn btn-sm btn-secondary" id="content-tab-articles" onclick="switchContentTab('articles')" style="opacity:0.6">Статьи</button>
-    </div>
-    <div id="content-section-rewrite">
     <style>
-      .editor-layout { display:grid; grid-template-columns:340px 1fr; gap:15px; }
       .editor-list-card { background:#192734; border-radius:10px; padding:15px; min-height:600px; display:flex; flex-direction:column; }
-      .editor-main { display:flex; flex-direction:column; gap:15px; }
-      .editor-toolbar { background:#192734; border-radius:10px; padding:15px; }
-      .editor-preview-card { background:#192734; border-radius:10px; padding:15px; flex:1; }
-      .editor-result-card { background:#192734; border-radius:10px; padding:15px; }
-      .editor-news-item { padding:10px 12px; border-bottom:1px solid #22303c; cursor:pointer; display:flex; gap:8px; align-items:start; transition:background .15s; }
-      .editor-news-item input[type="checkbox"] { width:16px; height:16px; min-width:16px; flex-shrink:0; }
-      .editor-news-item:hover { background:#22303c; }
-      .editor-news-item.selected { background:rgba(29,161,242,0.1); border-left:3px solid #1da1f2; }
-      .editor-news-item.merge { background:rgba(255,173,31,0.1); border-left:3px solid #ffad1f; }
-      .editor-news-item.selected.merge { border-left:3px solid #1da1f2; box-shadow:inset -3px 0 0 #ffad1f; }
-      .editor-news-item.viral-pick { background:rgba(100,200,255,0.08); border-left:3px solid #64c8ff; }
-      .editor-news-item.viral-pick:hover { background:rgba(100,200,255,0.15); }
-      .editor-news-item.viral-pick.selected { background:rgba(100,200,255,0.18); border-left:3px solid #64c8ff; box-shadow:inset -3px 0 0 #1da1f2; }
-      .viral-pick-badge { display:inline-block;background:#64c8ff22;color:#64c8ff;font-size:0.7em;padding:1px 6px;border-radius:4px;font-weight:600;margin-left:4px; }
-      .style-option { display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:8px; cursor:pointer; border:2px solid #22303c; background:#192734; color:#e1e8ed; transition:all .15s; font-family:inherit; }
-      .style-option:hover { border-color:#38444d; background:#22303c; }
-      .style-option.active { border-color:#1da1f2; background:rgba(29,161,242,0.12); }
-      .style-icon { font-size:1.3em; width:32px; text-align:center; }
-      .style-label { font-size:0.85em; color:#e1e8ed; font-weight:500; }
-      .style-desc { font-size:0.75em; color:#8899a6; }
-      .merge-counter { display:inline-flex; align-items:center; gap:6px; padding:4px 12px; background:#22303c; border-radius:20px; font-size:0.85em; color:#ffad1f; }
-      .rw-field { margin-bottom:10px; padding:10px 14px; background:#22303c; border-radius:8px; position:relative; }
-      .rw-field:hover .rw-copy-btn { opacity:1; }
-      .rw-field-label { font-size:0.75em; color:#8899a6; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; }
-      .rw-field-value { color:#e1e8ed; font-size:0.9em; line-height:1.5; }
-      .rw-copy-btn { position:absolute; top:8px; right:8px; opacity:0; transition:opacity .15s; background:#1da1f2; border:none; color:#fff; padding:3px 8px; border-radius:4px; font-size:0.75em; cursor:pointer; }
-      .rw-copy-btn:hover { background:#1a91da; }
-      @media(max-width:900px) { .editor-layout { grid-template-columns:1fr; } .editor-list-card { min-height:300px; } }
-    </style>
-
-    <div class="editor-layout">
-      <!-- LEFT: news list -->
-      <div class="editor-list-card">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-          <h2 style="margin:0;font-size:1em">Новости</h2>
-          <div class="merge-counter" id="merge-counter" style="display:none">
-            <span id="merge-count-text">0 для слияния</span>
-            <button onclick="clearMergeSelection()" style="background:none;border:none;color:#ffad1f;cursor:pointer;font-size:1em;padding:0" title="Очистить выбор">&#10005;</button>
-          </div>
-        </div>
-        <div style="display:flex;gap:6px;margin-bottom:10px">
-          <input type="search" id="editor-search" placeholder="Поиск..." oninput="filterEditorNews()" autocomplete="off" name="editor-search-nologin" style="flex:1;padding:6px 10px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
-          <select id="editor-source-filter" onchange="filterEditorNews()" style="padding:6px 8px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
-            <option value="">Все</option>
-          </select>
-          <select id="editor-status-filter" onchange="filterEditorNews()" style="padding:6px 8px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
-            <option value="approved" selected>Одобренные</option>
-            <option value="processed">Обработанные</option>
-            <option value="">Все</option>
-            <option value="in_review">На проверке</option>
-            <option value="new">Новые</option>
-            <option value="_viral" style="color:#64c8ff">&#9733; Viral picks</option>
-          </select>
-        </div>
-        <div id="editor-news-list" style="flex:1;overflow-y:auto;font-size:0.85em;margin:0 -15px;padding:0 15px"></div>
-        <div id="editor-list-count" style="text-align:center;color:#8899a6;font-size:0.75em;margin-top:8px;padding-top:8px;border-top:1px solid #22303c"></div>
-      </div>
-
-      <!-- RIGHT: toolbar + preview + result -->
-      <div class="editor-main">
-        <!-- Toolbar -->
-        <div class="editor-toolbar">
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <div style="display:flex;gap:6px;flex-wrap:wrap;flex:1" id="style-buttons">
-              <button class="style-option active" data-style="news" onclick="selectStyle(this)" title="Факты, без эмоций, кратко">
-                <span class="style-icon">&#128240;</span>
-                <div><div class="style-label">Новость</div></div>
-              </button>
-              <button class="style-option" data-style="seo" onclick="selectStyle(this)" title="Ключевые слова, структура, подзаголовки">
-                <span class="style-icon">&#128269;</span>
-                <div><div class="style-label">SEO</div></div>
-              </button>
-              <button class="style-option" data-style="review" onclick="selectStyle(this)" title="С мнением автора, подробный анализ">
-                <span class="style-icon">&#128221;</span>
-                <div><div class="style-label">Обзор</div></div>
-              </button>
-              <button class="style-option" data-style="clickbait" onclick="selectStyle(this)" title="Яркий заголовок, интрига, эмоции">
-                <span class="style-icon">&#128293;</span>
-                <div><div class="style-label">Кликбейт</div></div>
-              </button>
-              <button class="style-option" data-style="short" onclick="selectStyle(this)" title="2-3 предложения, только суть">
-                <span class="style-icon">&#9889;</span>
-                <div><div class="style-label">Кратко</div></div>
-              </button>
-              <button class="style-option" data-style="social" onclick="selectStyle(this)" title="Неформальный, с эмодзи, короткий">
-                <span class="style-icon">&#128242;</span>
-                <div><div class="style-label">Соцсети</div></div>
-              </button>
-            </div>
-            <select id="rewrite-lang" style="padding:6px 10px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
-              <option value="русский">RU</option>
-              <option value="английский">EN</option>
-            </select>
-            <button class="btn btn-primary" onclick="rewriteNews()" id="rewrite-btn" disabled style="white-space:nowrap">
-              &#9998; Переписать
-            </button>
-            <button class="btn btn-warning" onclick="mergeSelected()" id="merge-btn" disabled style="white-space:nowrap">
-              &#128279; Объединить
-            </button>
-            <button class="btn btn-secondary" onclick="analyzeEditorNews()" id="analyze-btn" disabled style="white-space:nowrap">
-              &#9654; Анализ
-            </button>
-            <button class="btn btn-success" onclick="batchRewrite()" id="batch-rewrite-btn" disabled style="white-space:nowrap">
-              &#9889; Батч
-            </button>
-            <span id="rewrite-loading" style="color:#8899a6;font-size:0.85em"></span>
-          </div>
-        </div>
-
-        <!-- Preview + Result in same card with tabs -->
-        <div class="editor-preview-card" style="display:flex;flex-direction:column">
-          <div style="display:flex;align-items:center;gap:0;margin-bottom:12px;border-bottom:1px solid #22303c;padding-bottom:0">
-            <button class="editor-view-tab active" id="tab-preview-btn" onclick="switchEditorView('preview')" style="padding:8px 16px;background:none;border:none;border-bottom:2px solid #1da1f2;color:#1da1f2;cursor:pointer;font-size:0.9em;font-weight:500">Оригинал</button>
-            <button class="editor-view-tab" id="tab-result-btn" onclick="switchEditorView('result')" style="padding:8px 16px;background:none;border:none;border-bottom:2px solid transparent;color:#8899a6;cursor:pointer;font-size:0.9em">Результат</button>
-            <div style="flex:1"></div>
-            <div id="rw-copy-buttons" style="display:none;gap:6px">
-              <button class="btn btn-sm btn-success" onclick="saveRewriteAsArticle()" title="Сохранить в Статьи">&#128190; В статьи</button>
-              <button class="btn btn-sm btn-secondary" onclick="copyRewrite()" title="Заголовок + текст">&#128203; Текст</button>
-              <button class="btn btn-sm btn-secondary" onclick="copyRewriteSeo()" title="SEO-поля">SEO</button>
-              <button class="btn btn-sm btn-secondary" onclick="copyRewriteJson()" title="Весь JSON">{}</button>
-              <button class="btn btn-sm btn-secondary" onclick="copyRewriteHtml()" title="Как HTML">&lt;/&gt;</button>
-            </div>
-          </div>
-
-          <!-- Preview view -->
-          <div id="editor-view-preview" style="flex:1;overflow-y:auto;color:#8899a6;font-size:0.9em">
-            <div style="text-align:center;padding:60px 20px">
-              <div style="font-size:2em;margin-bottom:10px;opacity:0.3">&#128196;</div>
-              <div>Выберите новость из списка слева</div>
-              <div style="font-size:0.85em;margin-top:6px">Используйте чекбоксы для выбора нескольких новостей на объединение</div>
-            </div>
-          </div>
-
-          <!-- Result view -->
-          <div id="editor-view-result" style="display:none;flex:1;overflow-y:auto">
-            <div id="rw-empty" style="text-align:center;padding:60px 20px;color:#8899a6">
-              <div style="font-size:2em;margin-bottom:10px;opacity:0.3">&#9998;</div>
-              <div>Нажмите «Переписать» или «Объединить»</div>
-            </div>
-            <div id="rewrite-result" style="display:none">
-              <div class="rw-field">
-                <div class="rw-field-label">Заголовок</div>
-                <div class="rw-field-value" id="rw-title" style="color:#1da1f2;font-size:1.05em;font-weight:500"></div>
-                <button class="rw-copy-btn" onclick="copyField('rw-title')">Копировать</button>
-              </div>
-
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-                <div class="rw-field">
-                  <div class="rw-field-label">SEO Title <span id="rw-seo-title-len" style="color:#657786"></span></div>
-                  <div class="rw-field-value" id="rw-seo-title" style="color:#17bf63"></div>
-                  <button class="rw-copy-btn" onclick="copyField('rw-seo-title')">Копировать</button>
-                </div>
-                <div class="rw-field">
-                  <div class="rw-field-label">Meta Description <span id="rw-seo-desc-len" style="color:#657786"></span></div>
-                  <div class="rw-field-value" id="rw-seo-desc" style="color:#8899a6"></div>
-                  <button class="rw-copy-btn" onclick="copyField('rw-seo-desc')">Копировать</button>
-                </div>
-              </div>
-
-              <div class="rw-field" id="rw-tags-wrap">
-                <div class="rw-field-label">Теги</div>
-                <div class="rw-field-value" id="rw-tags"></div>
-                <button class="rw-copy-btn" onclick="copyField('rw-tags')">Копировать</button>
-              </div>
-
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
-                <div>
-                  <div style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Переписанный текст</div>
-                  <div id="rw-text" style="white-space:pre-wrap;color:#e1e8ed;font-size:0.88em;line-height:1.6;padding:14px;background:#22303c;border-radius:8px;max-height:400px;overflow-y:auto"></div>
-                </div>
-                <div>
-                  <div style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Оригинал</div>
-                  <div id="rw-original" style="white-space:pre-wrap;color:#8899a6;font-size:0.83em;line-height:1.5;padding:14px;background:#22303c;border-radius:8px;max-height:400px;overflow-y:auto"></div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div><!-- /content-section-rewrite -->
-  <div id="content-section-articles" style="display:none">
-  </div>
-  </div>
-
-  <!-- ARTICLES (hidden, content loaded into content-section-articles) -->
-  <div class="panel" id="panel-articles" style="display:none">
-    <style>
+      @media(max-width:900px) { .editor-list-card { min-height:300px; } }
       .art-card { background:#192734; border-radius:10px; padding:16px; margin-bottom:12px; transition:box-shadow .15s; cursor:pointer; border-left:3px solid transparent; }
       .art-card:hover { box-shadow:0 2px 12px rgba(0,0,0,0.2); }
       .art-card.selected { border-left-color:#1da1f2; background:#1da1f215; }
@@ -4156,30 +3911,65 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       .art-improve-btn.loading { opacity:0.5; pointer-events:none; }
     </style>
 
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-      <h2 style="margin:0">Мои статьи</h2>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <input type="search" id="art-search" placeholder="Поиск..." oninput="filterArticles()" autocomplete="off" style="padding:6px 10px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em;width:200px">
-        <select id="art-status-filter" onchange="filterArticles()" style="padding:6px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
-          <option value="">Все</option>
-          <option value="draft">Черновики</option>
-          <option value="ready">Готовые</option>
-          <option value="published">Опубликованные</option>
-        </select>
-        <button class="btn btn-sm btn-primary" onclick="downloadSelectedDocx()" id="art-bulk-docx-btn" disabled>DOCX выбранные</button>
-        <button class="btn btn-sm btn-danger" onclick="deleteSelectedArticles()" id="art-bulk-del-btn" disabled>Удалить выбранные</button>
-        <span id="art-selected-count" style="color:#1da1f2;font-size:0.82em;font-weight:500"></span>
-        <span id="art-count" style="color:#8899a6;font-size:0.82em"></span>
-      </div>
-    </div>
+    <div style="display:grid;grid-template-columns:340px 1fr;gap:15px" id="articles-layout">
+      <!-- LEFT: list panel with tab switcher -->
+      <div class="editor-list-card">
+        <!-- Tab switcher: Статьи / Новости -->
+        <div style="display:flex;margin-bottom:10px;border-bottom:2px solid #22303c">
+          <button id="cnt-tab-articles" class="cnt-tab active" onclick="switchContentList('articles')" style="flex:1;padding:8px;background:none;border:none;color:#1da1f2;font-size:0.9em;font-weight:600;cursor:pointer;border-bottom:2px solid #1da1f2;margin-bottom:-2px">Статьи <span id="art-count" style="font-size:0.8em;font-weight:normal;color:#8899a6"></span></button>
+          <button id="cnt-tab-news" class="cnt-tab" onclick="switchContentList('news')" style="flex:1;padding:8px;background:none;border:none;color:#8899a6;font-size:0.9em;font-weight:500;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px">Новости <span id="cnt-news-count" style="font-size:0.8em;font-weight:normal"></span></button>
+        </div>
 
-    <div style="display:grid;grid-template-columns:360px 1fr;gap:15px" id="articles-layout">
-      <!-- Left: list -->
-      <div>
-        <div id="articles-list" style="max-height:calc(100vh - 200px);overflow-y:auto"></div>
+        <!-- ARTICLES LIST -->
+        <div id="cnt-articles-panel">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <div style="display:flex;gap:4px">
+              <button class="btn btn-sm btn-primary" onclick="downloadSelectedDocx()" id="art-bulk-docx-btn" disabled title="DOCX">&#128196;</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteSelectedArticles()" id="art-bulk-del-btn" disabled title="Удалить">&#128465;</button>
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;margin-bottom:8px">
+            <input type="search" id="art-search" placeholder="Поиск..." oninput="filterArticles()" autocomplete="off" style="flex:1;padding:6px 10px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
+            <select id="art-status-filter" onchange="filterArticles()" style="padding:6px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
+              <option value="">Все</option>
+              <option value="draft">Черновики</option>
+              <option value="ready">Готовые</option>
+              <option value="published">Опубликованные</option>
+            </select>
+          </div>
+          <div id="articles-list" style="flex:1;overflow-y:auto;font-size:0.85em;margin:0 -15px;padding:0 15px;max-height:calc(100vh - 300px)"></div>
+          <div style="text-align:center;margin-top:8px;padding-top:8px;border-top:1px solid #22303c">
+            <span id="art-selected-count" style="color:#1da1f2;font-size:0.82em;font-weight:500"></span>
+          </div>
+        </div>
+
+        <!-- NEWS FOR REWRITE LIST -->
+        <div id="cnt-news-panel" style="display:none">
+          <div style="display:flex;gap:6px;margin-bottom:8px">
+            <input type="search" id="cnt-news-search" placeholder="Поиск новостей..." oninput="filterContentNews()" autocomplete="off" style="flex:1;padding:6px 10px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
+            <select id="cnt-news-source" onchange="filterContentNews()" style="padding:6px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.85em">
+              <option value="">Все</option>
+            </select>
+          </div>
+          <div style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap">
+            <select id="cnt-rewrite-style" style="padding:5px 8px;background:#22303c;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;font-size:0.82em">
+              <option value="news">Новость</option>
+              <option value="seo">SEO</option>
+              <option value="review">Обзор</option>
+              <option value="clickbait">Кликбейт</option>
+              <option value="short">Кратко</option>
+              <option value="social">Соцсети</option>
+            </select>
+            <button class="btn btn-sm btn-primary" onclick="cntRewriteSelected()" id="cnt-rewrite-btn" disabled>&#9998; Переписать выбранные</button>
+          </div>
+          <div id="cnt-news-list" style="flex:1;overflow-y:auto;font-size:0.85em;margin:0 -15px;padding:0 15px;max-height:calc(100vh - 330px)"></div>
+          <div style="text-align:center;margin-top:8px;padding-top:8px;border-top:1px solid #22303c">
+            <span id="cnt-news-selected" style="color:#1da1f2;font-size:0.82em;font-weight:500"></span>
+          </div>
+        </div>
       </div>
 
-      <!-- Right: editor -->
+      <!-- RIGHT: editor -->
       <div class="art-editor" id="art-editor-panel">
         <div id="art-empty" style="text-align:center;padding:80px 20px;color:#8899a6">
           <div style="font-size:2em;margin-bottom:10px;opacity:0.3">&#128221;</div>
@@ -4491,10 +4281,10 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <span class="filter-sep"></span>
       <span class="filter-label">Статус:</span>
       <select id="filter-status" onchange="loadNewsPage(0)">
-        <option value="processed" selected>Обогащённые</option>
+        <option value="" selected>Все обогащённые</option>
+        <option value="approved">Одобренные (ждут обогащения)</option>
+        <option value="processed">Обогащённые</option>
         <option value="ready">Готовые</option>
-        <option value="approved">Одобренные</option>
-        <option value="">Все статусы</option>
       </select>
       <span class="filter-sep"></span>
       <span class="filter-label">Источник:</span>
@@ -4863,7 +4653,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   document.getElementById('panel-' + t.dataset.tab).classList.add('active');
   // Refresh data when switching to key tabs
   if (t.dataset.tab === 'editorial') { loadEditorial(); }
-  if (t.dataset.tab === 'moderation') { loadModeration(); }
+  // moderation tab removed
   if (t.dataset.tab === 'news') { loadNewsPage(); }
   if (t.dataset.tab === 'editor') { loadArticles(); }
   if (t.dataset.tab === 'viral') { loadViral(); }
@@ -5477,377 +5267,183 @@ function _switchToQueueTab() {
   loadQueue();
 }
 
-// Editor
-let _editorNewsId = null;
-let _editorMergeIds = new Set();
-let _lastRewrite = null;
-let _editorSelectedStyle = 'news';
+// ===== CONTENT TAB: News list for rewrite =====
+let _cntNews = [];
+let _cntSelectedIds = new Set();
+let _cntActiveList = 'articles'; // 'articles' or 'news'
 
-function selectStyle(btn) {
-  document.querySelectorAll('.style-option').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  _editorSelectedStyle = btn.dataset.style;
-}
-
-function switchEditorView(view) {
-  const previewEl = document.getElementById('editor-view-preview');
-  const resultEl = document.getElementById('editor-view-result');
-  const previewBtn = document.getElementById('tab-preview-btn');
-  const resultBtn = document.getElementById('tab-result-btn');
-  const copyBtns = document.getElementById('rw-copy-buttons');
-  if (view === 'result') {
-    previewEl.style.display = 'none';
-    resultEl.style.display = 'block';
-    previewBtn.style.borderBottomColor = 'transparent';
-    previewBtn.style.color = '#8899a6';
-    resultBtn.style.borderBottomColor = '#1da1f2';
-    resultBtn.style.color = '#1da1f2';
-    copyBtns.style.display = _lastRewrite ? 'flex' : 'none';
+function switchContentList(which) {
+  _cntActiveList = which;
+  document.getElementById('cnt-articles-panel').style.display = which === 'articles' ? '' : 'none';
+  document.getElementById('cnt-news-panel').style.display = which === 'news' ? '' : 'none';
+  // Tab styles
+  const artTab = document.getElementById('cnt-tab-articles');
+  const newsTab = document.getElementById('cnt-tab-news');
+  if (which === 'articles') {
+    artTab.style.color = '#1da1f2'; artTab.style.borderBottomColor = '#1da1f2'; artTab.style.fontWeight = '600';
+    newsTab.style.color = '#8899a6'; newsTab.style.borderBottomColor = 'transparent'; newsTab.style.fontWeight = '500';
   } else {
-    previewEl.style.display = 'block';
-    resultEl.style.display = 'none';
-    previewBtn.style.borderBottomColor = '#1da1f2';
-    previewBtn.style.color = '#1da1f2';
-    resultBtn.style.borderBottomColor = 'transparent';
-    resultBtn.style.color = '#8899a6';
-    copyBtns.style.display = 'none';
+    newsTab.style.color = '#1da1f2'; newsTab.style.borderBottomColor = '#1da1f2'; newsTab.style.fontWeight = '600';
+    artTab.style.color = '#8899a6'; artTab.style.borderBottomColor = 'transparent'; artTab.style.fontWeight = '500';
+    loadContentNews();
   }
 }
 
-function updateMergeCounter() {
-  const cnt = _editorMergeIds.size;
-  const el = document.getElementById('merge-counter');
-  const txt = document.getElementById('merge-count-text');
-  if (cnt > 0) {
-    el.style.display = 'inline-flex';
-    txt.textContent = cnt + ' выбрано';
-  } else {
-    el.style.display = 'none';
+async function loadContentNews() {
+  const r = await api('/api/news?limit=100&status=approved');
+  const r2 = await api('/api/news?limit=100&status=processed');
+  const news1 = r.news || r || [];
+  const news2 = r2.news || r2 || [];
+  _cntNews = [...news1, ...news2].sort((a, b) => (b.parsed_at || '').localeCompare(a.parsed_at || ''));
+  // Populate source filter
+  const srcSel = document.getElementById('cnt-news-source');
+  if (srcSel.options.length <= 1) {
+    const sources = [...new Set(_cntNews.map(n => n.source))].sort();
+    sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; srcSel.appendChild(o); });
   }
-  document.getElementById('merge-btn').disabled = cnt < 2;
-  document.getElementById('batch-rewrite-btn').disabled = cnt < 1;
+  const cntEl = document.getElementById('cnt-news-count');
+  if (cntEl) cntEl.textContent = _cntNews.length;
+  filterContentNews();
 }
 
-function clearMergeSelection() {
-  _editorMergeIds.clear();
-  updateMergeCounter();
-  filterEditorNews();
-}
-
-function filterEditorNews() {
-  const search = (document.getElementById('editor-search')?.value || '').toLowerCase();
-  const source = document.getElementById('editor-source-filter')?.value || '';
-  const status = document.getElementById('editor-status-filter')?.value || '';
-  let filtered = _allNews;
+function filterContentNews() {
+  const search = (document.getElementById('cnt-news-search')?.value || '').toLowerCase();
+  const source = document.getElementById('cnt-news-source')?.value || '';
+  let filtered = _cntNews;
   if (search) filtered = filtered.filter(n => (n.title||'').toLowerCase().includes(search));
   if (source) filtered = filtered.filter(n => n.source === source);
-  if (status === '_viral') {
-    filtered = filtered.filter(n => _viralPicks.has(n.id));
-  } else if (status) {
-    filtered = filtered.filter(n => n.status === status);
-  }
-  const shown = filtered.slice(0, 60);
-  renderEditorList(shown);
-  const countEl = document.getElementById('editor-list-count');
-  if (countEl) countEl.textContent = shown.length + ' из ' + filtered.length + ' новостей';
+  renderContentNewsList(filtered.slice(0, 60));
 }
 
-function renderEditorList(news) {
-  const el = document.getElementById('editor-news-list');
-  // Sort viral picks to top
-  const sorted = [...news].sort((a, b) => {
-    const ap = _viralPicks.has(a.id) ? 0 : 1;
-    const bp = _viralPicks.has(b.id) ? 0 : 1;
-    return ap - bp;
-  });
-  if (!sorted.length) { el.innerHTML = '<div style="color:#8899a6;padding:40px 20px;text-align:center">Нет новостей</div>'; return; }
-  el.innerHTML = sorted.map(n => {
-    const isSelected = _editorNewsId === n.id;
-    const isMerge = _editorMergeIds.has(n.id);
-    const isViral = _viralPicks.has(n.id);
-    const cls = 'editor-news-item' + (isSelected ? ' selected' : '') + (isMerge ? ' merge' : '') + (isViral ? ' viral-pick' : '');
+function renderContentNewsList(news) {
+  const el = document.getElementById('cnt-news-list');
+  if (!news.length) {
+    el.innerHTML = '<div style="text-align:center;padding:40px;color:#8899a6"><div style="font-size:2em;margin-bottom:10px;opacity:0.3">&#128240;</div>Нет одобренных новостей<br><span style="font-size:0.85em">Одобрите новости в Редакции</span></div>';
+    return;
+  }
+  el.innerHTML = news.map(n => {
+    const isChecked = _cntSelectedIds.has(n.id);
+    const score = n.total_score || 0;
+    const scoreColor = score >= 70 ? '#17bf63' : score >= 40 ? '#ffad1f' : '#e0245e';
     const dateStr = fmtDate(n.published_at || n.parsed_at);
-    return `<div class="${cls}" onclick="selectEditorNews('${n.id}')">
-      <input type="checkbox" ${isMerge?'checked':''} onclick="event.stopPropagation();toggleMerge('${n.id}',this.checked)" style="margin-top:2px;cursor:pointer;width:16px;height:16px;min-width:16px;flex-shrink:0">
-      <div style="flex:1;min-width:0">
-        <div style="font-size:0.88em;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden" title="${esc(n.title||'')}">${esc(n.title||'')}${isViral ? '<span class="viral-pick-badge">VIRAL</span>' : ''}</div>
-        <div style="font-size:0.72em;color:#8899a6;margin-top:3px;display:flex;align-items:center;gap:6px">
-          <span style="font-weight:500;color:#657786">${n.source}</span>
-          ${n.total_score ? `<span style="color:${n.total_score>=70?'#17bf63':n.total_score>=40?'#ffad1f':'#e0245e'};font-weight:bold">${n.total_score}</span>` : ''}
-          <span>${dateStr}</span>
-          <span class="badge badge-${n.status}" style="font-size:0.9em">${STATUS_LABELS[n.status]||n.status}</span>
+    const statusBadge = n.status === 'processed'
+      ? '<span style="background:#794bc420;color:#794bc4;padding:1px 6px;border-radius:8px;font-size:0.8em">обогащена</span>'
+      : '<span style="background:#17bf6320;color:#17bf63;padding:1px 6px;border-radius:8px;font-size:0.8em">одобрена</span>';
+    return `<div class="art-card" style="padding:10px 12px;margin-bottom:6px" onclick="cntPreviewNews('${n.id}')">
+      <div style="display:flex;gap:8px;align-items:start">
+        <input type="checkbox" ${isChecked?'checked':''} onclick="event.stopPropagation();cntToggleNews('${n.id}',this.checked)" style="margin-top:2px;cursor:pointer;width:16px;height:16px;min-width:16px;flex-shrink:0">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:0.88em;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(n.title||'')}</div>
+          <div style="font-size:0.72em;color:#8899a6;margin-top:3px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <span style="font-weight:500;color:#657786">${n.source}</span>
+            <span style="color:${scoreColor};font-weight:bold">${score}</span>
+            <span>${dateStr}</span>
+            ${statusBadge}
+          </div>
         </div>
       </div>
     </div>`;
   }).join('');
 }
 
-function toggleMerge(id, checked) {
-  if (checked) _editorMergeIds.add(id); else _editorMergeIds.delete(id);
-  updateMergeCounter();
-  filterEditorNews();
+function cntToggleNews(id, checked) {
+  if (checked) _cntSelectedIds.add(id); else _cntSelectedIds.delete(id);
+  const cnt = _cntSelectedIds.size;
+  document.getElementById('cnt-news-selected').textContent = cnt > 0 ? cnt + ' выбрано' : '';
+  document.getElementById('cnt-rewrite-btn').disabled = cnt < 1;
 }
 
-async function selectEditorNews(id) {
-  _editorNewsId = id;
-  document.getElementById('rewrite-btn').disabled = false;
-  document.getElementById('analyze-btn').disabled = false;
-  filterEditorNews();
-  switchEditorView('preview');
-  const preview = document.getElementById('editor-view-preview');
+async function cntPreviewNews(id) {
+  // Show preview in right panel
+  document.getElementById('art-empty').style.display = 'none';
+  document.getElementById('art-edit-form').style.display = 'none';
+  // Create or reuse preview div
+  let preview = document.getElementById('cnt-news-preview');
+  if (!preview) {
+    preview = document.createElement('div');
+    preview.id = 'cnt-news-preview';
+    document.getElementById('art-editor-panel').appendChild(preview);
+  }
+  preview.style.display = 'block';
   preview.innerHTML = '<div style="text-align:center;padding:30px;color:#8899a6">Загрузка...</div>';
+
   const r = await api('/api/news/detail', {news_id: id});
   if (r.status !== 'ok') { toast(r.message, true); return; }
   const n = r.news;
   const a = r.analysis;
-  let html = '';
-  html += `<div style="margin-bottom:10px">`;
+
+  let html = `<div style="margin-bottom:12px">`;
   html += `<div style="color:#1da1f2;font-size:1.1em;font-weight:600;line-height:1.3;margin-bottom:6px">${esc(n.title||'')}</div>`;
   html += `<div style="display:flex;gap:10px;align-items:center;font-size:0.82em;color:#8899a6;flex-wrap:wrap">`;
   html += `<span style="font-weight:500;color:#657786">${n.source}</span>`;
   html += `<span>${fmtDate(n.published_at)}</span>`;
-  html += `<a href="${n.url}" target="_blank" style="color:#1da1f2">Открыть оригинал &#8599;</a>`;
+  html += `<a href="${n.url}" target="_blank" style="color:#1da1f2">Оригинал &#8599;</a>`;
+  if (a && a.total_score) html += `<span style="font-weight:bold;color:${a.total_score>=70?'#17bf63':a.total_score>=40?'#ffad1f':'#e0245e'}">Скор: ${a.total_score}</span>`;
   html += `</div></div>`;
 
-  if (n.h1 && n.h1 !== n.title) {
-    html += `<div style="margin-bottom:8px;padding:6px 10px;background:#22303c;border-radius:6px;font-size:0.85em"><span style="color:#8899a6">H1:</span> ${esc(n.h1)}</div>`;
-  }
-  if (n.description) {
-    html += `<div style="margin-bottom:8px;padding:6px 10px;background:#22303c;border-radius:6px;font-size:0.85em"><span style="color:#8899a6">Desc:</span> ${esc(n.description).slice(0,300)}</div>`;
-  }
+  if (n.h1 && n.h1 !== n.title) html += `<div style="margin-bottom:6px;padding:6px 10px;background:#22303c;border-radius:6px;font-size:0.85em"><span style="color:#8899a6">H1:</span> ${esc(n.h1)}</div>`;
+  if (n.description) html += `<div style="margin-bottom:6px;padding:6px 10px;background:#22303c;border-radius:6px;font-size:0.85em"><span style="color:#8899a6">Desc:</span> ${esc(n.description).slice(0,300)}</div>`;
 
-  // Analysis badges from stored data
+  // Tags & scores
   if (a) {
     html += `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;font-size:0.82em">`;
-    if (a.llm_trend_forecast) html += `<span style="padding:3px 10px;background:#ffad1f20;border:1px solid #ffad1f40;border-radius:12px;color:#ffad1f">LLM Score: <b>${a.llm_trend_forecast}</b></span>`;
+    if (a.viral_score) html += `<span style="padding:3px 10px;background:#e0245e18;border:1px solid #e0245e40;border-radius:12px;color:#e0245e">Вирал: ${a.viral_score}</span>`;
     if (a.llm_recommendation) html += `<span style="padding:3px 10px;background:#22303c;border-radius:12px">${esc(a.llm_recommendation)}</span>`;
-    if (a.bigrams) { try { const bg = JSON.parse(a.bigrams); if (bg.length) html += `<span style="padding:3px 10px;background:#22303c;border-radius:12px;color:#8899a6">${bg.slice(0,5).map(b=>b[0]).join(', ')}</span>`; } catch(e){} }
-    // Trends data
-    if (a.trends_data) { try { const td = JSON.parse(a.trends_data); const tKeys = Object.entries(td).filter(([k,v])=>v); if (tKeys.length) html += `<span style="padding:3px 10px;background:#1da1f220;border:1px solid #1da1f240;border-radius:12px;color:#1da1f2">Trends: ${tKeys.map(([k,v])=>k+':'+v).join(' ')}</span>`; } catch(e){} }
-    // Keyso data
-    if (a.keyso_data) { try { const kd = JSON.parse(a.keyso_data); if (kd.freq) html += `<span style="padding:3px 10px;background:#17bf6320;border:1px solid #17bf6340;border-radius:12px;color:#17bf63">Keys.so: ${kd.freq}</span>`; } catch(e){} }
+    if (a.llm_trend_forecast) html += `<span style="padding:3px 10px;background:#ffad1f20;border:1px solid #ffad1f40;border-radius:12px;color:#ffad1f">LLM: ${a.llm_trend_forecast}</span>`;
     html += `</div>`;
   }
 
-  // Placeholder for analysis panel
-  html += `<div id="editor-analysis-panel"></div>`;
+  // Rewrite action bar
+  html += `<div style="margin:12px 0;padding:12px;background:#22303c;border-radius:8px">`;
+  html += `<div style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Быстрый рерайт</div>`;
+  html += `<div style="display:flex;gap:6px;flex-wrap:wrap">`;
+  html += `<button class="art-improve-btn" onclick="cntQuickRewrite('${n.id}','news')">&#128240; Новость</button>`;
+  html += `<button class="art-improve-btn" onclick="cntQuickRewrite('${n.id}','seo')">&#128269; SEO</button>`;
+  html += `<button class="art-improve-btn" onclick="cntQuickRewrite('${n.id}','review')">&#128196; Обзор</button>`;
+  html += `<button class="art-improve-btn" onclick="cntQuickRewrite('${n.id}','clickbait')">&#128293; Кликбейт</button>`;
+  html += `<button class="art-improve-btn" onclick="cntQuickRewrite('${n.id}','short')">&#9889; Кратко</button>`;
+  html += `<button class="art-improve-btn" onclick="cntQuickRewrite('${n.id}','social')">&#128242; Соцсети</button>`;
+  html += `</div>`;
+  html += `<div id="cnt-rewrite-loading" style="display:none;margin-top:8px;font-size:0.85em;color:#8899a6"></div>`;
+  html += `</div>`;
 
+  // Text
   const textLen = (n.plain_text||'').length;
   html += `<div style="font-size:0.75em;color:#8899a6;margin-bottom:4px">Текст (${textLen} симв.)</div>`;
   html += `<div style="padding:12px;background:#22303c;border-radius:8px;font-size:0.85em;max-height:350px;overflow-y:auto;white-space:pre-wrap;line-height:1.55;color:#d9d9d9">${esc(n.plain_text||'Текст не загружен')}</div>`;
 
   preview.innerHTML = html;
-  window._editorOriginalText = (n.title||'') + '\n\n' + (n.plain_text||'');
 }
 
-async function rewriteNews() {
-  if (!_editorNewsId) { toast('Выберите новость', true); return; }
-  const lang = document.getElementById('rewrite-lang').value;
-  const loadEl = document.getElementById('rewrite-loading');
-  loadEl.innerHTML = '<span style="display:inline-flex;align-items:center;gap:6px"><span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#1da1f2;border-radius:50%;animation:spin .8s linear infinite;display:inline-block"></span> Переписываем...</span>';
-  document.getElementById('rewrite-btn').disabled = true;
-  const r = await api('/api/rewrite', {news_id: _editorNewsId, style: _editorSelectedStyle, language: lang});
-  loadEl.textContent = '';
-  document.getElementById('rewrite-btn').disabled = false;
-  if (r.status !== 'ok') { toast(r.message, true); return; }
-  _lastRewrite = r.result;
-  showRewriteResult(r.result, window._editorOriginalText || r.original_title);
-  toast('Переписано!');
-}
-
-async function mergeSelected() {
-  if (_editorMergeIds.size < 2) { toast('Выберите минимум 2 новости', true); return; }
-  const loadEl = document.getElementById('rewrite-loading');
-  loadEl.innerHTML = '<span style="display:inline-flex;align-items:center;gap:6px"><span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#ffad1f;border-radius:50%;animation:spin .8s linear infinite;display:inline-block"></span> Объединяем ' + _editorMergeIds.size + ' новостей...</span>';
-  document.getElementById('merge-btn').disabled = true;
-  const r = await api('/api/merge', {news_ids: [..._editorMergeIds]});
-  loadEl.textContent = '';
-  document.getElementById('merge-btn').disabled = _editorMergeIds.size < 2;
-  if (r.status !== 'ok') { toast(r.message, true); return; }
-  _lastRewrite = r.result;
-  const mergeResult = {
-    title: r.result.merged_title || '',
-    text: r.result.merged_text || '',
-    seo_title: 'Лучший источник: ' + (r.result.best_source||''),
-    seo_description: 'Источники: ' + (r.sources||[]).join(', '),
-    tags: r.result.unique_facts || [],
-  };
-  showRewriteResult(mergeResult, 'Источники:\n' + (r.sources||[]).map((s,i) => (i+1)+'. '+s).join('\n'), true);
-  toast('Объединено!');
-}
-
-async function analyzeEditorNews() {
-  if (!_editorNewsId) { toast('Выберите новость', true); return; }
-  const loadEl = document.getElementById('rewrite-loading');
-  loadEl.innerHTML = '<span style="display:inline-flex;align-items:center;gap:6px"><span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#17bf63;border-radius:50%;animation:spin .8s linear infinite;display:inline-block"></span> Анализируем...</span>';
-  const r = await api('/api/analyze_news', {news_id: _editorNewsId});
-  loadEl.textContent = '';
-  if (r.status !== 'ok') { toast(r.message, true); return; }
-  const a = r.analysis;
-  renderAnalysisPanel(a);
-  toast('Анализ завершён!');
-}
-
-function renderAnalysisPanel(a) {
-  const panel = document.getElementById('editor-analysis-panel');
-  if (!panel) return;
-
-  const triggerColor = (level) => level==='high'?'#e0245e':level==='medium'?'#ffad1f':level==='low'?'#1da1f2':'#38444d';
-  const scoreBar = (score, max, color) => `<div style="display:flex;align-items:center;gap:8px"><div style="flex:1;height:6px;background:#22303c;border-radius:3px;overflow:hidden"><div style="width:${Math.min(100,score)}%;height:100%;background:${color};border-radius:3px"></div></div><span style="font-size:0.82em;font-weight:600;color:${color}">${score}</span></div>`;
-
-  let html = '<div style="margin:12px 0;padding:14px;background:#15202b;border:1px solid #22303c;border-radius:10px">';
-  html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px"><span style="font-size:0.8em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px">Полный анализ</span>';
-  html += `<span style="padding:4px 12px;border-radius:12px;font-weight:600;font-size:0.9em;background:${a.total_score>=60?'#17bf6320':a.total_score>=30?'#ffad1f20':'#e0245e20'};color:${a.total_score>=60?'#17bf63':a.total_score>=30?'#ffad1f':'#e0245e'}">Общий: ${a.total_score}/100</span></div>`;
-
-  // Score bars
-  html += '<div style="display:grid;grid-template-columns:80px 1fr;gap:6px 10px;margin-bottom:12px;font-size:0.82em">';
-  html += `<span style="color:#8899a6">Виральность</span>${scoreBar(a.viral.score,100,triggerColor(a.viral.level))}`;
-  html += `<span style="color:#8899a6">Качество</span>${scoreBar(a.quality.score,100,a.quality.pass?'#17bf63':'#e0245e')}`;
-  html += `<span style="color:#8899a6">Релевантность</span>${scoreBar(a.relevance.score,100,a.relevance.pass?'#17bf63':'#e0245e')}`;
-  html += `<span style="color:#8899a6">Свежесть</span>${scoreBar(a.freshness.score,100,a.freshness.score>=50?'#17bf63':'#ffad1f')}`;
-  html += `<span style="color:#8899a6">Моментум</span>${scoreBar(a.momentum.score,100,'#1da1f2')}`;
-  html += '</div>';
-
-  // Viral triggers
-  if (a.viral.triggers && a.viral.triggers.length) {
-    html += '<div style="margin-bottom:10px"><span style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px">Виральные триггеры</span>';
-    html += '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:5px">';
-    a.viral.triggers.forEach(t => {
-      const col = t.weight>=40?'#e0245e':t.weight>=20?'#ffad1f':'#1da1f2';
-      html += `<span style="padding:3px 10px;background:${col}18;border:1px solid ${col}40;border-radius:12px;font-size:0.8em;color:${col}" title="Weight: ${t.weight}">${t.label} <b>+${t.weight}</b></span>`;
-    });
-    html += '</div></div>';
-  } else {
-    html += '<div style="margin-bottom:10px;font-size:0.82em;color:#657786">Виральные триггеры не обнаружены</div>';
+async function cntQuickRewrite(newsId, style) {
+  const loadEl = document.getElementById('cnt-rewrite-loading');
+  if (loadEl) {
+    loadEl.style.display = 'block';
+    loadEl.innerHTML = '<span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#1da1f2;border-radius:50%;animation:spin .8s linear infinite;display:inline-block;vertical-align:middle"></span> Отправка в очередь...';
   }
-
-  // Sentiment
-  if (a.sentiment) {
-    const sc = a.sentiment.label==='positive'?'#17bf63':a.sentiment.label==='negative'?'#e0245e':'#8899a6';
-    html += `<div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;font-size:0.82em">`;
-    html += `<span style="color:#8899a6">Тональность:</span>`;
-    html += `<span style="padding:2px 8px;background:${sc}18;border:1px solid ${sc}40;border-radius:10px;color:${sc}">${a.sentiment.label} (${a.sentiment.score})</span>`;
-    html += `</div>`;
-  }
-
-  // Tags
-  if (a.tags && a.tags.length) {
-    html += '<div style="margin-bottom:10px"><span style="font-size:0.75em;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px">Авто-теги</span>';
-    html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px">';
-    a.tags.forEach(t => { html += `<span class="tag tag-${t.id}" style="font-size:0.8em">${t.label}</span>`; });
-    html += '</div></div>';
-  }
-
-  // Trends + Keyso
-  const hasTrends = a.trends_data && Object.keys(a.trends_data).length;
-  const hasKeyso = a.keyso_data && (a.keyso_data.freq || a.keyso_data.similar);
-  if (hasTrends || hasKeyso || a.bigrams?.length) {
-    html += '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:0.82em">';
-    if (hasTrends) {
-      html += '<div style="padding:8px 12px;background:#22303c;border-radius:8px;flex:1;min-width:120px"><span style="color:#8899a6;font-size:0.9em">Google Trends</span>';
-      Object.entries(a.trends_data).forEach(([k,v]) => {
-        if (v) html += `<div style="margin-top:3px">${k}: <b style="color:#1da1f2">${v}</b></div>`;
-      });
-      html += '</div>';
+  const r = await api('/api/queue/rewrite', {news_ids: [newsId], style: style});
+  if (loadEl) {
+    if (r.status === 'ok') {
+      loadEl.innerHTML = '<span style="color:#17bf63">&#10003; В очереди! Статья появится в списке слева после завершения.</span>';
+    } else {
+      loadEl.innerHTML = '<span style="color:#e0245e">&#10007; ' + (r.message || 'Ошибка') + '</span>';
     }
-    if (hasKeyso) {
-      html += '<div style="padding:8px 12px;background:#22303c;border-radius:8px;flex:1;min-width:120px"><span style="color:#8899a6;font-size:0.9em">Keys.so</span>';
-      if (a.keyso_data.freq) html += `<div style="margin-top:3px">Частота: <b style="color:#17bf63">${a.keyso_data.freq}</b></div>`;
-      if (a.keyso_data.similar?.length) {
-        const simWords = a.keyso_data.similar.map(s => typeof s === 'string' ? s : s.word).filter(Boolean);
-        html += `<div style="margin-top:3px;color:#8899a6">Похожие (${simWords.length}): ${simWords.slice(0,5).join(', ')}${simWords.length>5?'...':''} <button style="background:none;border:none;color:#1da1f2;cursor:pointer;font-size:0.85em" onclick="navigator.clipboard.writeText('${simWords.join('\\n').replace(/'/g,"\\'")}');this.textContent='✓';setTimeout(()=>this.textContent='⎘',800)">⎘</button></div>`;
-      }
-      html += '</div>';
-    }
-    if (a.bigrams?.length) {
-      html += '<div style="padding:8px 12px;background:#22303c;border-radius:8px;flex:1;min-width:120px"><span style="color:#8899a6;font-size:0.9em">Биграммы</span>';
-      html += `<div style="margin-top:3px;color:#e1e8ed">${a.bigrams.slice(0,8).map(b=>Array.isArray(b)?b[0]:b).join(', ')}</div>`;
-      html += '</div>';
-    }
-    html += '</div>';
   }
-
-  // LLM recommendation
-  if (a.llm_recommendation || a.llm_trend_forecast) {
-    html += `<div style="margin-top:10px;padding:8px 12px;background:#22303c;border-radius:8px;font-size:0.82em">`;
-    html += `<span style="color:#8899a6">LLM:</span> `;
-    if (a.llm_trend_forecast) html += `Score <b style="color:#ffad1f">${a.llm_trend_forecast}</b> `;
-    if (a.llm_recommendation) html += `— ${esc(a.llm_recommendation)}`;
-    html += '</div>';
-  }
-
-  html += '</div>';
-  panel.innerHTML = html;
+  if (r.status === 'ok') toast('Рерайт добавлен в очередь (' + style + ')');
 }
 
-function showRewriteResult(result, originalText, isMerge) {
-  document.getElementById('rw-title').textContent = result.title || '';
-  const seoTitle = result.seo_title || '';
-  const seoDesc = result.seo_description || '';
-  document.getElementById('rw-seo-title').textContent = seoTitle;
-  document.getElementById('rw-seo-desc').textContent = seoDesc;
-  document.getElementById('rw-seo-title-len').textContent = seoTitle ? '(' + seoTitle.length + ')' : '';
-  document.getElementById('rw-seo-desc-len').textContent = seoDesc ? '(' + seoDesc.length + ')' : '';
-  const tagsLabel = isMerge ? 'Уникальные факты' : 'Теги';
-  document.getElementById('rw-tags-wrap').querySelector('.rw-field-label').textContent = tagsLabel;
-  document.getElementById('rw-tags').innerHTML = (result.tags||[]).map(t => `<span class="tag tag-release" style="cursor:pointer" onclick="copyField(null,'${esc(t)}')">${esc(t)}</span>`).join(' ');
-  document.getElementById('rw-text').textContent = result.text || '';
-  document.getElementById('rw-original').textContent = originalText || '';
-  document.getElementById('rw-empty').style.display = 'none';
-  document.getElementById('rewrite-result').style.display = 'block';
-  switchEditorView('result');
-}
-
-function copyField(elId, directText) {
-  const text = directText || document.getElementById(elId)?.textContent || '';
-  if (!text) return;
-  navigator.clipboard.writeText(text);
-  toast('Скопировано!');
-}
-
-function copyRewrite() {
-  if (!_lastRewrite) return;
-  const text = (_lastRewrite.title || _lastRewrite.merged_title || '') + '\n\n' + (_lastRewrite.text || _lastRewrite.merged_text || '');
-  navigator.clipboard.writeText(text);
-  toast('Текст скопирован!');
-}
-
-function copyRewriteSeo() {
-  if (!_lastRewrite) return;
-  const parts = [];
-  if (_lastRewrite.seo_title) parts.push('Title: ' + _lastRewrite.seo_title);
-  if (_lastRewrite.seo_description) parts.push('Description: ' + _lastRewrite.seo_description);
-  if (_lastRewrite.tags?.length) parts.push('Tags: ' + _lastRewrite.tags.join(', '));
-  navigator.clipboard.writeText(parts.join('\n'));
-  toast('SEO скопировано!');
-}
-
-function copyRewriteJson() {
-  if (!_lastRewrite) return;
-  navigator.clipboard.writeText(JSON.stringify(_lastRewrite, null, 2));
-  toast('JSON скопирован!');
-}
-
-function copyRewriteHtml() {
-  if (!_lastRewrite) return;
-  const title = _lastRewrite.title || _lastRewrite.merged_title || '';
-  const text = _lastRewrite.text || _lastRewrite.merged_text || '';
-  const paragraphs = text.split('\n').filter(p => p.trim()).map(p => '<p>' + p.trim() + '</p>').join('\n');
-  let html = '<h1>' + title + '</h1>\n' + paragraphs;
-  if (_lastRewrite.tags?.length) {
-    html += '\n<div class="tags">' + _lastRewrite.tags.map(t => '<span class="tag">' + t + '</span>').join(' ') + '</div>';
-  }
-  navigator.clipboard.writeText(html);
-  toast('HTML скопирован!');
-}
-
-function initEditorSourceFilter() {
-  const sources = [...new Set(_allNews.map(n => n.source))].sort();
-  const sel = document.getElementById('editor-source-filter');
-  if (sel && sel.options.length <= 1) {
-    sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o); });
-  }
-  filterEditorNews();
+async function cntRewriteSelected() {
+  if (_cntSelectedIds.size < 1) { toast('Выберите новости', true); return; }
+  const style = document.getElementById('cnt-rewrite-style').value;
+  if (!confirm('Переписать ' + _cntSelectedIds.size + ' новостей в стиле "' + style + '"? Используется LLM API.')) return;
+  const r = await api('/api/queue/rewrite', {news_ids: [..._cntSelectedIds], style: style, language: 'русский'});
+  if (r.status === 'ok') {
+    toast(r.queued + ' задач добавлено в очередь');
+    _cntSelectedIds.clear();
+    filterContentNews();
+    document.getElementById('cnt-news-selected').textContent = '';
+    document.getElementById('cnt-rewrite-btn').disabled = true;
+  } else toast(r.message, true);
 }
 
 // ===== ARTICLES TAB =====
@@ -6076,29 +5672,6 @@ async function rewriteArticleInStyle(style) {
   }
 }
 
-// Batch rewrite from Editor
-async function batchRewrite() {
-  if (_editorMergeIds.size < 1) { toast('Выберите новости', true); return; }
-  const style = _editorSelectedStyle;
-  const lang = document.getElementById('rewrite-lang')?.value || 'русский';
-  const cnt = _editorMergeIds.size;
-  if (!confirm(`$ Батч-переписать ${cnt} новостей в стиле "${style}"?\nЭто ${cnt} вызовов LLM API.`)) return;
-
-  const loadEl = document.getElementById('rewrite-loading');
-  loadEl.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px"><span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#17bf63;border-radius:50%;animation:spin .8s linear infinite;display:inline-block"></span> Добавляю в очередь...</span>`;
-
-  const r = await api('/api/queue/rewrite', {news_ids: [..._editorMergeIds], style, language: lang});
-  loadEl.textContent = '';
-
-  if (r.status === 'ok') {
-    toast(`${r.queued} задач добавлено в очередь. Откройте вкладку "Очередь" для отслеживания.`);
-    loadQueue();
-    clearMergeSelection();
-  } else {
-    toast(r.message, true);
-  }
-}
-
 // Bulk DOCX download (ZIP)
 function downloadSelectedDocx() {
   if (_artSelectedIds.size < 1) return;
@@ -6126,29 +5699,6 @@ async function deleteSelectedArticles() {
   }
   toast(`Удалено: ${ok}`);
   loadArticles();
-}
-
-// Save rewrite from Editor tab as article
-async function saveRewriteAsArticle() {
-  if (!_lastRewrite) { toast('Нет результата для сохранения', true); return; }
-  const n = _allNews.find(x => x.id === _editorNewsId);
-  const r = await api('/api/articles/save', {
-    news_id: _editorNewsId || '',
-    title: _lastRewrite.title || _lastRewrite.merged_title || '',
-    text: _lastRewrite.text || _lastRewrite.merged_text || '',
-    seo_title: _lastRewrite.seo_title || '',
-    seo_description: _lastRewrite.seo_description || '',
-    tags: _lastRewrite.tags || [],
-    style: _editorSelectedStyle,
-    language: document.getElementById('rewrite-lang')?.value || 'русский',
-    original_title: n?.title || '',
-    original_text: window._editorOriginalText || '',
-    source_url: n?.url || '',
-  });
-  if (r.status === 'ok') {
-    toast('Сохранено в Статьи!');
-    loadArticles();
-  } else toast(r.message, true);
 }
 
 // ---- Analytics ----
@@ -6661,7 +6211,7 @@ async function aiRecommend(newsId) {
 }
 
 // Init
-function loadAll() { /* No-op: dashboard removed */ }
+function loadAll() { loadEditorial(); }
 
 // ===== VIRAL TAB =====
 let _viralData = [];
@@ -6832,10 +6382,9 @@ function sendOneToEditor(id) {
   _viralPicks.add(id);
   updateViralPicksCount();
   renderViralTable();
-  // Switch to editor and select this news
   switchToTab('editor');
-  selectEditorNews(id);
-  toast('Отправлено в редактор');
+  loadArticles();
+  toast('Отправлено в контент');
 }
 
 function sendViralToEditor(level) {
@@ -6849,7 +6398,9 @@ function sendViralToEditor(level) {
   items.forEach(n => _viralPicks.add(n.id));
   updateViralPicksCount();
   renderViralTable();
-  toast('Отправлено ' + items.length + ' новостей в редактор');
+  switchToTab('editor');
+  loadArticles();
+  toast('Отправлено ' + items.length + ' новостей в контент');
 }
 
 function updateViralPicksCount() {
@@ -7246,14 +6797,9 @@ async function edAutoApprove() {
 }
 
 function edToEditor(id) {
-  // Switch to editor tab and load this news
+  // Switch to Контент tab and load articles
   switchToTab('editor');
-  // Try to select the news in editor list
-  setTimeout(() => {
-    const searchEl = document.getElementById('editor-search');
-    const item = _edData.find(n => n.id === id);
-    if (searchEl && item) { searchEl.value = item.title.slice(0, 40); searchEl.dispatchEvent(new Event('input')); }
-  }, 300);
+  loadArticles();
 }
 
 function renderEdPagination(total) {
@@ -7307,33 +6853,7 @@ async function edBatchRewrite() {
 
 // Force parse all sources from editorial empty state
 // Content tab switcher (Рерайт / Статьи)
-function switchContentTab(tab) {
-  const rewriteSection = document.getElementById('content-section-rewrite');
-  const articlesSection = document.getElementById('content-section-articles');
-  const btnRewrite = document.getElementById('content-tab-rewrite');
-  const btnArticles = document.getElementById('content-tab-articles');
-  if (tab === 'articles') {
-    rewriteSection.style.display = 'none';
-    // Move articles panel content into content-section-articles
-    const artPanel = document.getElementById('panel-articles');
-    if (articlesSection.children.length === 0 && artPanel) {
-      while (artPanel.firstChild) articlesSection.appendChild(artPanel.firstChild);
-    }
-    articlesSection.style.display = 'block';
-    btnRewrite.style.opacity = '0.6';
-    btnRewrite.className = 'btn btn-sm btn-secondary';
-    btnArticles.style.opacity = '1';
-    btnArticles.className = 'btn btn-sm btn-primary';
-    loadArticles();
-  } else {
-    rewriteSection.style.display = 'block';
-    articlesSection.style.display = 'none';
-    btnRewrite.style.opacity = '1';
-    btnRewrite.className = 'btn btn-sm btn-primary';
-    btnArticles.style.opacity = '0.6';
-    btnArticles.className = 'btn btn-sm btn-secondary';
-  }
-}
+// Content tab: articles loaded directly (no sub-tabs)
 
 async function edForceParse() {
   const btn = event && event.target ? event.target : null;
@@ -7566,210 +7086,7 @@ function getEdSelectedIds() {
 // MODERATION TAB
 // ═══════════════════════════════════════════
 
-let _modData = [];
-let _modPage = 0;
-let _modTotal = 0;
-const MOD_PAGE_SIZE = 50;
-let _modSearchTimer = null;
-
-function debounceModSearch() {
-  clearTimeout(_modSearchTimer);
-  _modSearchTimer = setTimeout(() => loadModeration(), 300);
-}
-
-function resetModFilters() {
-  document.getElementById('mod-search').value = '';
-  document.getElementById('mod-source').value = '';
-  document.getElementById('mod-min-score').value = '0';
-  loadModeration(0);
-}
-
-async function loadModeration(page) {
-  if (page !== undefined) _modPage = page;
-  const params = new URLSearchParams({
-    limit: MOD_PAGE_SIZE,
-    offset: _modPage * MOD_PAGE_SIZE,
-  });
-  const src = document.getElementById('mod-source').value;
-  const q = document.getElementById('mod-search').value;
-  const ms = document.getElementById('mod-min-score').value;
-  if (src) params.set('source', src);
-  if (q) params.set('q', q);
-  if (ms && parseInt(ms) > 0) params.set('min_score', ms);
-
-  const r = await api('/api/moderation_list?' + params.toString());
-  _modData = r.news || [];
-  _modTotal = r.total || 0;
-  const _modAvgScore = r.avg_score || 0;
-  const avgColor = _modAvgScore >= 60 ? '#17bf63' : _modAvgScore >= 35 ? '#ffad1f' : '#e0245e';
-
-  // Stats
-  document.getElementById('mod-stats').innerHTML =
-    `<div class="stat-card" style="background:#192734;padding:10px 18px;border-radius:8px;font-size:0.9em;border:1px solid #38444d">` +
-    `<span style="color:#8899a6">Всего на модерации</span><br><b style="color:#1da1f2;font-size:1.4em">${_modTotal}</b></div>` +
-    `<div class="stat-card" style="background:#192734;padding:10px 18px;border-radius:8px;font-size:0.9em;border:1px solid #38444d">` +
-    `<span style="color:#8899a6">Средний скор</span><br><b style="color:${avgColor};font-size:1.4em">${_modAvgScore}</b></div>` +
-    `<div class="stat-card" style="background:#192734;padding:10px 18px;border-radius:8px;font-size:0.9em;border:1px solid #38444d">` +
-    `<span style="color:#8899a6">На странице</span><br><b style="color:#d9d9d9;font-size:1.4em">${_modData.length}</b></div>`;
-
-  // Populate source filter (once)
-  const srcSel = document.getElementById('mod-source');
-  if (srcSel.options.length <= 1) {
-    const sources = [...new Set(_modData.map(n => n.source))].sort();
-    sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; srcSel.appendChild(o); });
-  }
-
-  renderModTable();
-  renderModPagination();
-}
-
-function renderModTable() {
-  const sentimentEmoji = {'positive': '&#128994;', 'negative': '&#128308;', 'neutral': '&#9898;'};
-  const tbody = document.getElementById('mod-table');
-  if (!_modData.length) {
-    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:30px;color:#8899a6">Нет новостей на модерации. Используйте кнопку "Без LLM" в Редакции.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = _modData.map(n => {
-    const score = n.total_score || 0;
-    const scoreColor = score >= 70 ? '#17bf63' : score >= 40 ? '#ffad1f' : '#e0245e';
-    let tags = [];
-    try { tags = typeof n.tags === 'string' ? JSON.parse(n.tags || '[]') : (n.tags || []); } catch(e) {}
-    if (!Array.isArray(tags)) tags = [];
-    const tagsHtml = tags.slice(0, 3).map(t => {
-      const label = typeof t === 'object' ? (t.label || t.id || '') : String(t);
-      return `<span style="background:#253341;color:#8899a6;padding:2px 6px;border-radius:4px;font-size:0.75em">${label}</span>`;
-    }).join(' ');
-    const freshH = n.freshness_hours != null && n.freshness_hours >= 0 ? n.freshness_hours.toFixed(1) + 'ч' : '?';
-    let modVT = [];
-    try { const mvRaw = typeof n.viral_data === 'string' ? JSON.parse(n.viral_data || '[]') : (n.viral_data || []); modVT = Array.isArray(mvRaw) ? mvRaw : []; } catch(e) {}
-    const modVTip = (modVT.map(t => `${(t.label||'?').replace(/"/g,'&quot;')} (${t.weight||0})`).join('&#10;') || 'Нет триггеров');
-    return `<tr>
-      <td><input type="checkbox" class="mod-cb" value="${n.id}" onchange="modUpdateSelected()"></td>
-      <td style="font-size:0.85em">${n.source || ''}</td>
-      <td><a href="${n.url || '#'}" target="_blank" style="color:#1da1f2;text-decoration:none">${(n.title || '').substring(0, 80)}</a></td>
-      <td style="color:${scoreColor};font-weight:bold;text-align:center">${score}</td>
-      <td style="text-align:center">${n.quality_score || 0}</td>
-      <td style="text-align:center">${n.relevance_score || 0}</td>
-      <td style="text-align:center;cursor:help" title="${modVTip}">${n.viral_score || 0}</td>
-      <td style="text-align:center;font-size:0.85em">${freshH}</td>
-      <td style="text-align:center">${sentimentEmoji[n.sentiment_label] || '&#9898;'}</td>
-      <td>${tagsHtml}</td>
-      <td style="white-space:nowrap">
-        <button class="btn btn-sm" style="background:#17bf63;color:#fff" onclick="modApprove('${n.id}')" title="Одобрить">&#10003;</button>
-        <button class="btn btn-sm btn-primary" onclick="modRewrite('${n.id}')" title="Рерайт">&#9998;</button>
-        <button class="btn btn-sm btn-danger" onclick="modReject('${n.id}')" title="Отклонить">&#10007;</button>
-      </td>
-    </tr>`;
-  }).join('');
-}
-
-function renderModPagination() {
-  const totalPages = Math.ceil(_modTotal / MOD_PAGE_SIZE);
-  const div = document.getElementById('mod-pagination');
-  if (totalPages <= 1) { div.innerHTML = ''; return; }
-  let html = '';
-  if (_modPage > 0) html += `<button class="btn btn-sm btn-secondary" onclick="loadModeration(${_modPage - 1})">&laquo;</button>`;
-  for (let i = 0; i < totalPages && i < 10; i++) {
-    html += `<button class="btn btn-sm ${i === _modPage ? 'btn-primary' : 'btn-secondary'}" onclick="loadModeration(${i})">${i + 1}</button>`;
-  }
-  if (_modPage < totalPages - 1) html += `<button class="btn btn-sm btn-secondary" onclick="loadModeration(${_modPage + 1})">&raquo;</button>`;
-  div.innerHTML = html;
-}
-
-function modToggleAll(cb) {
-  document.querySelectorAll('.mod-cb').forEach(c => c.checked = cb.checked);
-  modUpdateSelected();
-}
-
-function modUpdateSelected() {
-  const n = document.querySelectorAll('.mod-cb:checked').length;
-  document.getElementById('mod-selected-count').textContent = n ? `Выбрано: ${n}` : '';
-}
-
-function getModSelectedIds() {
-  return [...document.querySelectorAll('.mod-cb:checked')].map(cb => cb.value);
-}
-
-async function modRewrite(id) {
-  const style = document.getElementById('mod-rewrite-style').value;
-  toast('Отправка на рерайт...');
-  const r = await api('/api/moderation/rewrite', {news_ids: [id], style: style});
-  if (r.status === 'ok') { toast('Рерайт в очереди'); } else toast(r.message, true);
-}
-
-async function modRewriteSelected() {
-  const ids = getModSelectedIds();
-  if (!ids.length) { toast('Сначала выберите новости', true); return; }
-  const style = document.getElementById('mod-rewrite-style').value;
-  if (!confirm(`Отправить ${ids.length} новостей на рерайт (${style})? Используется LLM API.`)) return;
-  toast(`Отправка ${ids.length} на рерайт...`);
-  const r = await api('/api/moderation/rewrite', {news_ids: ids, style: style});
-  if (r.status === 'ok') { toast(`${r.queued} задач в очереди`); loadModeration(); } else toast(r.message, true);
-}
-
-async function modReject(id) {
-  const r = await api('/api/reject', {news_ids: [id]});
-  if (r.status === 'ok') { toast('Отклонено'); loadModeration(); } else toast(r.message, true);
-}
-
-async function modRejectSelected() {
-  const ids = getModSelectedIds();
-  if (!ids.length) { toast('Сначала выберите новости', true); return; }
-  const r = await api('/api/reject', {news_ids: ids});
-  if (r.status === 'ok') { toast(`Отклонено: ${ids.length}`); loadModeration(); } else toast(r.message, true);
-}
-
-async function modExportSheets() {
-  const ids = getModSelectedIds();
-  if (!ids.length) { toast('Сначала выберите новости', true); return; }
-  const r = await api('/api/queue/sheets', {news_ids: ids});
-  if (r.status === 'ok') { toast(`${r.queued} задач в очереди Sheets`); } else toast(r.message, true);
-}
-
-async function modApprove(id) {
-  const r = await api('/api/approve', {news_ids: [id]});
-  if (r.status === 'ok') { toast('Одобрено + обогащение запущено'); loadModeration(); } else toast(r.message, true);
-}
-
-async function modApproveSelected() {
-  const ids = getModSelectedIds();
-  if (!ids.length) { toast('Сначала выберите новости', true); return; }
-  const r = await api('/api/approve', {news_ids: ids});
-  if (r.status === 'ok') { toast(`Одобрено: ${ids.length} — обогащение запущено`); loadModeration(); } else toast(r.message, true);
-}
-
-// Moderation sorting
-let _modSortField = 'parsed_at';
-let _modSortDir = 'desc';
-
-function sortModTable(field) {
-  if (_modSortField === field) {
-    _modSortDir = _modSortDir === 'asc' ? 'desc' : 'asc';
-  } else {
-    _modSortField = field;
-    _modSortDir = (field === 'title' || field === 'source') ? 'asc' : 'desc';
-  }
-  _modData.sort((a, b) => {
-    let va = a[_modSortField], vb = b[_modSortField];
-    if (va == null) va = '';
-    if (vb == null) vb = '';
-    if (typeof va === 'string') va = va.toLowerCase();
-    if (typeof vb === 'string') vb = vb.toLowerCase();
-    if (va < vb) return _modSortDir === 'asc' ? -1 : 1;
-    if (va > vb) return _modSortDir === 'asc' ? 1 : -1;
-    return 0;
-  });
-  renderModTable();
-}
-
-// Auto-refresh moderation
-setInterval(() => {
-  const modPanel = document.getElementById('panel-moderation');
-  if (modPanel && modPanel.classList.contains('active')) {
-    loadModeration();
-  }
-}, 30000);
+// Moderation tab removed — use Редакция filter "Модерация" instead
 
 </script>
 </body>
