@@ -27,8 +27,29 @@ def _check_single(news: dict) -> dict:
         "checks": {},
     }
 
-    # Основные проверки
+    # Quality — первая проверка, определяет early exit
     result["checks"]["quality"] = check_quality(news)
+    q_score = result["checks"]["quality"]["score"]
+
+    # Early exit: если quality < 20, пропускаем тяжёлые проверки
+    if q_score < 20:
+        result["checks"]["relevance"] = {"score": 0, "pass": False, "issues": ["skipped: low quality"]}
+        result["checks"]["freshness"] = {"score": 0, "pass": False, "status": "unknown", "age_hours": -1}
+        result["checks"]["viral"] = {"score": 0, "pass": False, "level": "none", "triggers": []}
+        result["tags"] = []
+        result["sentiment"] = {"label": "neutral", "score": 0}
+        result["momentum"] = {"score": 0, "level": "none"}
+        result["entities"] = {"studios": [], "games": [], "platforms": [], "numbers": [], "events": [], "total_entities": 0}
+        result["headline"] = {"score": 0}
+        result["source_weight"] = 1.0
+        result["game_entities"] = []
+        result["overall_pass"] = False
+        result["total_score"] = q_score // 4
+        result["status"] = news.get("status", "new")
+        result["early_exit"] = True
+        return result
+
+    # Основные проверки
     result["checks"]["relevance"] = check_relevance(news)
     result["checks"]["freshness"] = check_freshness(news)
     result["checks"]["viral"] = viral_score(news)

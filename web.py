@@ -2770,6 +2770,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <button class="btn btn-sm btn-primary" onclick="edApproveSelected()">&#10003; Одобрить</button>
       <button class="btn btn-sm btn-danger" onclick="edRejectSelected()">&#10007; Отклонить</button>
       <button class="btn btn-sm btn-warning" onclick="edAutoApprove()">&#9889; Авто-одобрить (скор &gt; 70)</button>
+      <span style="color:#38444d">|</span>
+      <button class="btn btn-sm btn-secondary" onclick="edExportSheets()">&#9776; Экспорт в Sheets</button>
+      <button class="btn btn-sm btn-secondary" onclick="edBatchRewrite()">&#9998; Батч-рерайт</button>
       <span id="ed-selected-count" style="color:#8899a6;font-size:0.85em"></span>
     </div>
 
@@ -6381,6 +6384,14 @@ function _edRenderDetail(n, ents, tags) {
           <a href="${n.url}" target="_blank" style="color:#1da1f2;font-size:0.85em">Открыть оригинал &#8599;</a>
           &middot; <span style="color:#657786;font-size:0.8em">${n.published_at || ''}</span>
         </div>
+        <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+          ${['new','in_review'].includes(n.status) ? `<button class="btn btn-sm btn-primary" onclick="edApprove('${n.id}')">&#10003; Одобрить</button><button class="btn btn-sm btn-danger" onclick="edReject('${n.id}')">&#10007; Отклонить</button>` : ''}
+          <button class="btn btn-sm btn-secondary" onclick="edToEditor('${n.id}')">&#9998; В редактор</button>
+          ${n.status === 'processed' ? `<button class="btn btn-sm btn-secondary" onclick="edExportOne('${n.id}')">&#9776; В Sheets</button>` : ''}
+          <button class="btn btn-sm btn-secondary" onclick="edQuickRewrite('${n.id}','news')">&#128221; Рерайт (новость)</button>
+          <button class="btn btn-sm btn-secondary" onclick="edQuickRewrite('${n.id}','seo')">SEO</button>
+          <button class="btn btn-sm btn-secondary" onclick="edQuickRewrite('${n.id}','short')">Коротко</button>
+        </div>
       </div>
     </div>`;
 }
@@ -6472,6 +6483,53 @@ function renderEdPagination(total) {
   }
   document.getElementById('ed-pagination').innerHTML = html;
 }
+
+// Bulk Sheets export
+async function edExportSheets() {
+  let ids = _edGetSelected();
+  if (!ids.length) {
+    // Если ничего не выбрано — экспортируем все processed на текущей странице
+    ids = _edData.filter(n => n.status === 'processed').map(n => n.id);
+    if (!ids.length) { toast('Нет обработанных для экспорта', true); return; }
+  }
+  toast(`Экспорт ${ids.length} в Sheets...`);
+  const r = await api('/api/queue/sheets', {news_ids: ids});
+  if (r.status === 'ok') { toast(`${r.queued || ids.length} задач добавлено в очередь Sheets`); } else toast(r.message, true);
+}
+
+// Batch rewrite from editorial
+async function edBatchRewrite() {
+  let ids = _edGetSelected();
+  if (!ids.length) {
+    ids = _edData.filter(n => ['approved','processed'].includes(n.status)).map(n => n.id);
+    if (!ids.length) { toast('Нет одобренных для рерайта', true); return; }
+  }
+  toast(`Рерайт ${ids.length} в очередь...`);
+  const r = await api('/api/queue/rewrite', {news_ids: ids, style: 'news'});
+  if (r.status === 'ok') { toast(`${r.queued || ids.length} задач добавлено`); } else toast(r.message, true);
+}
+
+// Quick rewrite single news from editorial detail panel
+async function edQuickRewrite(id, style) {
+  toast(`Рерайт (${style})...`);
+  const r = await api('/api/queue/rewrite', {news_ids: [id], style: style});
+  if (r.status === 'ok') { toast('Задача рерайта добавлена в очередь'); } else toast(r.message || 'Ошибка', true);
+}
+
+// Export single news to Sheets from editorial detail panel
+async function edExportOne(id) {
+  toast('Экспорт в Sheets...');
+  const r = await api('/api/queue/sheets', {news_ids: [id]});
+  if (r.status === 'ok') { toast('Экспорт добавлен в очередь'); } else toast(r.message || 'Ошибка', true);
+}
+
+// Auto-refresh editorial every 30s (shows enrichment progress)
+setInterval(() => {
+  const edPanel = document.getElementById('panel-editorial');
+  if (edPanel && edPanel.classList.contains('active')) {
+    loadEditorial();
+  }
+}, 30000);
 </script>
 </body>
 </html>"""
