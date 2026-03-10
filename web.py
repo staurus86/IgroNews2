@@ -206,6 +206,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/queue/cancel": lambda: self._cancel_queue_task(body),
             "/api/queue/cancel_all": lambda: self._cancel_all_queue(body),
             "/api/queue/clear_done": lambda: self._clear_done_queue(body),
+            "/api/run_auto_review": lambda: self._run_auto_review(body),
             "/api/queue/rewrite": lambda: self._queue_batch_rewrite(body),
             "/api/queue/sheets": lambda: self._queue_sheets_export(body),
             "/api/translate_title": lambda: self._translate_title(body),
@@ -919,6 +920,45 @@ async function login() {
             self._json({"status": "ok", "results": results, "groups": groups})
         except Exception as e:
             self._json({"status": "error", "message": str(e), "type": type(e).__name__})
+
+    def _run_auto_review(self, body):
+        """Запускает авто-ревью для всех новых новостей (сохраняет результаты в БД)."""
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            ph = "%s" if _is_postgres() else "?"
+            # Берём все new + те in_review у которых нет результатов проверки
+            cur.execute(f"""
+                SELECT n.* FROM news n
+                LEFT JOIN news_analysis a ON n.id = a.news_id
+                WHERE n.status IN ('new', 'in_review')
+                  AND (a.reviewed_at IS NULL OR a.reviewed_at = '')
+                ORDER BY n.parsed_at DESC LIMIT {ph}
+            """, (200,))
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                news_list = [dict(row) for row in cur.fetchall()]
+
+            if not news_list:
+                self._json({"status": "ok", "reviewed": 0, "message": "Нет новых для проверки"})
+                return
+
+            from checks.pipeline import run_review_pipeline
+            result = run_review_pipeline(news_list, update_status=True)
+            reviewed = len(result.get("results", []))
+            dupes = sum(1 for r in result.get("results", []) if r.get("is_duplicate"))
+            rejected = sum(1 for r in result.get("results", []) if r.get("auto_rejected"))
+            self._json({
+                "status": "ok",
+                "reviewed": reviewed,
+                "duplicates": dupes,
+                "auto_rejected": rejected,
+                "message": f"Проверено: {reviewed}, дубликатов: {dupes}, авто-отклонено: {rejected}"
+            })
+        except Exception as e:
+            self._json({"status": "error", "message": str(e)})
 
     def _approve_news(self, body):
         """Одобряет новости и запускает обогащение в фоне."""
@@ -2736,9 +2776,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <!-- Filters -->
     <div class="dash-filters" style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <select id="ed-status" onchange="loadEditorial()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
-        <option value="">Активные</option>
-        <option value="in_review" selected>На проверке</option>
+        <option value="" selected>Активные</option>
         <option value="new">Новые</option>
+        <option value="in_review">На проверке</option>
         <option value="approved">Одобренные</option>
         <option value="processed">Обработанные</option>
         <option value="duplicate">Дубли</option>
@@ -2767,12 +2807,14 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 
     <!-- Bulk actions -->
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-sm btn-success" onclick="edRunAutoReview()" id="ed-review-btn">&#9654; Проверить новые</button>
+      <span style="color:#38444d">|</span>
       <button class="btn btn-sm btn-primary" onclick="edApproveSelected()">&#10003; Одобрить</button>
       <button class="btn btn-sm btn-danger" onclick="edRejectSelected()">&#10007; Отклонить</button>
-      <button class="btn btn-sm btn-warning" onclick="edAutoApprove()">&#9889; Авто-одобрить (скор &gt; 70)</button>
+      <button class="btn btn-sm btn-warning" onclick="edAutoApprove()">&#9889; Авто (скор&gt;70)</button>
       <span style="color:#38444d">|</span>
-      <button class="btn btn-sm btn-secondary" onclick="edExportSheets()">&#9776; Экспорт в Sheets</button>
-      <button class="btn btn-sm btn-secondary" onclick="edBatchRewrite()">&#9998; Батч-рерайт</button>
+      <button class="btn btn-sm btn-secondary" onclick="edExportSheets()">&#9776; Sheets</button>
+      <button class="btn btn-sm btn-secondary" onclick="edBatchRewrite()">&#9998; Рерайт</button>
       <span id="ed-selected-count" style="color:#8899a6;font-size:0.85em"></span>
     </div>
 
@@ -6512,6 +6554,27 @@ async function edBatchRewrite() {
   toast(`Рерайт ${ids.length} в очередь...`);
   const r = await api('/api/queue/rewrite', {news_ids: ids, style: 'news'});
   if (r.status === 'ok') { toast(`${r.queued || ids.length} задач добавлено`); } else toast(r.message, true);
+}
+
+// Run auto-review for all unchecked news
+async function edRunAutoReview() {
+  const btn = document.getElementById('ed-review-btn');
+  btn.disabled = true;
+  btn.innerHTML = '&#8987; Проверка...';
+  toast('Запуск проверки новых новостей...');
+  try {
+    const r = await api('/api/run_auto_review', {});
+    if (r.status === 'ok') {
+      toast(r.message);
+      loadEditorial(0);
+    } else {
+      toast(r.message || 'Ошибка', true);
+    }
+  } catch(e) {
+    toast('Ошибка: ' + e, true);
+  }
+  btn.disabled = false;
+  btn.innerHTML = '&#9654; Проверить новые';
 }
 
 // Quick rewrite single news from editorial detail panel
