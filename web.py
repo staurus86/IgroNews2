@@ -1431,7 +1431,7 @@ async function login() {
     # ─── Pipeline endpoints ───
 
     def _pipeline_full_auto(self, body):
-        """Режим 1: Полный автомат — score → enrich → rewrite → Sheets/Ready."""
+        """Режим 1: Полный автомат — score → >70 на LLM → финальный скор → >60 на рерайт → Sheets/Ready."""
         news_ids = body.get("news_ids", [])
         select_all = body.get("all_new", False)
 
@@ -4021,7 +4021,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <button class="btn btn-sm btn-secondary" onclick="edBatchRewrite()">&#9998; Рерайт</button>
       <span style="color:#38444d">|</span>
       <span id="pipeline-controls">
-        <button id="btn-full-auto" class="btn btn-sm" style="background:#1da1f2;color:#fff" onclick="runFullAuto()">&#128640; Полный автомат</button>
+        <button id="btn-full-auto" class="btn btn-sm" style="background:#1da1f2;color:#fff" onclick="runFullAuto()" title="Скор→>70 на LLM→Финальный скор→>60 на рерайт→Sheets">&#128640; Полный автомат</button>
         <button id="btn-no-llm" class="btn btn-sm" style="background:#794bc4;color:#fff" onclick="runNoLLM()">&#128203; Без LLM</button>
         <button id="btn-pipeline-stop" class="btn btn-sm btn-danger" style="display:none" onclick="stopPipeline()">&#9724; Стоп</button>
         <span id="pipeline-status" style="display:none;margin-left:8px;padding:4px 12px;border-radius:8px;background:#253341;font-size:0.85em;color:#ffad1f;border:1px solid #38444d"></span>
@@ -6396,9 +6396,10 @@ function renderQueueTable() {
       try {
         const rr = JSON.parse(t.result);
         if (rr.stage) {
-          const stageLabels = {scoring:'Скоринг',enriching:'Обогащение',rewriting:'Рерайт',exporting:'Экспорт',complete:'Готово',filtered:'Отфильтровано',init:'Инициализация'};
+          const stageLabels = {scoring:'Скоринг',score_filter:'Фильтр скора',enriching:'Обогащение',final_score:'Финальный скор',rewriting:'Рерайт',exporting:'Экспорт',complete:'Готово',filtered:'Отфильтровано',init:'Инициализация'};
           resultText = (stageLabels[rr.stage] || rr.stage);
           if (rr.score !== undefined) resultText += ` (скор:${rr.score})`;
+          if (rr.final_score !== undefined) resultText += ` (финал:${rr.final_score})`;
           if (rr.reason) resultText += ` — ${rr.reason}`;
           if (rr.sheet_row) resultText += ` → строка ${rr.sheet_row}`;
           if (rr.rewrite_title) resultText += ` | ${rr.rewrite_title}`;
@@ -6544,9 +6545,10 @@ function renderQueueStandalone() {
       try {
         const rr = JSON.parse(t.result);
         if (rr.stage) {
-          const stageLabels = {scoring:'Скоринг',enriching:'Обогащение',rewriting:'Рерайт',exporting:'Экспорт',complete:'Готово',filtered:'Отфильтровано',init:'Инициализация'};
+          const stageLabels = {scoring:'Скоринг',score_filter:'Фильтр скора',enriching:'Обогащение',final_score:'Финальный скор',rewriting:'Рерайт',exporting:'Экспорт',complete:'Готово',filtered:'Отфильтровано',init:'Инициализация'};
           resultText = (stageLabels[rr.stage] || rr.stage);
           if (rr.score !== undefined) resultText += ` (скор:${rr.score})`;
+          if (rr.final_score !== undefined) resultText += ` (финал:${rr.final_score})`;
           if (rr.reason) resultText += ` — ${rr.reason}`;
           if (rr.sheet_row) resultText += ` → строка ${rr.sheet_row}`;
           if (rr.rewrite_title) resultText += ` | ${rr.rewrite_title}`;
@@ -7837,10 +7839,10 @@ async function runFullAuto() {
   let ids = getEdSelectedIds();
   let allNew = false;
   if (!ids.length) {
-    if (!confirm('Выбранных нет. Запустить полный автомат для ВСЕХ новых? (используются API)')) return;
+    if (!confirm('Выбранных нет. Запустить полный автомат для ВСЕХ новых?\\n\\nПайплайн: Скор → >70 на LLM → Финальный скор → >60 на рерайт → Sheets/Ready')) return;
     allNew = true;
   } else {
-    if (!confirm('Запустить полный автомат для ' + ids.length + ' новостей? Будут использованы Keys.so + Trends + LLM API.')) return;
+    if (!confirm('Запустить полный автомат для ' + ids.length + ' новостей?\\n\\nПайплайн: Скор → >70 на LLM → Финальный скор → >60 на рерайт → Sheets/Ready')) return;
   }
   toast('Запуск полного автомата...');
   const r = await api('/api/pipeline/full_auto', {news_ids: ids, all_new: allNew});

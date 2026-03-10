@@ -441,10 +441,71 @@ def _fetch_analysis_by_id(news_id: str) -> dict | None:
         cur.close()
 
 
+def _calc_final_score(analysis: dict) -> int:
+    """Рассчитывает финальный скор (аналог JS calcFinalScore).
+
+    Формула: internal(40%) + viral(20%) + keyso_bonus(15%) + trends_bonus(10%) + headline(15%)
+    """
+    import json as _json
+
+    internal = float(analysis.get("total_score") or 0)
+    viral = float(analysis.get("viral_score") or 0)
+    headline = float(analysis.get("headline_score") or 0)
+
+    # Keys.so bonus
+    keyso_bonus = 0
+    try:
+        kd = analysis.get("keyso_data", "{}")
+        if isinstance(kd, str):
+            kd = _json.loads(kd) if kd else {}
+        freq = float(kd.get("freq") or kd.get("ws") or 0)
+        if freq >= 10000:
+            keyso_bonus = 100
+        elif freq >= 5000:
+            keyso_bonus = 80
+        elif freq >= 1000:
+            keyso_bonus = 60
+        elif freq >= 100:
+            keyso_bonus = 40
+        elif freq > 0:
+            keyso_bonus = 20
+    except Exception:
+        pass
+
+    # Trends bonus
+    trends_bonus = 0
+    try:
+        td = analysis.get("trends_data", "{}")
+        if isinstance(td, str):
+            td = _json.loads(td) if td else {}
+        vals = [float(v) for v in td.values() if str(v).replace(".", "").replace("-", "").isdigit()]
+        max_t = max(vals) if vals else 0
+        if max_t >= 80:
+            trends_bonus = 100
+        elif max_t >= 50:
+            trends_bonus = 70
+        elif max_t >= 20:
+            trends_bonus = 40
+        elif max_t > 0:
+            trends_bonus = 20
+    except Exception:
+        pass
+
+    return round(internal * 0.4 + viral * 0.2 + keyso_bonus * 0.15 + trends_bonus * 0.1 + headline * 0.15)
+
+
+# Пороги для полного автомата
+FULL_AUTO_SCORE_THRESHOLD = 70    # внутренний скор для отправки на LLM
+FULL_AUTO_FINAL_THRESHOLD = 60    # финальный скор для рерайта
+
+
 def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
     """Режим 1: Полный автомат.
 
-    score → enrich (Keys.so+Trends+LLM) → фильтр publish_now → rewrite → Sheets/Ready
+    1) Скоринг → только >70 на обогащение
+    2) Обогащение (Keys.so + Trends + LLM)
+    3) Финальный скор → только >60 на рерайт
+    4) Рерайт → сохранение статьи → Sheets/Ready
     """
     pipeline_reset()
     from checks.pipeline import run_review_pipeline
@@ -493,24 +554,46 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
                 _update_task(task_id, "skipped", {"stage": "scoring", "reason": "auto_rejected", "score": total_score})
                 continue
 
-            # Stage 2: Enrichment (APIs + LLM analysis)
+            # Stage 2: Score threshold — only >70 goes to LLM enrichment
+            if total_score < FULL_AUTO_SCORE_THRESHOLD:
+                _update_task(task_id, "skipped", {
+                    "stage": "score_filter",
+                    "reason": f"Скор {total_score} < {FULL_AUTO_SCORE_THRESHOLD}",
+                    "score": total_score,
+                })
+                logger.info("Full-auto skip (score %d < %d): %s", total_score, FULL_AUTO_SCORE_THRESHOLD, news.get("title", "")[:50])
+                continue
+
+            # Stage 3: Enrichment (Keys.so + Trends + LLM)
             _update_task(task_id, "running", {"stage": "enriching", "score": total_score})
             update_news_status(news_id, "approved")
             enrich_result = _do_process(news)
             recommendation = enrich_result.get("recommendation", "")
 
-            # Stage 3: Filter — only publish_now proceeds
-            if recommendation != "publish_now":
+            # Stage 4: Calculate final composite score
+            analysis = _fetch_analysis_by_id(news_id)
+            final_score = _calc_final_score(analysis) if analysis else 0
+
+            _update_task(task_id, "running", {
+                "stage": "final_score",
+                "score": total_score,
+                "final_score": final_score,
+                "recommendation": recommendation,
+            })
+
+            if final_score < FULL_AUTO_FINAL_THRESHOLD:
                 _update_task(task_id, "done", {
                     "stage": "filtered",
-                    "reason": f"LLM: {recommendation}",
+                    "reason": f"Финальный скор {final_score} < {FULL_AUTO_FINAL_THRESHOLD}",
                     "score": total_score,
+                    "final_score": final_score,
                     "recommendation": recommendation,
                 })
+                logger.info("Full-auto filtered (final %d < %d): %s", final_score, FULL_AUTO_FINAL_THRESHOLD, news.get("title", "")[:50])
                 continue
 
-            # Stage 4: Rewrite
-            _update_task(task_id, "running", {"stage": "rewriting", "score": total_score})
+            # Stage 5: Rewrite
+            _update_task(task_id, "running", {"stage": "rewriting", "score": total_score, "final_score": final_score})
             import config
             style = getattr(config, "AUTO_REWRITE_STYLE", "news")
             rewrite = rewrite_news(
@@ -523,24 +606,64 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
                 _update_task(task_id, "error", {"stage": "rewriting", "error": "Rewrite returned None"})
                 continue
 
-            # Stage 5: Export to Sheets/Ready
-            _update_task(task_id, "running", {"stage": "exporting", "score": total_score})
-            analysis = _fetch_analysis_by_id(news_id)
+            # Save article to DB
+            _save_rewrite_article(news_id, news, rewrite, style)
+
+            # Stage 6: Export to Sheets/Ready
+            _update_task(task_id, "running", {"stage": "exporting", "score": total_score, "final_score": final_score})
             sheet_row = write_ready_row(news, analysis, rewrite)
 
             update_news_status(news_id, "ready")
             _update_task(task_id, "done", {
                 "stage": "complete",
                 "score": total_score,
+                "final_score": final_score,
                 "recommendation": recommendation,
                 "sheet_row": sheet_row,
                 "rewrite_title": rewrite.get("title", "")[:100],
             })
-            logger.info("Full-auto complete: %s → Ready row %s", news.get("title", "")[:50], sheet_row)
+            logger.info("Full-auto complete: %s → final=%d, Ready row %s", news.get("title", "")[:50], final_score, sheet_row)
 
         except Exception as e:
             logger.error("Full-auto pipeline error for %s: %s", news_id, e)
             _update_task(task_id, "error", {"stage": "unknown", "error": str(e)[:500]})
+
+
+def _save_rewrite_article(news_id: str, news: dict, rewrite: dict, style: str):
+    """Сохраняет результат рерайта как статью в таблицу articles."""
+    import uuid
+    from datetime import datetime, timezone
+    from storage.database import get_connection, _is_postgres
+
+    conn = get_connection()
+    cur = conn.cursor()
+    ph = "%s" if _is_postgres() else "?"
+    now = datetime.now(timezone.utc).isoformat()
+    aid = str(uuid.uuid4())[:12]
+
+    try:
+        cur.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description,
+            tags, style, language, original_title, original_text, source_url, status, created_at)
+            VALUES ({','.join([ph]*14)})""", (
+            aid, news_id,
+            rewrite.get("title", "")[:500],
+            rewrite.get("text", ""),
+            rewrite.get("seo_title", "")[:500],
+            rewrite.get("seo_description", "")[:1000],
+            json.dumps(rewrite.get("tags", []), ensure_ascii=False),
+            style, "русский",
+            news.get("title", "")[:500],
+            (news.get("plain_text", "") or "")[:3000],
+            news.get("url", ""),
+            "draft", now,
+        ))
+        if not _is_postgres():
+            conn.commit()
+        logger.info("Saved rewrite article %s for news %s", aid, news_id)
+    except Exception as e:
+        logger.warning("Failed to save rewrite article for %s: %s", news_id, e)
+    finally:
+        cur.close()
 
 
 # ─── Pipeline 2: No LLM (score → Sheets/NotReady + Moderation) ───
