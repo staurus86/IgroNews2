@@ -59,7 +59,7 @@ def parse_rss_source(source: dict) -> int:
     count = 0
 
     try:
-        feed = feedparser.parse(url)
+        feed = feedparser.parse(url, request_headers={"User-Agent": HEADERS["User-Agent"]})
         if feed.bozo and not feed.entries:
             logger.warning("Feed error for %s: %s", name, feed.bozo_exception)
             return 0

@@ -28,9 +28,11 @@ SOURCES = [
     {"name": "IGN",              "type": "rss",  "url": "https://feeds.ign.com/ign/all",               "interval": 5},
     {"name": "GameSpot",         "type": "rss",  "url": "https://www.gamespot.com/feeds/mashup/",      "interval": 10},
     {"name": "PCGamer",          "type": "rss",  "url": "https://www.pcgamer.com/rss/",                "interval": 10},
-    {"name": "Eurogamer",        "type": "rss",  "url": "https://www.eurogamer.net/?format=rss",       "interval": 15},
-    {"name": "GamesRadar",       "type": "rss",  "url": "https://www.gamesradar.com/feeds/tag/games",  "interval": 15},
-    {"name": "Polygon",          "type": "rss",  "url": "https://www.polygon.com/rss/index.xml",       "interval": 15},
+    {"name": "Eurogamer",        "type": "rss",  "url": "https://www.eurogamer.net/?format=rss",       "interval": 15},  # может блокировать Cloudflare
+    {"name": "Kotaku",            "type": "rss",  "url": "https://kotaku.com/rss",                      "interval": 15},
+    {"name": "GamesRadar",       "type": "rss",  "url": "https://www.gamesradar.com/rss/",              "interval": 15},
+    {"name": "Polygon",          "type": "rss",  "url": "https://www.polygon.com/rss/index.xml",       "interval": 15},  # может блокировать Cloudflare
+    {"name": "Destructoid",      "type": "rss",  "url": "https://www.destructoid.com/feed/",            "interval": 15},
     {"name": "RockPaperShotgun", "type": "rss",  "url": "https://feeds.feedburner.com/RockPaperShotgun", "interval": 30},
     {"name": "GameRant",         "type": "rss",  "url": "https://gamerant.com/feed/",                  "interval": 10},
     {"name": "StopGame",         "type": "html", "url": "https://stopgame.ru/news",                    "interval": 10, "selector": "a[href*='/newsdata/']", "title_selector": "", "url_pattern": r"/newsdata/\d+"},
