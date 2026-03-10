@@ -5018,6 +5018,20 @@ async function loadHealth() {
   if (el) el.textContent = `${healthy} ок / ${warn} внимание / ${dead} мертв`;
 }
 
+// Generic sort for news/viral arrays
+function sortNews(arr, field, dir) {
+  return [...arr].sort((a, b) => {
+    let va = a[field], vb = b[field];
+    if (va == null) va = '';
+    if (vb == null) vb = '';
+    if (typeof va === 'number' && typeof vb === 'number') return dir === 'asc' ? va - vb : vb - va;
+    va = String(va).toLowerCase(); vb = String(vb).toLowerCase();
+    if (va < vb) return dir === 'asc' ? -1 : 1;
+    if (va > vb) return dir === 'asc' ? 1 : -1;
+    return 0;
+  });
+}
+
 // News tab sorting & filtering
 let _newsSortField = 'parsed_at';
 let _newsSortDir = 'desc';
@@ -6436,6 +6450,15 @@ function sortViralTab(field) {
   });
   renderViralTable();
 }
+
+// === EDITORIAL TAB ===
+let _edData = [];
+let _edSortField = 'parsed_at';
+let _edSortDir = 'desc';
+let _edPage = 0;
+let _edTotalAll = 0;
+const _edLimit = 100;
+
 loadAll();
 loadSources();
 loadPrompts();
@@ -6449,14 +6472,6 @@ loadAnalytics();
 loadLogs();
 setInterval(loadHealth, 60000);
 setInterval(loadQueue, 15000);
-
-// === EDITORIAL TAB ===
-let _edData = [];
-let _edSortField = 'parsed_at';
-let _edSortDir = 'desc';
-let _edPage = 0;
-let _edTotalAll = 0;
-const _edLimit = 100;
 
 let _edSearchTimer;
 function debounceEdSearch() {
