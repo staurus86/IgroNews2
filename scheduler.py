@@ -38,8 +38,8 @@ def parse_sources(interval_min: int):
 def _auto_review_new():
     """Автоматическая проверка новых новостей (бесплатно, всё локальное).
 
-    После ревью автоматически одобряет новости со скором >= порога
-    и запускает обогащение в фоне.
+    Только скоринг — НЕ запускает обогащение и рерайт.
+    Дальнейшая обработка через кнопки "Полный автомат" / "Без LLM".
     """
     try:
         from storage.database import get_connection, _is_postgres
@@ -64,9 +64,6 @@ def _auto_review_new():
         reviewed = len(result.get("results", []))
         dupes = sum(1 for r in result.get("results", []) if r.get("is_duplicate"))
         logger.info("Auto-review: %d checked, %d duplicates", reviewed, dupes)
-
-        # Auto-approve high-score news
-        _auto_approve_high_score(result.get("results", []))
 
     except Exception as e:
         logger.error("Auto-review error: %s", e)
@@ -416,23 +413,31 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
                 _update_task(task_id, "error", {"stage": "init", "error": "News not found"})
                 continue
 
-            # Stage 1: Local scoring
+            # Stage 1: Local scoring (reuse if already scored)
             _update_task(task_id, "running", {"stage": "scoring"})
-            review_result = run_review_pipeline([news], update_status=True)
-            results = review_result.get("results", [])
-            if not results:
-                _update_task(task_id, "error", {"stage": "scoring", "error": "No review results"})
-                continue
+            status = news.get("status", "new")
+            analysis = _fetch_analysis_by_id(news_id)
 
-            check_result = results[0]
-            total_score = check_result.get("total_score", 0)
-            is_dup = check_result.get("is_duplicate", False)
+            if analysis and analysis.get("total_score") is not None and status in ("in_review", "moderation"):
+                total_score = analysis.get("total_score", 0)
+                is_dup = status == "duplicate"
+                is_rejected = status == "rejected" or total_score < 15
+            else:
+                review_result = run_review_pipeline([news], update_status=True)
+                results = review_result.get("results", [])
+                if not results:
+                    _update_task(task_id, "error", {"stage": "scoring", "error": "No review results"})
+                    continue
+                check_result = results[0]
+                total_score = check_result.get("total_score", 0)
+                is_dup = check_result.get("is_duplicate", False)
+                is_rejected = check_result.get("auto_rejected", False)
 
             if is_dup:
                 _update_task(task_id, "skipped", {"stage": "scoring", "reason": "duplicate", "score": total_score})
                 continue
 
-            if check_result.get("auto_rejected"):
+            if is_rejected:
                 _update_task(task_id, "skipped", {"stage": "scoring", "reason": "auto_rejected", "score": total_score})
                 continue
 
@@ -488,57 +493,95 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
 
 # ─── Pipeline 2: No LLM (score → Sheets/NotReady + Moderation) ───
 
+def _build_check_result_from_analysis(analysis: dict) -> dict:
+    """Собирает check_result из сохранённого news_analysis (для уже проскоренных)."""
+    import json as _json
+    checks = {}
+    for name in ("quality", "relevance", "freshness", "viral"):
+        score_key = f"{name}_score"
+        checks[name] = {"score": analysis.get(score_key, 0), "pass": True}
+
+    tags = []
+    try:
+        tags = _json.loads(analysis.get("tags", "[]"))
+    except Exception:
+        pass
+
+    sentiment = {"label": analysis.get("sentiment_label", "neutral"), "score": 0}
+    momentum = {"score": analysis.get("momentum_score", 0), "level": "none"}
+    headline = {"score": analysis.get("headline_score", 0)}
+    game_entities = []
+    try:
+        game_entities = _json.loads(analysis.get("entities", "[]"))
+    except Exception:
+        pass
+
+    return {
+        "checks": checks,
+        "tags": tags,
+        "sentiment": sentiment,
+        "momentum": momentum,
+        "headline": headline,
+        "game_entities": game_entities,
+        "total_score": analysis.get("total_score", 0),
+    }
+
+
 def run_no_llm_pipeline(news_ids: list[str], task_ids: list[str]):
     """Режим 2: Без LLM.
 
-    score → Sheets/NotReady + статус moderation (для ручной модерации).
+    Для уже проскоренных (in_review) — берёт существующие результаты.
+    Для новых — скорит локально.
+    Всех годных → Sheets/NotReady + статус moderation.
     """
     from checks.pipeline import run_review_pipeline
     from storage.sheets import write_not_ready_row
 
-    # Batch review for efficiency
-    all_news = [_fetch_news_by_id(nid) for nid in news_ids]
-    valid = [(n, tid) for n, tid in zip(all_news, task_ids) if n]
-    invalid = [(nid, tid) for nid, n, tid in zip(news_ids, all_news, task_ids) if not n]
-
-    for nid, tid in invalid:
-        _update_task(tid, "error", {"stage": "init", "error": "News not found"})
-
-    if not valid:
-        return
-
-    news_list = [n for n, _ in valid]
-    tids = [tid for _, tid in valid]
-
-    # Stage 1: Batch local scoring
-    for tid in tids:
-        _update_task(tid, "running", {"stage": "scoring"})
-
-    review_result = run_review_pipeline(news_list, update_status=True)
-    results = review_result.get("results", [])
-
-    # Stage 2: Export to Sheets/NotReady
-    for i, (news, tid) in enumerate(valid):
+    for news_id, task_id in zip(news_ids, task_ids):
         try:
-            check_result = results[i] if i < len(results) else {}
-            total_score = check_result.get("total_score", 0)
-            is_dup = check_result.get("is_duplicate", False)
+            news = _fetch_news_by_id(news_id)
+            if not news:
+                _update_task(task_id, "error", {"stage": "init", "error": "News not found"})
+                continue
+
+            _update_task(task_id, "running", {"stage": "scoring"})
+
+            status = news.get("status", "new")
+            analysis = _fetch_analysis_by_id(news_id)
+
+            # If already scored (has analysis data), reuse it
+            if analysis and analysis.get("total_score") is not None and status in ("in_review", "moderation"):
+                check_result = _build_check_result_from_analysis(analysis)
+                total_score = check_result.get("total_score", 0)
+                is_dup = status == "duplicate"
+                is_rejected = status == "rejected"
+            else:
+                # Score from scratch
+                review_result = run_review_pipeline([news], update_status=True)
+                results = review_result.get("results", [])
+                if not results:
+                    _update_task(task_id, "error", {"stage": "scoring", "error": "No review results"})
+                    continue
+                check_result = results[0]
+                total_score = check_result.get("total_score", 0)
+                is_dup = check_result.get("is_duplicate", False)
+                is_rejected = check_result.get("auto_rejected", False)
 
             if is_dup:
-                _update_task(tid, "skipped", {"stage": "scoring", "reason": "duplicate", "score": total_score})
+                _update_task(task_id, "skipped", {"stage": "scoring", "reason": "duplicate", "score": total_score})
                 continue
 
-            if check_result.get("auto_rejected"):
-                _update_task(tid, "skipped", {"stage": "scoring", "reason": "auto_rejected", "score": total_score})
+            if is_rejected:
+                _update_task(task_id, "skipped", {"stage": "scoring", "reason": "auto_rejected", "score": total_score})
                 continue
 
-            _update_task(tid, "running", {"stage": "exporting", "score": total_score})
+            _update_task(task_id, "running", {"stage": "exporting", "score": total_score})
             sheet_row = write_not_ready_row(news, check_result)
 
             # Set status to moderation
-            update_news_status(news["id"], "moderation")
+            update_news_status(news_id, "moderation")
 
-            _update_task(tid, "done", {
+            _update_task(task_id, "done", {
                 "stage": "complete",
                 "score": total_score,
                 "sheet_row": sheet_row,
@@ -547,8 +590,8 @@ def run_no_llm_pipeline(news_ids: list[str], task_ids: list[str]):
             logger.info("No-LLM complete: %s → NotReady row %s, status=moderation", news.get("title", "")[:50], sheet_row)
 
         except Exception as e:
-            logger.error("No-LLM pipeline error for %s: %s", news.get("id", "?"), e)
-            _update_task(tid, "error", {"stage": "unknown", "error": str(e)[:500]})
+            logger.error("No-LLM pipeline error for %s: %s", news_id, e)
+            _update_task(task_id, "error", {"stage": "unknown", "error": str(e)[:500]})
 
 
 def start_scheduler():

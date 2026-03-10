@@ -22,7 +22,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///news.db")
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
 
 # Automation thresholds
-AUTO_APPROVE_THRESHOLD = int(os.getenv("AUTO_APPROVE_THRESHOLD", "70"))
+AUTO_APPROVE_THRESHOLD = int(os.getenv("AUTO_APPROVE_THRESHOLD", "0"))  # 0 = disabled, use pipeline buttons
 AUTO_REWRITE_ON_PUBLISH_NOW = os.getenv("AUTO_REWRITE_ON_PUBLISH_NOW", "true").lower() == "true"
 AUTO_REWRITE_STYLE = os.getenv("AUTO_REWRITE_STYLE", "news")
 
