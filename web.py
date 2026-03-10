@@ -1325,7 +1325,10 @@ async function login() {
         import threading
         def _bg_mod_rewrite(ids, tids, rewrite_style):
             from apis.llm import rewrite_news
-            from scheduler import _update_task, _fetch_news_by_id
+            from scheduler import _update_task, _fetch_news_by_id, _fetch_analysis_by_id
+            from storage.sheets import write_ready_row
+            import uuid as _uuid
+            import json as _json2
             for nid, tid in zip(ids, tids):
                 try:
                     news = _fetch_news_by_id(nid)
@@ -1340,9 +1343,37 @@ async function login() {
                         language="русский",
                     )
                     if result:
+                        # Save article to DB
+                        conn2 = get_connection()
+                        cur2 = conn2.cursor()
+                        ph2 = "%s" if _is_postgres() else "?"
+                        _now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+                        aid = str(_uuid.uuid4())[:12]
+                        tags_j = _json2.dumps(result.get("tags", []), ensure_ascii=False)
+                        try:
+                            cur2.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
+                                style, language, original_title, original_text, source_url, status, created_at, updated_at)
+                                VALUES ({','.join([ph2]*15)})""",
+                                (aid, nid, result.get("title", ""), result.get("text", ""),
+                                 result.get("seo_title", ""), result.get("seo_description", ""), tags_j,
+                                 rewrite_style, "русский", news.get("title", ""), (news.get("plain_text", "") or "")[:5000],
+                                 news.get("url", ""), "draft", _now, _now))
+                            if not _is_postgres():
+                                conn2.commit()
+                        finally:
+                            cur2.close()
+
+                        # Export to Sheets/Ready
+                        try:
+                            analysis = _fetch_analysis_by_id(nid)
+                            write_ready_row(news, analysis, result)
+                        except Exception as se:
+                            logger.warning("Sheets Ready export failed for %s: %s", nid, se)
+
                         _update_task(tid, "done", {
                             "stage": "complete",
                             "rewrite_title": result.get("title", "")[:100],
+                            "article_id": aid,
                         })
                         update_news_status(nid, "processed")
                     else:
@@ -2162,6 +2193,32 @@ async function login() {
                          result.get("seo_title", ""), result.get("seo_description", ""), tags,
                          style, language, ntitle, ntext[:5000],
                          news.get("url", ""), "draft", _now, _now))
+                    if not _is_postgres():
+                        conn2.commit()
+
+                    # Export to Sheets/Ready
+                    try:
+                        from storage.sheets import write_ready_row
+                        # Fetch full news + analysis for Sheets
+                        cur2.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
+                        if _is_postgres():
+                            nc = [d[0] for d in cur2.description]
+                            full_news = dict(zip(nc, cur2.fetchone()))
+                        else:
+                            full_news = dict(cur2.fetchone())
+                        cur2.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (nid,))
+                        arow = cur2.fetchone()
+                        analysis = None
+                        if arow:
+                            if _is_postgres():
+                                ac = [d[0] for d in cur2.description]
+                                analysis = dict(zip(ac, arow))
+                            else:
+                                analysis = dict(arow)
+                        write_ready_row(full_news, analysis, result)
+                    except Exception as sheets_err:
+                        logger.warning("Sheets Ready export failed for %s: %s", nid, sheets_err)
+
                     _now2 = datetime.now(timezone.utc).isoformat()
                     res_data = _json.dumps({"article_id": aid, "title": result.get("title", "")}, ensure_ascii=False)
                     cur2.execute(f"UPDATE task_queue SET status = 'done', result = {ph}, updated_at = {ph} WHERE id = {ph}", (res_data, _now2, tid))
@@ -7160,7 +7217,7 @@ async function runFullAuto() {
     toast(r.queued + ' задач в очереди — откройте Очередь для мониторинга');
     // Switch to settings > queue tab
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(p => { p.classList.remove('active'); p.style.display = 'none'; });
+    document.querySelectorAll('.panel').forEach(p => { p.classList.remove('active'); p.style.display = ''; });
     const st = document.querySelector('[data-tab="settings"]');
     const sp = document.getElementById('panel-settings');
     if (st) st.classList.add('active');
@@ -7191,7 +7248,7 @@ async function runNoLLM() {
   if (r.status === 'ok') {
     toast(r.queued + ' задач в очереди → Модерация');
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(p => { p.classList.remove('active'); p.style.display = 'none'; });
+    document.querySelectorAll('.panel').forEach(p => { p.classList.remove('active'); p.style.display = ''; });
     const st = document.querySelector('[data-tab="settings"]');
     const sp = document.getElementById('panel-settings');
     if (st) st.classList.add('active');

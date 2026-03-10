@@ -193,8 +193,13 @@ def write_ready_row(news: dict, analysis: dict, rewrite: dict) -> int | None:
 
         tags = ""
         try:
-            tags_list = json.loads(analysis.get("tags", "[]")) if analysis else []
-            tags = ", ".join(tags_list) if isinstance(tags_list, list) else str(tags_list)
+            # Prefer tags from rewrite (LLM), fallback to analysis
+            rewrite_tags = rewrite.get("tags", [])
+            if rewrite_tags and isinstance(rewrite_tags, list):
+                tags = ", ".join(rewrite_tags)
+            elif analysis:
+                tags_list = json.loads(analysis.get("tags", "[]"))
+                tags = ", ".join(tags_list) if isinstance(tags_list, list) else str(tags_list)
         except Exception:
             pass
 
@@ -204,8 +209,8 @@ def write_ready_row(news: dict, analysis: dict, rewrite: dict) -> int | None:
             news.get("title", ""),                                   # C: Оригинал заголовок
             rewrite.get("title", ""),                                # D: Рерайт заголовок
             rewrite.get("text", "")[:5000],                          # E: Рерайт текст
-            rewrite.get("meta_title", ""),                           # F: Meta Title
-            rewrite.get("meta_description", ""),                     # G: Meta Description
+            rewrite.get("seo_title", rewrite.get("meta_title", "")),   # F: Meta Title
+            rewrite.get("seo_description", rewrite.get("meta_description", "")),  # G: Meta Description
             tags,                                                    # H: Теги
             str(analysis.get("total_score", "") if analysis else ""),  # I: Скор
             str(analysis.get("viral_score", "") if analysis else ""),  # J: Вирал
