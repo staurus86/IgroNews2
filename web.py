@@ -1101,26 +1101,18 @@ async function login() {
                 ph = "%s" if _is_postgres() else "?"
                 BATCH_SIZE = 20
 
-                # Считаем сколько всего непроверенных
-                cur.execute(f"""
-                    SELECT COUNT(*) FROM news n
-                    LEFT JOIN news_analysis a ON n.id = a.news_id
-                    WHERE n.status IN ('new', 'in_review')
-                      AND (a.reviewed_at IS NULL OR a.reviewed_at = '')
-                """)
+                # Считаем сколько всего непроверенных (только new)
+                cur.execute("SELECT COUNT(*) FROM news WHERE status = 'new'")
                 total_pending = cur.fetchone()[0]
 
                 if total_pending == 0:
-                    self._json({"status": "ok", "reviewed": 0, "message": "Нет новых для проверки"})
+                    self._json({"status": "ok", "reviewed": 0, "message": "Нет новых для проверки", "remaining": 0})
                     return
 
                 # Берём один батч
                 cur.execute(f"""
-                    SELECT n.* FROM news n
-                    LEFT JOIN news_analysis a ON n.id = a.news_id
-                    WHERE n.status IN ('new', 'in_review')
-                      AND (a.reviewed_at IS NULL OR a.reviewed_at = '')
-                    ORDER BY n.parsed_at DESC LIMIT {ph}
+                    SELECT * FROM news WHERE status = 'new'
+                    ORDER BY parsed_at DESC LIMIT {ph}
                 """, (BATCH_SIZE,))
                 if _is_postgres():
                     columns = [desc[0] for desc in cur.description]
