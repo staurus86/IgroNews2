@@ -133,16 +133,15 @@ def start_scheduler():
     for mins in intervals:
         scheduler.add_job(parse_sources, "interval", minutes=mins, args=[mins], id=f"parse_{mins}min")
 
-    # Обработка новостей каждые 10 минут
-    scheduler.add_job(process_news, "interval", minutes=10, id="process_news")
+    # process_news ОТКЛЮЧЁН из автозапуска — вызывается только вручную через веб-панель
+    # Это экономит Keys.so, Google Trends и LLM API
 
     # Очистка старого plain_text раз в сутки (экономия памяти БД)
     scheduler.add_job(cleanup_old_plaintext, "interval", hours=24, id="cleanup_plaintext")
 
-    # Первый запуск сразу
+    # Первый запуск парсинга сразу (без process_news — только парсинг бесплатный)
     for mins in intervals:
         parse_sources(mins)
-    process_news()
 
     logger.info("Scheduler started")
     scheduler.start()
