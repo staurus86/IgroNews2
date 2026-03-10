@@ -1163,7 +1163,7 @@ async function login() {
         info["total_news"] = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM news_analysis")
         info["total_analyzed"] = cur.fetchone()[0]
-        for status in ["new", "approved", "processed", "rejected"]:
+        for status in ["new", "in_review", "approved", "processed", "rejected", "duplicate"]:
             ph = "%s" if _is_postgres() else "?"
             cur.execute(f"SELECT COUNT(*) FROM news WHERE status = {ph}", (status,))
             info[f"status_{status}"] = cur.fetchone()[0]
@@ -6266,6 +6266,7 @@ let _edData = [];
 let _edSortField = 'total_score';
 let _edSortDir = 'desc';
 let _edPage = 0;
+let _edTotalAll = 0;
 const _edLimit = 100;
 
 async function loadEditorial(page) {
@@ -6295,12 +6296,17 @@ async function loadEditorial(page) {
   const statsEl = document.getElementById('ed-stats');
   const sColors = {new:'#ffad1f',in_review:'#1da1f2',approved:'#17bf63',processed:'#794bc4',duplicate:'#657786',rejected:'#e0245e'};
   const sLabels = {new:'Новые',in_review:'Проверка',approved:'Одобрены',processed:'Обработаны',duplicate:'Дубли',rejected:'Отклонены'};
-  statsEl.innerHTML = Object.entries(sLabels).map(([k,v]) => {
+  const totalAll = Object.values(stats).reduce((a,b) => a + (b||0), 0);
+  _edTotalAll = totalAll;
+  let statsHtml = `<div class="stat ${!status?'active-filter':''}" onclick="document.getElementById('ed-status').value='';loadEditorial(0)">
+    <div class="num" style="color:#e1e8ed">${totalAll}</div><div class="lbl">Всего</div></div>`;
+  statsHtml += Object.entries(sLabels).map(([k,v]) => {
     const cnt = stats[k] || 0;
     const isActive = status === k;
     return `<div class="stat ${isActive?'active-filter':''}" onclick="document.getElementById('ed-status').value='${isActive?'':k}';loadEditorial(0)">
       <div class="num" style="color:${sColors[k]}">${cnt}</div><div class="lbl">${v}</div></div>`;
   }).join('');
+  statsEl.innerHTML = statsHtml;
 
   // Populate source filter (once)
   const srcSel = document.getElementById('ed-source');
@@ -6327,12 +6333,15 @@ function renderEdTable() {
 
   const tbody = document.getElementById('ed-table');
   if (!data.length) {
-    const stats = document.getElementById('ed-stats');
-    const hasNew = stats && stats.innerHTML.includes('"new"');
     tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:40px;color:#8899a6">
       <div style="font-size:1.3em;margin-bottom:12px">Нет новостей для отображения</div>
-      <div style="margin-bottom:12px">Нажмите <b>&#9654; Проверить новые</b> чтобы запустить проверку</div>
-      <button class="btn btn-success" onclick="edRunAutoReview()" style="padding:8px 24px;font-size:1em">&#9654; Проверить новые</button>
+      <div style="margin-bottom:8px">Всего в базе: <b>${_edTotalAll}</b> новостей</div>
+      <div style="margin-bottom:12px">${_edTotalAll === 0
+        ? 'База пуста. Нажмите «Парсить» чтобы загрузить новости из источников.'
+        : 'Нажмите «Проверить новые» или выберите другой фильтр статуса'}</div>
+      ${_edTotalAll === 0
+        ? '<button class="btn btn-primary" onclick="edForceParse()" style="padding:8px 24px;font-size:1em">&#128229; Парсить источники</button>'
+        : '<button class="btn btn-success" onclick="edRunAutoReview()" style="padding:8px 24px;font-size:1em">&#9654; Проверить новые</button>'}
     </td></tr>`;
     return;
   }
@@ -6584,6 +6593,21 @@ async function edBatchRewrite() {
   toast(`Рерайт ${ids.length} в очередь...`);
   const r = await api('/api/queue/rewrite', {news_ids: ids, style: 'news'});
   if (r.status === 'ok') { toast(`${r.queued || ids.length} задач добавлено`); } else toast(r.message, true);
+}
+
+// Force parse all sources from editorial empty state
+async function edForceParse() {
+  toast('Парсинг всех источников...');
+  const r = await api('/api/reparse_all', {});
+  if (r.status === 'ok') {
+    toast('Спарсено: ' + (r.new_articles || 0) + ' новостей. Запуск проверки...');
+    if (r.new_articles > 0) {
+      await edRunAutoReview();
+    }
+    loadEditorial(0);
+  } else {
+    toast(r.message || 'Ошибка парсинга', true);
+  }
 }
 
 // Run auto-review for all unchecked news
