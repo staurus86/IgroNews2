@@ -3874,6 +3874,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div class="tab" data-tab="editor">Контент</div>
     <div class="tab" data-tab="viral">Виральность</div>
     <div class="tab" data-tab="analytics">Аналитика</div>
+    <div class="tab" data-tab="queue">Очередь</div>
     <div class="tab" data-tab="health">Здоровье</div>
     <div class="tab" data-tab="settings">&#9881;</div>
     <div style="margin-left:auto"><a href="/logout" class="btn btn-secondary btn-sm">Выйти</a></div>
@@ -4336,6 +4337,50 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     </div>
   </div>
 
+  <!-- QUEUE (standalone tab) -->
+  <div class="panel" id="panel-queue">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <h2>Очередь задач</h2>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="q-filter-type" onchange="renderQueueStandalone()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+          <option value="">Все типы</option>
+          <option value="rewrite">Рерайт</option>
+          <option value="sheets">Sheets</option>
+          <option value="full_auto">Полный автомат</option>
+          <option value="no_llm">Без LLM</option>
+          <option value="mod_rewrite">Рерайт (модерация)</option>
+        </select>
+        <select id="q-filter-status" onchange="renderQueueStandalone()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+          <option value="">Все статусы</option>
+          <option value="pending">Ожидает</option>
+          <option value="processing">Обработка</option>
+          <option value="done">Готово</option>
+          <option value="error">Ошибка</option>
+          <option value="cancelled">Отменено</option>
+          <option value="skipped">Пропущено</option>
+        </select>
+        <button class="btn btn-sm btn-secondary" onclick="loadQueueStandalone()">Обновить</button>
+        <button class="btn btn-sm btn-danger" onclick="cancelAllQueue('')">Отменить ожидающие</button>
+        <button class="btn btn-sm btn-secondary" onclick="clearDoneQueue()">Очистить завершённые</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap" id="q-stats"></div>
+    <div style="background:#192734;border-radius:10px;overflow:hidden">
+      <table>
+        <thead><tr>
+          <th style="width:40px"><input type="checkbox" onchange="qToggleAll(this)" style="width:16px;height:16px"></th>
+          <th>Тип</th><th>Новость</th><th>Стиль</th><th>Статус</th><th>Результат</th><th>Создано</th><th>Действия</th>
+        </tr></thead>
+        <tbody id="q-table"></tbody>
+      </table>
+    </div>
+    <div style="margin-top:8px;display:flex;gap:8px">
+      <span id="q-selected-count" style="color:#8899a6;font-size:0.85em;line-height:28px"></span>
+      <button class="btn btn-sm btn-danger" onclick="cancelSelectedQueue()">Отменить выбранные</button>
+      <button class="btn btn-sm btn-primary" onclick="retrySelectedQueue()">&#128260; Повторить выбранные</button>
+    </div>
+  </div>
+
   <!-- HEALTH -->
   <div class="panel" id="panel-health">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -4478,7 +4523,6 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <div class="settings-tab" data-stab="prompts">Промпты</div>
       <div class="settings-tab" data-stab="viral_cfg">Виральность</div>
       <div class="settings-tab" data-stab="tools">Инструменты</div>
-      <div class="settings-tab" data-stab="queue">Очередь <span id="queue-badge" class="badge badge-new" style="display:none">0</span></div>
       <div class="settings-tab" data-stab="logs">Логи</div>
       <div class="settings-tab" data-stab="users">Пользователи</div>
     </div>
@@ -4778,6 +4822,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   if (t.dataset.tab === 'editor') { loadArticles(); }
   if (t.dataset.tab === 'viral') { loadViral(); }
   if (t.dataset.tab === 'analytics') { loadAnalytics(); loadSavedDigests(); }
+  if (t.dataset.tab === 'queue') { loadQueueStandalone(); }
   if (t.dataset.tab === 'health') { loadHealth(); }
   if (t.dataset.tab === 'settings') { loadSettings(); loadLogs(); loadQueue(); loadViralTriggers(); }
 }));
@@ -5294,9 +5339,7 @@ async function sendSelectedToContent() {
   const r = await api('/api/queue/rewrite', {news_ids: ids, style: style, language: 'русский'});
   if (r.status === 'ok') {
     toast(r.queued + ' задач добавлено в очередь рерайта');
-    // Switch to settings > queue tab to show progress
-    document.querySelector('[data-tab="settings"]')?.click();
-    setTimeout(() => document.querySelector('[data-stab="queue"]')?.click(), 200);
+    switchToTab('queue'); loadQueueStandalone();
   } else toast(r.message || 'Ошибка', true);
 }
 
@@ -5390,15 +5433,7 @@ async function exportReadyAll() {
 }
 
 function _switchToQueueTab() {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.panel').forEach(p => { p.classList.remove('active'); p.style.display = ''; });
-  document.querySelector('[data-tab="settings"]')?.classList.add('active');
-  document.getElementById('panel-settings')?.classList.add('active');
-  document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.settings-section').forEach(s => s.classList.remove('active'));
-  document.querySelector('[data-stab="queue"]')?.classList.add('active');
-  document.getElementById('stab-queue')?.classList.add('active');
-  loadQueue();
+  switchToTab('queue'); loadQueueStandalone();
 }
 
 // ===== CONTENT TAB: News list for rewrite =====
@@ -6031,9 +6066,11 @@ function renderQueueTable() {
   _queueTasks.forEach(t => { stats[t.status] = (stats[t.status] || 0) + 1; });
   const statLabels = {pending:'Ожидает',processing:'Обработка',running:'Работает',done:'Готово',error:'Ошибка',cancelled:'Отменено',skipped:'Пропущено'};
   const statColors = {pending:'#f5a623',processing:'#1da1f2',running:'#1da1f2',done:'#17bf63',error:'#e0245e',cancelled:'#71767b',skipped:'#8899a6'};
-  document.getElementById('queue-stats').innerHTML = Object.entries(stats).map(([k,v]) =>
-    `<span style="padding:4px 10px;background:${statColors[k]||'#38444d'}22;border:1px solid ${statColors[k]||'#38444d'};border-radius:12px;font-size:0.82em;color:${statColors[k]||'#8899a6'}">${statLabels[k]||k}: ${v}</span>`
-  ).join('');
+  const curStatusF = document.getElementById('queue-filter-status')?.value || '';
+  document.getElementById('queue-stats').innerHTML = Object.entries(stats).map(([k,v]) => {
+    const isActive = curStatusF === k;
+    return `<span onclick="document.getElementById('queue-filter-status').value=document.getElementById('queue-filter-status').value==='${k}'?'':'${k}';renderQueueTable()" style="padding:4px 10px;background:${isActive?statColors[k]||'#38444d':(statColors[k]||'#38444d')+'22'};border:1px solid ${statColors[k]||'#38444d'};border-radius:12px;font-size:0.82em;color:${isActive?'#fff':statColors[k]||'#8899a6'};cursor:pointer">${statLabels[k]||k}: ${v}</span>`;
+  }).join('');
 
   const typeLabels = {rewrite:'Переписка', sheets:'Sheets', full_auto:'Полный автомат', no_llm:'Без LLM', mod_rewrite:'Рерайт (мод.)'};
   const typeIcons = {rewrite:'&#9998;', sheets:'&#128196;', full_auto:'&#128640;', no_llm:'&#128203;', mod_rewrite:'&#9998;'};
@@ -6076,16 +6113,18 @@ function renderQueueTable() {
   updateQueueSelectedCount();
 }
 
+function _refreshQueues() { loadQueue(); loadQueueStandalone(); }
+
 async function cancelQueueTask(id) {
   const r = await api('/api/queue/cancel', {task_id: id});
-  if (r.status === 'ok') { toast('Задача отменена'); loadQueue(); }
+  if (r.status === 'ok') { toast('Задача отменена'); _refreshQueues(); }
   else toast(r.message, true);
 }
 
 async function cancelAllQueue(type) {
   if (!confirm('Отменить все ожидающие задачи' + (type ? ` (${type})` : '') + '?')) return;
   const r = await api('/api/queue/cancel_all', {task_type: type});
-  if (r.status === 'ok') { toast('Все ожидающие отменены'); loadQueue(); }
+  if (r.status === 'ok') { toast('Все ожидающие отменены'); _refreshQueues(); }
   else toast(r.message, true);
 }
 
@@ -6096,7 +6135,7 @@ async function cancelSelectedQueue() {
     await api('/api/queue/cancel', {task_id: c.value});
   }
   toast(`Отменено: ${checks.length}`);
-  loadQueue();
+  _refreshQueues();
 }
 
 async function clearDoneQueue() {
@@ -6104,13 +6143,13 @@ async function clearDoneQueue() {
   // We use cancel_all with a trick — but we need a dedicated endpoint. For now just reload.
   const r = await fetch('/api/queue/clear_done', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
   const d = await r.json();
-  if (d.status === 'ok') { toast('Очищено'); loadQueue(); }
+  if (d.status === 'ok') { toast('Очищено'); _refreshQueues(); }
   else toast(d.message||'Ошибка', true);
 }
 
 async function retryQueueTask(id) {
   const r = await api('/api/queue/retry', {task_ids: [id]});
-  if (r.status === 'ok') { toast('Задача перезапущена'); loadQueue(); }
+  if (r.status === 'ok') { toast('Задача перезапущена'); _refreshQueues(); }
   else toast(r.message, true);
 }
 
@@ -6119,7 +6158,7 @@ async function retrySelectedQueue() {
   if (!checks.length) { toast('Выберите задачи', true); return; }
   const ids = checks.map(c => c.value);
   const r = await api('/api/queue/retry', {task_ids: ids});
-  if (r.status === 'ok') { toast(`Перезапущено: ${r.retried}`); loadQueue(); }
+  if (r.status === 'ok') { toast(`Перезапущено: ${r.retried}`); _refreshQueues(); }
   else toast(r.message, true);
 }
 
@@ -6133,6 +6172,97 @@ function updateQueueSelectedCount() {
   if (el) el.textContent = cnt > 0 ? cnt + ' выбрано' : '';
 }
 document.addEventListener('change', e => { if (e.target.classList.contains('queue-check')) updateQueueSelectedCount(); });
+
+// ---- Standalone Queue tab ----
+async function loadQueueStandalone() {
+  const r = await api('/api/queue');
+  if (r.status === 'ok') {
+    _queueTasks = r.tasks || [];
+    renderQueueStandalone();
+    updateQueueBadge();
+  }
+}
+
+function renderQueueStandalone() {
+  const typeF = document.getElementById('q-filter-type')?.value || '';
+  const statusF = document.getElementById('q-filter-status')?.value || '';
+  let tasks = _queueTasks;
+  if (typeF) tasks = tasks.filter(t => t.task_type === typeF);
+  if (statusF) tasks = tasks.filter(t => t.status === statusF);
+
+  // Stats — clickable
+  const stats = {};
+  _queueTasks.forEach(t => { stats[t.status] = (stats[t.status] || 0) + 1; });
+  const statLabels = {pending:'Ожидает',processing:'Обработка',running:'Работает',done:'Готово',error:'Ошибка',cancelled:'Отменено',skipped:'Пропущено'};
+  const statColors = {pending:'#f5a623',processing:'#1da1f2',running:'#1da1f2',done:'#17bf63',error:'#e0245e',cancelled:'#71767b',skipped:'#8899a6'};
+  const qStatsEl = document.getElementById('q-stats');
+  if (qStatsEl) {
+    qStatsEl.innerHTML = Object.entries(stats).map(([k,v]) => {
+      const isActive = statusF === k;
+      return `<span onclick="qFilterByStatus('${k}')" style="padding:4px 12px;background:${isActive ? statColors[k]||'#38444d' : (statColors[k]||'#38444d')+'22'};border:1px solid ${statColors[k]||'#38444d'};border-radius:12px;font-size:0.85em;color:${isActive?'#fff':statColors[k]||'#8899a6'};cursor:pointer;user-select:none;transition:all .15s">${statLabels[k]||k}: ${v}</span>`;
+    }).join('');
+  }
+
+  const typeLabels = {rewrite:'Переписка', sheets:'Sheets', full_auto:'Полный автомат', no_llm:'Без LLM', mod_rewrite:'Рерайт (мод.)'};
+  const typeIcons = {rewrite:'&#9998;', sheets:'&#128196;', full_auto:'&#128640;', no_llm:'&#128203;', mod_rewrite:'&#9998;'};
+  const statusIcons = {pending:'&#9203;',processing:'&#9881;',running:'&#9881;',done:'&#9989;',error:'&#10060;',cancelled:'&#128683;',skipped:'&#8594;'};
+
+  const tb = document.getElementById('q-table');
+  if (!tb) return;
+  tb.innerHTML = tasks.map(t => {
+    const canCancel = t.status === 'pending';
+    const canRetry = ['error', 'cancelled', 'skipped', 'done'].includes(t.status);
+    const canCheck = canCancel || canRetry;
+    const timeAgo = t.created_at ? new Date(t.created_at).toLocaleString('ru') : '';
+    let resultText = '';
+    if (t.result) {
+      try {
+        const rr = JSON.parse(t.result);
+        if (rr.stage) {
+          const stageLabels = {scoring:'Скоринг',enriching:'Обогащение',rewriting:'Рерайт',exporting:'Экспорт',complete:'Готово',filtered:'Отфильтровано',init:'Инициализация'};
+          resultText = (stageLabels[rr.stage] || rr.stage);
+          if (rr.score !== undefined) resultText += ` (скор:${rr.score})`;
+          if (rr.reason) resultText += ` — ${rr.reason}`;
+          if (rr.sheet_row) resultText += ` → строка ${rr.sheet_row}`;
+          if (rr.rewrite_title) resultText += ` | ${rr.rewrite_title}`;
+          if (rr.error) resultText += ` ❌ ${rr.error}`;
+        } else {
+          resultText = rr.title || rr.row || rr.article_id || t.result;
+        }
+      } catch(e) { resultText = t.result; }
+    }
+    if (resultText.length > 60) resultText = resultText.substring(0, 60) + '...';
+    return `<tr style="opacity:${t.status==='cancelled'?'0.5':'1'}">
+      <td><input type="checkbox" class="queue-check" value="${t.id}" data-status="${t.status}" style="width:16px;height:16px" ${canCheck?'':'disabled'}></td>
+      <td>${typeIcons[t.task_type]||''} ${typeLabels[t.task_type]||t.task_type}</td>
+      <td style="max-width:300px"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px" title="${(t.news_title||'').replace(/"/g,'&quot;')}">${t.news_title||t.news_id}</div></td>
+      <td>${t.style||'—'}</td>
+      <td><span style="color:${statColors[t.status]||'#8899a6'}">${statusIcons[t.status]||''} ${statLabels[t.status]||t.status}</span></td>
+      <td style="max-width:200px;font-size:0.82em;color:#8899a6"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">${resultText}</div></td>
+      <td style="font-size:0.82em;color:#8899a6;white-space:nowrap">${timeAgo}</td>
+      <td style="white-space:nowrap">${canCancel ? `<button class="btn btn-sm btn-danger" onclick="cancelQueueTask('${t.id}')">Отменить</button>` : ''}${canRetry ? `<button class="btn btn-sm btn-primary" onclick="retryQueueTask('${t.id}')">Повторить</button>` : ''}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="8" style="text-align:center;color:#8899a6;padding:20px">Очередь пуста</td></tr>';
+
+  const cnt = document.querySelectorAll('#q-table .queue-check:checked').length;
+  const cntEl = document.getElementById('q-selected-count');
+  if (cntEl) cntEl.textContent = cnt > 0 ? cnt + ' выбрано' : '';
+}
+
+function qFilterByStatus(status) {
+  const sel = document.getElementById('q-filter-status');
+  if (sel) {
+    sel.value = sel.value === status ? '' : status;
+    renderQueueStandalone();
+  }
+}
+
+function qToggleAll(el) {
+  document.querySelectorAll('#q-table .queue-check:not(:disabled)').forEach(c => c.checked = el.checked);
+  const cnt = document.querySelectorAll('#q-table .queue-check:checked').length;
+  const cntEl = document.getElementById('q-selected-count');
+  if (cntEl) cntEl.textContent = cnt > 0 ? cnt + ' выбрано' : '';
+}
 
 // Date range quick filters (News tab)
 function setNewsDateRange(range) {
@@ -6762,7 +6892,7 @@ loadQueue();
 loadAnalytics();
 loadLogs();
 setInterval(loadHealth, 60000);
-setInterval(loadQueue, 15000);
+setInterval(() => { loadQueue(); if (document.getElementById('panel-queue')?.classList.contains('active')) loadQueueStandalone(); }, 15000);
 
 let _edSearchTimer;
 function debounceEdSearch() {
