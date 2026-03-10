@@ -4436,6 +4436,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           <option value="">Все</option>
         </select>
         <button class="btn btn-sm btn-secondary" onclick="loadFinal()">Обновить</button>
+        <button class="btn btn-sm" onclick="finSelectAbove60()" style="background:#17bf63;color:#fff" title="Отметить все новости с финальным скором >= 60">&#10003; Отметить &gt;60</button>
         <button class="btn btn-sm btn-primary" onclick="finSendSelected()" style="background:#9b59b6;border-color:#9b59b6">&#9998; В контент</button>
         <span id="fin-selected-count" style="color:#1da1f2;font-size:0.85em"></span>
       </div>
@@ -6653,15 +6654,21 @@ function renderFinalTable() {
     const scColor = sc >= 70 ? '#17bf63' : sc >= 40 ? '#ffad1f' : '#e0245e';
     const fsColor = fs >= 60 ? '#17bf63' : fs >= 35 ? '#ffad1f' : '#e0245e';
     const viralBadge = n.viral_level === 'high' ? 'background:#e0245e33;color:#e0245e' : n.viral_level === 'medium' ? 'background:#ffad1f33;color:#ffad1f' : 'background:#38444d;color:#8899a6';
+    let viralTriggers = '';
+    try {
+      const vd = JSON.parse(n.viral_data || '[]');
+      if (Array.isArray(vd) && vd.length) viralTriggers = vd.map(t => typeof t === 'string' ? t : (t.label || t.trigger || t)).join(', ');
+    } catch(e){}
+    const viralTip = viralTriggers ? `${n.viral_level || 'low'} (${n.viral_score||0})\n${viralTriggers}` : `${n.viral_level || 'low'} (${n.viral_score||0})`;
     const freshBadge = n.freshness_status === 'fresh' ? 'color:#17bf63' : n.freshness_status === 'aging' ? 'color:#ffad1f' : 'color:#e0245e';
     const sentIcon = n.sentiment_label === 'positive' ? '&#128994;' : n.sentiment_label === 'negative' ? '&#128308;' : '&#9898;';
     const hrs = n.freshness_hours >= 0 ? Math.round(n.freshness_hours) + 'ч' : '-';
     return `<tr>
-      <td><input type="checkbox" class="fin-check" data-id="${n.id}" onchange="finUpdateCount()"></td>
+      <td><input type="checkbox" class="fin-check" data-id="${n.id}" data-score="${fs}" onchange="finUpdateCount()"></td>
       <td style="font-size:0.8em">${n.source}</td>
       <td><a href="${n.url}" target="_blank" style="color:#e1e8ed" title="${esc(n.h1||'')}">${esc((n.title||'').slice(0,80))}</a></td>
       <td style="text-align:center;font-weight:700;color:${scColor}">${sc}</td>
-      <td style="text-align:center"><span style="padding:2px 6px;border-radius:8px;font-size:0.8em;${viralBadge}">${n.viral_score||0}</span></td>
+      <td style="text-align:center" class="td-tip"><span style="padding:2px 6px;border-radius:8px;font-size:0.8em;${viralBadge};cursor:help" title="${esc(viralTip)}">${n.viral_score||0}</span></td>
       <td style="text-align:center;${freshBadge};font-size:0.85em">${hrs}</td>
       <td style="text-align:center;font-size:0.9em">${sentIcon}</td>
       <td style="font-size:0.78em">${tags||'-'}</td>
@@ -6703,6 +6710,14 @@ function sortFinal(field) {
 function finToggleAll(el) {
   document.querySelectorAll('.fin-check').forEach(c => c.checked = el.checked);
   finUpdateCount();
+}
+function finSelectAbove60() {
+  document.querySelectorAll('.fin-check').forEach(c => {
+    c.checked = Number(c.dataset.score) >= 60;
+  });
+  finUpdateCount();
+  const cnt = [...document.querySelectorAll('.fin-check:checked')].length;
+  toast(`Отмечено ${cnt} новостей с финалом >= 60`);
 }
 function finUpdateCount() {
   const cnt = [...document.querySelectorAll('.fin-check:checked')].length;
