@@ -7566,10 +7566,21 @@ async function stopPipeline() {
   if (!confirm('Остановить текущий пайплайн?')) return;
   const r = await api('/api/pipeline/stop', {});
   if (r.status === 'ok') {
-    toast('Пайплайн останавливается...');
+    toast('Пайплайн остановлен');
+    // Immediately update UI
+    const btnStop = document.getElementById('btn-pipeline-stop');
+    btnStop.disabled = true;
+    btnStop.textContent = '⏳ Останавливается...';
     document.getElementById('pipeline-status').textContent = 'Останавливается...';
     document.getElementById('pipeline-status').style.color = '#e0245e';
-    // Will clear on next poll when pipeline actually stops
+    // Force check and reset after short delay
+    setTimeout(async () => {
+      setPipelineActive(null);
+      btnStop.disabled = false;
+      btnStop.textContent = '⏹ Стоп';
+      loadEditorial();
+      loadQueue();
+    }, 2000);
   } else {
     toast(r.message || 'Ошибка', true);
   }
