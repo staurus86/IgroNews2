@@ -30,6 +30,36 @@ def parse_sources(interval_min: int):
             total += parse_sitemap_source(source)
     logger.info("[%dmin] Total new articles: %d", interval_min, total)
 
+    # Auto-review: бесплатный локальный анализ сразу после парсинга
+    if total > 0:
+        _auto_review_new()
+
+
+def _auto_review_new():
+    """Автоматическая проверка новых новостей (бесплатно, всё локальное)."""
+    try:
+        from storage.database import get_connection, _is_postgres
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        cur.execute(f"SELECT * FROM news WHERE status = 'new' ORDER BY parsed_at DESC LIMIT {ph}", (50,))
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            news_list = [dict(row) for row in cur.fetchall()]
+
+        if not news_list:
+            return
+
+        from checks.pipeline import run_review_pipeline
+        result = run_review_pipeline(news_list, update_status=True)
+        reviewed = len(result.get("results", []))
+        dupes = sum(1 for r in result.get("results", []) if r.get("is_duplicate"))
+        logger.info("Auto-review: %d checked, %d duplicates", reviewed, dupes)
+    except Exception as e:
+        logger.error("Auto-review error: %s", e)
+
 
 def _process_single_news(news_id: str) -> dict:
     """Обрабатывает одну новость по ID. Возвращает результат."""
@@ -128,7 +158,7 @@ def start_scheduler():
     """Запускает планировщик задач."""
     scheduler = BlockingScheduler(timezone="Europe/Moscow")
 
-    # Парсинг по интервалам
+    # Парсинг по интервалам (включает auto-review)
     intervals = sorted(set(s["interval"] for s in config.SOURCES))
     for mins in intervals:
         scheduler.add_job(parse_sources, "interval", minutes=mins, args=[mins], id=f"parse_{mins}min")
@@ -139,7 +169,7 @@ def start_scheduler():
     # Очистка старого plain_text раз в сутки (экономия памяти БД)
     scheduler.add_job(cleanup_old_plaintext, "interval", hours=24, id="cleanup_plaintext")
 
-    # Первый запуск парсинга сразу (без process_news — только парсинг бесплатный)
+    # Первый запуск парсинга сразу (включает auto-review)
     for mins in intervals:
         parse_sources(mins)
 

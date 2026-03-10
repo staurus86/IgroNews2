@@ -159,6 +159,13 @@ def init_db():
     _add_column_if_missing(cur, "news_analysis", "momentum_score", "INTEGER DEFAULT 0")
     _add_column_if_missing(cur, "news_analysis", "headline_score", "INTEGER DEFAULT 0")
     _add_column_if_missing(cur, "news_analysis", "total_score", "INTEGER DEFAULT 0")
+    # Этап 2: расширенные check results для единой таблицы
+    _add_column_if_missing(cur, "news_analysis", "quality_score", "INTEGER DEFAULT 0")
+    _add_column_if_missing(cur, "news_analysis", "relevance_score", "INTEGER DEFAULT 0")
+    _add_column_if_missing(cur, "news_analysis", "all_checks_pass", "INTEGER DEFAULT 0")
+    _add_column_if_missing(cur, "news_analysis", "entity_names", "TEXT DEFAULT '[]'")
+    _add_column_if_missing(cur, "news_analysis", "entity_best_tier", "TEXT DEFAULT ''")
+    _add_column_if_missing(cur, "news_analysis", "reviewed_at", "TEXT DEFAULT ''")
 
     if not _is_postgres():
         conn.commit()
@@ -282,7 +289,8 @@ def save_analysis(news_id: str, **kwargs):
 
 def save_check_results(news_id: str, checks: dict, sentiment: dict = None,
                        tags: list = None, momentum: dict = None,
-                       headline: dict = None, total_score: int = 0):
+                       headline: dict = None, total_score: int = 0,
+                       entities: list = None):
     """Сохраняет результаты проверок (viral, sentiment, freshness и др.) в news_analysis."""
     import json
     conn = get_connection()
@@ -291,6 +299,15 @@ def save_check_results(news_id: str, checks: dict, sentiment: dict = None,
 
     viral = checks.get("viral", {})
     freshness = checks.get("freshness", {})
+    quality = checks.get("quality", {})
+    relevance = checks.get("relevance", {})
+
+    all_pass = all(c.get("pass", False) for c in checks.values())
+
+    # Entity data
+    ent_list = entities or []
+    ent_names = [e.get("name", "") for e in ent_list[:10]]
+    ent_best_tier = ent_list[0].get("tier", "") if ent_list else ""
 
     vals = {
         "viral_score": viral.get("score", 0),
@@ -304,6 +321,12 @@ def save_check_results(news_id: str, checks: dict, sentiment: dict = None,
         "momentum_score": (momentum or {}).get("score", 0),
         "headline_score": (headline or {}).get("score", 0),
         "total_score": total_score,
+        "quality_score": quality.get("score", 0),
+        "relevance_score": relevance.get("score", 0),
+        "all_checks_pass": 1 if all_pass else 0,
+        "entity_names": json.dumps(ent_names, ensure_ascii=False),
+        "entity_best_tier": ent_best_tier,
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
     }
 
     # Ensure row exists in news_analysis

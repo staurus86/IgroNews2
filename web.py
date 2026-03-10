@@ -120,6 +120,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/logs": lambda: self._json(self._get_logs()),
             "/api/rate_stats": lambda: self._json(self._get_rate_stats()),
             "/api/cache_stats": lambda: self._json(self._get_cache_stats()),
+            "/api/editorial": lambda: self._json(self._get_editorial()),
         }
 
         # DOCX download (GET with query param)
@@ -399,6 +400,108 @@ async function login() {
             rows = [dict(row) for row in cur.fetchall()]
 
         return {"news": rows, "total": total_count, "limit": limit, "offset": offset}
+
+    def _get_editorial(self):
+        """Единый endpoint для вкладки Редакция — все данные в одном запросе."""
+        conn = get_connection()
+        cur = conn.cursor()
+        qs = parse_qs(urlparse(self.path).query)
+        limit = int(qs.get("limit", [100])[0])
+        offset = int(qs.get("offset", [0])[0])
+        status_filter = qs.get("status", [None])[0]
+        source_filter = qs.get("source", [None])[0]
+        min_score = int(qs.get("min_score", [0])[0])
+        viral_level = qs.get("viral_level", [None])[0]
+        tier_filter = qs.get("tier", [None])[0]
+        search = qs.get("q", [None])[0]
+
+        ph = "%s" if _is_postgres() else "?"
+        conditions = []
+        params = []
+
+        # Исключаем дубликаты и отклонённые по умолчанию (если не запрошены)
+        if status_filter:
+            conditions.append(f"n.status = {ph}")
+            params.append(status_filter)
+        else:
+            conditions.append(f"n.status NOT IN ('duplicate', 'rejected')")
+
+        if source_filter:
+            conditions.append(f"n.source = {ph}")
+            params.append(source_filter)
+        if min_score > 0:
+            conditions.append(f"COALESCE(a.total_score, 0) >= {ph}")
+            params.append(min_score)
+        if viral_level:
+            conditions.append(f"a.viral_level = {ph}")
+            params.append(viral_level)
+        if tier_filter:
+            conditions.append(f"a.entity_best_tier = {ph}")
+            params.append(tier_filter)
+        if search:
+            conditions.append(f"LOWER(n.title) LIKE {ph}")
+            params.append(f"%{search.lower()}%")
+
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+        # Count
+        cur.execute(f"SELECT COUNT(*) FROM news n LEFT JOIN news_analysis a ON n.id = a.news_id {where}", params[:])
+        total_count = cur.fetchone()[0]
+
+        # Stats (counts by status)
+        stat_params = []
+        cur.execute("SELECT status, COUNT(*) FROM news GROUP BY status")
+        status_counts = {}
+        for row in cur.fetchall():
+            if _is_postgres():
+                status_counts[row[0]] = row[1]
+            else:
+                status_counts[row[0]] = row[1]
+
+        query = f"""
+            SELECT n.id, n.source, n.title, n.url, n.published_at, n.parsed_at, n.status,
+                   COALESCE(a.total_score, 0) as total_score,
+                   COALESCE(a.quality_score, 0) as quality_score,
+                   COALESCE(a.relevance_score, 0) as relevance_score,
+                   COALESCE(a.viral_score, 0) as viral_score,
+                   COALESCE(a.viral_level, '') as viral_level,
+                   COALESCE(a.viral_data, '[]') as viral_data,
+                   COALESCE(a.sentiment_label, '') as sentiment_label,
+                   COALESCE(a.sentiment_score, 0) as sentiment_score,
+                   COALESCE(a.freshness_status, '') as freshness_status,
+                   COALESCE(a.freshness_hours, -1) as freshness_hours,
+                   COALESCE(a.tags_data, '[]') as tags_data,
+                   COALESCE(a.momentum_score, 0) as momentum_score,
+                   COALESCE(a.headline_score, 0) as headline_score,
+                   COALESCE(a.all_checks_pass, 0) as all_checks_pass,
+                   COALESCE(a.entity_names, '[]') as entity_names,
+                   COALESCE(a.entity_best_tier, '') as entity_best_tier,
+                   COALESCE(a.reviewed_at, '') as reviewed_at,
+                   a.bigrams, a.llm_recommendation, a.llm_trend_forecast,
+                   a.keyso_data, a.trends_data
+            FROM news n
+            LEFT JOIN news_analysis a ON n.id = a.news_id
+            {where}
+            ORDER BY COALESCE(a.total_score, 0) DESC, n.parsed_at DESC
+            LIMIT {ph} OFFSET {ph}
+        """
+        params.append(limit)
+        params.append(offset)
+        cur.execute(query, params)
+
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            rows = [dict(row) for row in cur.fetchall()]
+
+        return {
+            "news": rows,
+            "total": total_count,
+            "limit": limit,
+            "offset": offset,
+            "stats": status_counts,
+        }
 
     def _get_sources(self):
         import config
@@ -2595,20 +2698,88 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 
 <div class="container">
   <div class="tabs">
-    <div class="tab active" data-tab="dashboard">Дашборд</div>
-    <div class="tab" data-tab="review">Проверка <span id="review-badge" class="badge badge-new" style="display:none">0</span></div>
+    <div class="tab active" data-tab="editorial">Редакция</div>
+    <div class="tab" data-tab="dashboard">Дашборд</div>
+    <div class="tab" data-tab="review">Проверка</div>
     <div class="tab" data-tab="news">Новости</div>
     <div class="tab" data-tab="editor">Редактор</div>
     <div class="tab" data-tab="articles">Статьи <span id="articles-badge" class="badge badge-new" style="display:none">0</span></div>
     <div class="tab" data-tab="viral">Виральность</div>
     <div class="tab" data-tab="analytics">Аналитика</div>
     <div class="tab" data-tab="health">Здоровье</div>
-    <div class="tab" data-tab="settings">&#9881; Настройки</div>
+    <div class="tab" data-tab="settings">&#9881;</div>
     <div style="margin-left:auto"><a href="/logout" class="btn btn-secondary btn-sm">Выйти</a></div>
   </div>
 
   <!-- DASHBOARD -->
-  <div class="panel active" id="panel-dashboard">
+  <!-- EDITORIAL — единая рабочая вкладка -->
+  <div class="panel active" id="panel-editorial">
+    <!-- Stat cards -->
+    <div class="stats" id="ed-stats"></div>
+
+    <!-- Filters -->
+    <div class="dash-filters" style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <select id="ed-status" onchange="loadEditorial()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+        <option value="">Активные</option>
+        <option value="new">Новые</option>
+        <option value="in_review">На проверке</option>
+        <option value="approved">Одобренные</option>
+        <option value="processed">Обработанные</option>
+        <option value="duplicate">Дубли</option>
+        <option value="rejected">Отклонённые</option>
+      </select>
+      <select id="ed-source" onchange="loadEditorial()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+        <option value="">Все источники</option>
+      </select>
+      <select id="ed-viral" onchange="loadEditorial()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+        <option value="">Виральность</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+      </select>
+      <select id="ed-tier" onchange="loadEditorial()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+        <option value="">Тир</option>
+        <option value="S">S-tier</option>
+        <option value="A">A-tier</option>
+        <option value="B">B-tier</option>
+      </select>
+      <input id="ed-min-score" type="number" value="0" min="0" max="100" placeholder="Мин. скор" onchange="loadEditorial()" style="width:70px;padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+      <input id="ed-search" placeholder="Поиск по заголовку..." onkeyup="if(event.key==='Enter')loadEditorial()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px;min-width:180px">
+      <button class="btn btn-sm btn-secondary" onclick="loadEditorial()">&#128269;</button>
+      <span style="color:#8899a6;font-size:0.85em" id="ed-count"></span>
+    </div>
+
+    <!-- Bulk actions -->
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-sm btn-primary" onclick="edApproveSelected()">&#10003; Одобрить</button>
+      <button class="btn btn-sm btn-danger" onclick="edRejectSelected()">&#10007; Отклонить</button>
+      <button class="btn btn-sm btn-warning" onclick="edAutoApprove()">&#9889; Авто-одобрить (скор &gt; 70)</button>
+      <span id="ed-selected-count" style="color:#8899a6;font-size:0.85em"></span>
+    </div>
+
+    <!-- Table -->
+    <div style="background:#192734;border-radius:10px;overflow:hidden">
+      <table>
+        <thead><tr>
+          <th style="width:30px"><input type="checkbox" onchange="edToggleAll(this)" style="width:16px;height:16px"></th>
+          <th class="sortable" onclick="edSort('source')" style="width:90px">Источник</th>
+          <th class="sortable" onclick="edSort('title')">Заголовок</th>
+          <th class="sortable" onclick="edSort('status')" style="width:85px">Статус</th>
+          <th class="sortable" onclick="edSort('total_score')" style="width:50px">Скор</th>
+          <th style="width:60px">Кач/Рел</th>
+          <th class="sortable" onclick="edSort('viral_score')" style="width:75px">Вирал.</th>
+          <th style="width:65px">Свежесть</th>
+          <th style="width:40px">Тон</th>
+          <th style="width:120px">Теги</th>
+          <th style="width:120px">Действия</th>
+        </tr></thead>
+        <tbody id="ed-table"></tbody>
+      </table>
+    </div>
+    <div id="ed-pagination" style="margin-top:10px;display:flex;gap:8px;justify-content:center"></div>
+  </div>
+
+  <div class="panel" id="panel-dashboard">
     <div class="stats" id="stats"></div>
 
     <!-- Dashboard Filters -->
@@ -3619,6 +3790,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   t.classList.add('active');
   document.getElementById('panel-' + t.dataset.tab).classList.add('active');
   // Refresh data when switching to key tabs
+  if (t.dataset.tab === 'editorial') { loadEditorial(); }
   if (t.dataset.tab === 'dashboard') { loadStats(); loadNews(); }
   if (t.dataset.tab === 'news') { loadNewsPage(0); }
   if (t.dataset.tab === 'viral') { loadViral(); }
@@ -5996,9 +6168,292 @@ loadArticles();
 loadQueue();
 loadAnalytics();
 loadLogs();
+loadEditorial();
 setInterval(loadAll, 30000);
 setInterval(loadHealth, 60000);
 setInterval(loadQueue, 15000);
+
+// === EDITORIAL TAB ===
+let _edData = [];
+let _edSortField = 'total_score';
+let _edSortDir = 'desc';
+let _edPage = 0;
+const _edLimit = 100;
+
+async function loadEditorial(page) {
+  if (page !== undefined) _edPage = page;
+  const status = document.getElementById('ed-status').value;
+  const source = document.getElementById('ed-source').value;
+  const viral = document.getElementById('ed-viral').value;
+  const tier = document.getElementById('ed-tier').value;
+  const minScore = document.getElementById('ed-min-score').value || 0;
+  const search = document.getElementById('ed-search').value;
+  const offset = _edPage * _edLimit;
+
+  let url = `/api/editorial?limit=${_edLimit}&offset=${offset}`;
+  if (status) url += `&status=${status}`;
+  if (source) url += `&source=${encodeURIComponent(source)}`;
+  if (viral) url += `&viral_level=${viral}`;
+  if (tier) url += `&tier=${tier}`;
+  if (minScore > 0) url += `&min_score=${minScore}`;
+  if (search) url += `&q=${encodeURIComponent(search)}`;
+
+  const r = await (await fetch(url)).json();
+  _edData = r.news || [];
+  const total = r.total || 0;
+  const stats = r.stats || {};
+
+  // Render stats
+  const statsEl = document.getElementById('ed-stats');
+  const sColors = {new:'#ffad1f',in_review:'#1da1f2',approved:'#17bf63',processed:'#794bc4',duplicate:'#657786',rejected:'#e0245e'};
+  const sLabels = {new:'Новые',in_review:'Проверка',approved:'Одобрены',processed:'Обработаны',duplicate:'Дубли',rejected:'Отклонены'};
+  statsEl.innerHTML = Object.entries(sLabels).map(([k,v]) => {
+    const cnt = stats[k] || 0;
+    const isActive = status === k;
+    return `<div class="stat ${isActive?'active-filter':''}" onclick="document.getElementById('ed-status').value='${isActive?'':k}';loadEditorial(0)">
+      <div class="num" style="color:${sColors[k]}">${cnt}</div><div class="lbl">${v}</div></div>`;
+  }).join('');
+
+  // Populate source filter (once)
+  const srcSel = document.getElementById('ed-source');
+  if (srcSel.options.length <= 1) {
+    const sources = [...new Set(_edData.map(n => n.source))].sort();
+    sources.forEach(s => { const o = document.createElement('option'); o.value=s; o.text=s; srcSel.add(o); });
+  }
+
+  document.getElementById('ed-count').textContent = `${total} новостей`;
+  renderEdTable();
+  renderEdPagination(total);
+}
+
+function renderEdTable() {
+  // Sort
+  const data = [..._edData].sort((a, b) => {
+    let va = a[_edSortField], vb = b[_edSortField];
+    if (typeof va === 'string') va = va.toLowerCase();
+    if (typeof vb === 'string') vb = vb.toLowerCase();
+    if (va < vb) return _edSortDir === 'asc' ? -1 : 1;
+    if (va > vb) return _edSortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+
+  const tbody = document.getElementById('ed-table');
+  tbody.innerHTML = data.map(n => {
+    const sc = n.total_score || 0;
+    const scColor = sc >= 70 ? '#17bf63' : sc >= 40 ? '#ffad1f' : '#e0245e';
+    const stColor = {new:'#ffad1f',in_review:'#1da1f2',approved:'#17bf63',processed:'#794bc4',duplicate:'#657786',rejected:'#e0245e'}[n.status] || '#8899a6';
+    const stLabel = {new:'Новая',in_review:'Проверка',approved:'Одобрена',processed:'Обработана',duplicate:'Дубль',rejected:'Отклонена'}[n.status] || n.status;
+
+    // Viral
+    const vl = n.viral_level || '';
+    const vs = n.viral_score || 0;
+    const vlColor = {high:'#e0245e',medium:'#ffad1f',low:'#1da1f2'}[vl] || '#657786';
+
+    // Freshness
+    const fh = n.freshness_hours;
+    const fs = n.freshness_status || '';
+    const fLabel = fh >= 0 ? (fh < 1 ? '<1ч' : Math.round(fh)+'ч') : '-';
+    const fColor = fs === 'fresh' ? '#17bf63' : fs === 'aging' ? '#ffad1f' : '#e0245e';
+
+    // Sentiment
+    const sl = n.sentiment_label || '';
+    const sEmoji = sl === 'positive' ? '⊕' : sl === 'negative' ? '⊖' : '⊘';
+    const slColor = sl === 'positive' ? '#17bf63' : sl === 'negative' ? '#e0245e' : '#8899a6';
+
+    // Tags
+    let tags = [];
+    try { tags = JSON.parse(n.tags_data || '[]'); } catch(e) {}
+    const tagsHtml = tags.slice(0,3).map(t => `<span class="tag tag-${t.id}" style="font-size:0.7em;padding:1px 5px">${t.label}</span>`).join(' ');
+
+    // Entities
+    let ents = [];
+    try { ents = JSON.parse(n.entity_names || '[]'); } catch(e) {}
+    const entTier = n.entity_best_tier || '';
+    const entHtml = entTier ? `<span style="color:${entTier==='S'?'#e0245e':entTier==='A'?'#ffad1f':'#8899a6'};font-size:0.7em;font-weight:bold">${entTier}</span>` : '';
+
+    // Quality / Relevance
+    const qs = n.quality_score || 0;
+    const rs = n.relevance_score || 0;
+
+    // Status buttons
+    const canApprove = ['new','in_review'].includes(n.status);
+    const approveBtn = canApprove ? `<button class="btn btn-sm btn-primary" onclick="edApprove('${n.id}')" title="Одобрить" style="padding:2px 6px">&#10003;</button>` : '';
+    const rejectBtn = canApprove ? `<button class="btn btn-sm btn-danger" onclick="edReject('${n.id}')" title="Отклонить" style="padding:2px 6px">&#10007;</button>` : '';
+    const editorBtn = `<button class="btn btn-sm btn-secondary" onclick="edToEditor('${n.id}')" title="В редактор" style="padding:2px 6px">&#9998;</button>`;
+
+    return `<tr class="ed-row" data-id="${n.id}">
+      <td><input type="checkbox" class="ed-cb" value="${n.id}" style="width:15px;height:15px"></td>
+      <td style="font-size:0.8em;color:#8899a6">${n.source} ${entHtml}</td>
+      <td>
+        <div style="cursor:pointer" onclick="edToggleDetail('${n.id}')">
+          <div style="font-size:0.9em;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${n.title}</div>
+        </div>
+      </td>
+      <td><span style="color:${stColor};font-size:0.75em;font-weight:500">${stLabel}</span></td>
+      <td style="text-align:center"><span style="color:${scColor};font-weight:bold;font-size:1.1em">${sc}</span></td>
+      <td style="text-align:center;font-size:0.8em;color:#8899a6">${qs}/${rs}</td>
+      <td style="text-align:center"><span style="color:${vlColor};font-weight:bold">${vs}</span><br><span style="font-size:0.7em;color:${vlColor}">${vl}</span></td>
+      <td style="text-align:center"><span style="color:${fColor};font-size:0.85em">${fLabel}</span></td>
+      <td style="text-align:center"><span style="color:${slColor}" title="${sl}">${sEmoji}</span></td>
+      <td>${tagsHtml}</td>
+      <td style="white-space:nowrap">${approveBtn} ${rejectBtn} ${editorBtn}</td>
+    </tr>
+    <tr class="ed-detail" id="ed-detail-${n.id}" style="display:none">
+      <td colspan="11" style="padding:12px 20px;background:#15202b;border-left:3px solid #1da1f2">
+        ${_edRenderDetail(n, ents, tags)}
+      </td>
+    </tr>`;
+  }).join('');
+
+  // Update selected count
+  edUpdateSelected();
+}
+
+function _edRenderDetail(n, ents, tags) {
+  // Viral triggers
+  let triggers = [];
+  try { triggers = JSON.parse(n.viral_data || '[]'); } catch(e) {}
+  const trigHtml = triggers.map(t =>
+    `<span style="display:inline-block;padding:2px 6px;border-radius:4px;font-size:0.75em;margin:1px;background:${t.weight>=40?'#e0245e33':t.weight>=20?'#ffad1f33':'#1da1f233'};color:${t.weight>=40?'#e0245e':t.weight>=20?'#ffad1f':'#1da1f2'}">${t.label} +${t.weight}</span>`
+  ).join(' ');
+
+  // Entities
+  const entHtml = ents.length > 0 ? ents.join(', ') : '<span style="color:#657786">нет</span>';
+
+  // Enrichment data (if available)
+  let keysoHtml = '-', trendsHtml = '-', llmHtml = '-', bigramsHtml = '-';
+  try {
+    const kd = JSON.parse(n.keyso_data || '{}');
+    if (kd.freq) keysoHtml = `ws=${kd.freq}`;
+    if (kd.similar) keysoHtml += ` (${typeof kd.similar === 'object' ? (Array.isArray(kd.similar) ? kd.similar.length : 0) : 0} similar)`;
+  } catch(e) {}
+  try {
+    const td = JSON.parse(n.trends_data || '{}');
+    const tvals = Object.entries(td).map(([k,v]) => `${k}:${v}`).join(' ');
+    if (tvals) trendsHtml = tvals;
+  } catch(e) {}
+  if (n.llm_recommendation) llmHtml = n.llm_recommendation;
+  try {
+    const bg = JSON.parse(n.bigrams || '[]');
+    if (bg.length) bigramsHtml = bg.slice(0,5).map(b => Array.isArray(b) ? b[0] : b).join(', ');
+  } catch(e) {}
+
+  const fh = n.freshness_hours;
+  const freshLabel = fh >= 0 ? (fh < 1 ? 'менее часа' : Math.round(fh) + ' ч. назад') : 'н/д';
+
+  return `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <div style="margin-bottom:8px"><b style="color:#1da1f2">Проверки:</b>
+          Качество: <b>${n.quality_score}</b> &middot;
+          Релевантность: <b>${n.relevance_score}</b> &middot;
+          Headline: <b>${n.headline_score}</b> &middot;
+          Momentum: <b>${n.momentum_score}</b> &middot;
+          Свежесть: <b>${freshLabel}</b>
+        </div>
+        <div style="margin-bottom:8px"><b style="color:#1da1f2">Сущности:</b> ${entHtml}</div>
+        <div style="margin-bottom:8px"><b style="color:#1da1f2">Вирал. тригеры:</b> ${trigHtml || '<span style="color:#657786">нет</span>'}</div>
+        <div><b style="color:#1da1f2">Биграммы:</b> <span style="color:#8899a6">${bigramsHtml}</span></div>
+      </div>
+      <div>
+        <div style="margin-bottom:8px"><b style="color:#1da1f2">Keys.so:</b> <span style="color:#8899a6">${keysoHtml}</span></div>
+        <div style="margin-bottom:8px"><b style="color:#1da1f2">Trends:</b> <span style="color:#8899a6">${trendsHtml}</span></div>
+        <div style="margin-bottom:8px"><b style="color:#1da1f2">LLM:</b> <span style="color:#8899a6">${llmHtml}</span></div>
+        <div style="margin-bottom:8px">
+          <a href="${n.url}" target="_blank" style="color:#1da1f2;font-size:0.85em">Открыть оригинал &#8599;</a>
+          &middot; <span style="color:#657786;font-size:0.8em">${n.published_at || ''}</span>
+        </div>
+      </div>
+    </div>`;
+}
+
+function edToggleDetail(id) {
+  const el = document.getElementById('ed-detail-' + id);
+  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+
+function edSort(field) {
+  if (_edSortField === field) {
+    _edSortDir = _edSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _edSortField = field;
+    _edSortDir = field === 'title' || field === 'source' ? 'asc' : 'desc';
+  }
+  renderEdTable();
+}
+
+function edToggleAll(cb) {
+  document.querySelectorAll('.ed-cb').forEach(c => c.checked = cb.checked);
+  edUpdateSelected();
+}
+
+function edUpdateSelected() {
+  const cnt = document.querySelectorAll('.ed-cb:checked').length;
+  const el = document.getElementById('ed-selected-count');
+  el.textContent = cnt > 0 ? `Выбрано: ${cnt}` : '';
+}
+
+// Delegation for checkbox changes
+document.getElementById('ed-table')?.addEventListener('change', (e) => {
+  if (e.target.classList.contains('ed-cb')) edUpdateSelected();
+});
+
+function _edGetSelected() {
+  return [...document.querySelectorAll('.ed-cb:checked')].map(c => c.value);
+}
+
+async function edApprove(id) {
+  const r = await api('/api/approve', {news_ids: [id]});
+  if (r.status === 'ok') { toast('Одобрено'); loadEditorial(); } else toast(r.message, true);
+}
+
+async function edReject(id) {
+  const r = await api('/api/reject', {news_ids: [id]});
+  if (r.status === 'ok') { toast('Отклонено'); loadEditorial(); } else toast(r.message, true);
+}
+
+async function edApproveSelected() {
+  const ids = _edGetSelected();
+  if (!ids.length) { toast('Выберите новости', true); return; }
+  const r = await api('/api/approve', {news_ids: ids});
+  if (r.status === 'ok') { toast(`Одобрено: ${ids.length}`); loadEditorial(); } else toast(r.message, true);
+}
+
+async function edRejectSelected() {
+  const ids = _edGetSelected();
+  if (!ids.length) { toast('Выберите новости', true); return; }
+  const r = await api('/api/reject', {news_ids: ids});
+  if (r.status === 'ok') { toast(`Отклонено: ${ids.length}`); loadEditorial(); } else toast(r.message, true);
+}
+
+async function edAutoApprove() {
+  const ids = _edData.filter(n => (n.total_score || 0) >= 70 && ['new','in_review'].includes(n.status)).map(n => n.id);
+  if (!ids.length) { toast('Нет новостей со скором >= 70', true); return; }
+  const r = await api('/api/approve', {news_ids: ids});
+  if (r.status === 'ok') { toast(`Авто-одобрено: ${ids.length}`); loadEditorial(); } else toast(r.message, true);
+}
+
+function edToEditor(id) {
+  // Switch to editor tab and load this news
+  switchToTab('editor');
+  // Try to select the news in editor list
+  setTimeout(() => {
+    const searchEl = document.getElementById('editor-search');
+    const item = _edData.find(n => n.id === id);
+    if (searchEl && item) { searchEl.value = item.title.slice(0, 40); searchEl.dispatchEvent(new Event('input')); }
+  }, 300);
+}
+
+function renderEdPagination(total) {
+  const pages = Math.ceil(total / _edLimit);
+  if (pages <= 1) { document.getElementById('ed-pagination').innerHTML = ''; return; }
+  let html = '';
+  for (let i = 0; i < pages; i++) {
+    const active = i === _edPage ? 'background:#1da1f2;color:#fff' : 'background:#192734;color:#8899a6';
+    html += `<button onclick="loadEditorial(${i})" style="padding:4px 10px;border:1px solid #38444d;border-radius:4px;cursor:pointer;${active}">${i+1}</button>`;
+  }
+  document.getElementById('ed-pagination').innerHTML = html;
+}
 </script>
 </body>
 </html>"""
