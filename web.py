@@ -303,44 +303,47 @@ class AdminHandler(BaseHTTPRequestHandler):
 
             conn = get_connection()
             cur = conn.cursor()
-            diag["db_connected"] = True
+            try:
+                diag["db_connected"] = True
 
-            # Counts
-            cur.execute("SELECT COUNT(*) FROM news")
-            diag["total_news"] = cur.fetchone()[0]
+                # Counts
+                cur.execute("SELECT COUNT(*) FROM news")
+                diag["total_news"] = cur.fetchone()[0]
 
-            cur.execute("SELECT status, COUNT(*) FROM news GROUP BY status")
-            status_counts = {}
-            for row in cur.fetchall():
-                if _is_postgres():
-                    status_counts[row[0]] = row[1]
-                else:
-                    status_counts[row[0]] = row[1]
-            diag["by_status"] = status_counts
+                cur.execute("SELECT status, COUNT(*) FROM news GROUP BY status")
+                status_counts = {}
+                for row in cur.fetchall():
+                    if _is_postgres():
+                        status_counts[row[0]] = row[1]
+                    else:
+                        status_counts[row[0]] = row[1]
+                diag["by_status"] = status_counts
 
-            cur.execute("SELECT COUNT(*) FROM news_analysis")
-            diag["total_analyzed"] = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM news_analysis")
+                diag["total_analyzed"] = cur.fetchone()[0]
 
-            cur.execute("SELECT COUNT(*) FROM news_analysis WHERE reviewed_at IS NOT NULL AND reviewed_at != ''")
-            diag["total_reviewed"] = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM news_analysis WHERE reviewed_at IS NOT NULL AND reviewed_at != ''")
+                diag["total_reviewed"] = cur.fetchone()[0]
 
-            # Last parsed
-            cur.execute("SELECT MAX(parsed_at) FROM news")
-            row = cur.fetchone()
-            diag["last_parsed"] = str(row[0]) if row and row[0] else "never"
+                # Last parsed
+                cur.execute("SELECT MAX(parsed_at) FROM news")
+                row = cur.fetchone()
+                diag["last_parsed"] = str(row[0]) if row and row[0] else "never"
 
-            # Sources parsed
-            cur.execute("SELECT source, COUNT(*) FROM news GROUP BY source ORDER BY COUNT(*) DESC")
-            src_counts = {}
-            for row in cur.fetchall():
-                if _is_postgres():
-                    src_counts[row[0]] = row[1]
-                else:
-                    src_counts[row[0]] = row[1]
-            diag["sources"] = src_counts
+                # Sources parsed
+                cur.execute("SELECT source, COUNT(*) FROM news GROUP BY source ORDER BY COUNT(*) DESC")
+                src_counts = {}
+                for row in cur.fetchall():
+                    if _is_postgres():
+                        src_counts[row[0]] = row[1]
+                    else:
+                        src_counts[row[0]] = row[1]
+                diag["sources"] = src_counts
 
-            diag["configured_sources"] = len(config.SOURCES)
+                diag["configured_sources"] = len(config.SOURCES)
 
+            finally:
+                cur.close()
         except Exception as e:
             diag["db_connected"] = False
             diag["error"] = str(e)
@@ -664,28 +667,31 @@ async function login() {
             from storage.sheets import write_news_row
             conn = get_connection()
             cur = conn.cursor()
-            ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                news = dict(zip(columns, cur.fetchone()))
-            else:
-                news = dict(cur.fetchone())
-
-            cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (news_id,))
-            row = cur.fetchone()
-            if row:
+            try:
+                ph = "%s" if _is_postgres() else "?"
+                cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
                 if _is_postgres():
                     columns = [desc[0] for desc in cur.description]
-                    analysis = dict(zip(columns, row))
+                    news = dict(zip(columns, cur.fetchone()))
                 else:
-                    analysis = dict(row)
-            else:
-                analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
-                           "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
+                    news = dict(cur.fetchone())
 
-            sheet_row = write_news_row(news, analysis)
-            self._json({"status": "ok", "row": sheet_row})
+                cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (news_id,))
+                row = cur.fetchone()
+                if row:
+                    if _is_postgres():
+                        columns = [desc[0] for desc in cur.description]
+                        analysis = dict(zip(columns, row))
+                    else:
+                        analysis = dict(row)
+                else:
+                    analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
+                               "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
+
+                sheet_row = write_news_row(news, analysis)
+                self._json({"status": "ok", "row": sheet_row})
+            finally:
+                cur.close()
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
 
@@ -804,65 +810,68 @@ async function login() {
         try:
             conn = get_connection()
             cur = conn.cursor()
-            ph = "%s" if _is_postgres() else "?"
-            placeholders = ",".join([ph] * len(news_ids))
-            cur.execute(f"SELECT id, title, description, plain_text FROM news WHERE id IN ({placeholders})", news_ids)
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-            else:
-                rows = [dict(row) for row in cur.fetchall()]
+            try:
+                ph = "%s" if _is_postgres() else "?"
+                placeholders = ",".join([ph] * len(news_ids))
+                cur.execute(f"SELECT id, title, description, plain_text FROM news WHERE id IN ({placeholders})", news_ids)
+                if _is_postgres():
+                    columns = [desc[0] for desc in cur.description]
+                    rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+                else:
+                    rows = [dict(row) for row in cur.fetchall()]
 
-            from checks.tags import auto_tag
-            from checks.deduplication import tfidf_similarity
+                from checks.tags import auto_tag
+                from checks.deduplication import tfidf_similarity
 
-            # Tags per news
-            tags_map = {}
-            for r in rows:
-                tags = auto_tag(r)
-                tags_map[r["id"]] = [{"id": t["id"], "label": t["label"], "hits": t["hits"]} for t in tags[:3]]
+                # Tags per news
+                tags_map = {}
+                for r in rows:
+                    tags = auto_tag(r)
+                    tags_map[r["id"]] = [{"id": t["id"], "label": t["label"], "hits": t["hits"]} for t in tags[:3]]
 
-            # Similarity groups
-            titles = [r.get("title", "") for r in rows]
-            ids_ordered = [r["id"] for r in rows]
-            pairs = tfidf_similarity(titles)
+                # Similarity groups
+                titles = [r.get("title", "") for r in rows]
+                ids_ordered = [r["id"] for r in rows]
+                pairs = tfidf_similarity(titles)
 
-            # Build groups from pairs
-            from collections import defaultdict
-            graph = defaultdict(set)
-            for i, j, score in pairs:
-                graph[i].add(j)
-                graph[j].add(i)
-            visited = set()
-            groups = []
-            group_idx = 0
-            id_to_group = {}
-            for idx in range(len(rows)):
-                if idx in visited:
-                    continue
-                cluster = set()
-                stack = [idx]
-                while stack:
-                    node = stack.pop()
-                    if node in visited:
+                # Build groups from pairs
+                from collections import defaultdict
+                graph = defaultdict(set)
+                for i, j, score in pairs:
+                    graph[i].add(j)
+                    graph[j].add(i)
+                visited = set()
+                groups = []
+                group_idx = 0
+                id_to_group = {}
+                for idx in range(len(rows)):
+                    if idx in visited:
                         continue
-                    visited.add(node)
-                    cluster.add(node)
-                    stack.extend(graph[node] - visited)
-                if len(cluster) >= 2:
-                    group_idx += 1
-                    member_ids = [ids_ordered[i] for i in sorted(cluster)]
-                    member_titles = [titles[i] for i in sorted(cluster)]
-                    for mid in member_ids:
-                        id_to_group[mid] = group_idx
-                    groups.append({
-                        "group": group_idx,
-                        "count": len(member_ids),
-                        "ids": member_ids,
-                        "titles": member_titles,
-                    })
+                    cluster = set()
+                    stack = [idx]
+                    while stack:
+                        node = stack.pop()
+                        if node in visited:
+                            continue
+                        visited.add(node)
+                        cluster.add(node)
+                        stack.extend(graph[node] - visited)
+                    if len(cluster) >= 2:
+                        group_idx += 1
+                        member_ids = [ids_ordered[i] for i in sorted(cluster)]
+                        member_titles = [titles[i] for i in sorted(cluster)]
+                        for mid in member_ids:
+                            id_to_group[mid] = group_idx
+                        groups.append({
+                            "group": group_idx,
+                            "count": len(member_ids),
+                            "ids": member_ids,
+                            "titles": member_titles,
+                        })
 
-            self._json({"status": "ok", "tags": tags_map, "groups": groups, "id_to_group": id_to_group})
+                self._json({"status": "ok", "tags": tags_map, "groups": groups, "id_to_group": id_to_group})
+            finally:
+                cur.close()
         except Exception as e:
             self._json({"status": "error", "message": str(e), "type": type(e).__name__})
 
@@ -871,70 +880,73 @@ async function login() {
         try:
             conn = get_connection()
             cur = conn.cursor()
-            ph = "%s" if _is_postgres() else "?"
-            qs = parse_qs(urlparse(self.path).query)
-            status_filter = qs.get("status", [None])[0]
-            if status_filter:
-                cur.execute(f"SELECT id, title, description, plain_text FROM news WHERE status = {ph} ORDER BY parsed_at DESC LIMIT 200", (status_filter,))
-            else:
-                cur.execute("SELECT id, title, description, plain_text FROM news ORDER BY parsed_at DESC LIMIT 200")
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-            else:
-                rows = [dict(row) for row in cur.fetchall()]
+            try:
+                ph = "%s" if _is_postgres() else "?"
+                qs = parse_qs(urlparse(self.path).query)
+                status_filter = qs.get("status", [None])[0]
+                if status_filter:
+                    cur.execute(f"SELECT id, title, description, plain_text FROM news WHERE status = {ph} ORDER BY parsed_at DESC LIMIT 200", (status_filter,))
+                else:
+                    cur.execute("SELECT id, title, description, plain_text FROM news ORDER BY parsed_at DESC LIMIT 200")
+                if _is_postgres():
+                    columns = [desc[0] for desc in cur.description]
+                    rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+                else:
+                    rows = [dict(row) for row in cur.fetchall()]
 
-            if not rows:
-                self._json({"status": "ok", "tags": {}, "groups": [], "id_to_group": {}})
-                return
+                if not rows:
+                    self._json({"status": "ok", "tags": {}, "groups": [], "id_to_group": {}})
+                    return
 
-            from checks.tags import auto_tag
-            from checks.deduplication import tfidf_similarity
-            from collections import defaultdict
+                from checks.tags import auto_tag
+                from checks.deduplication import tfidf_similarity
+                from collections import defaultdict
 
-            tags_map = {}
-            for r in rows:
-                tags = auto_tag(r)
-                tags_map[r["id"]] = [{"id": t["id"], "label": t["label"], "hits": t["hits"]} for t in tags[:3]]
+                tags_map = {}
+                for r in rows:
+                    tags = auto_tag(r)
+                    tags_map[r["id"]] = [{"id": t["id"], "label": t["label"], "hits": t["hits"]} for t in tags[:3]]
 
-            titles = [r.get("title", "") for r in rows]
-            ids_ordered = [r["id"] for r in rows]
-            pairs = tfidf_similarity(titles)
+                titles = [r.get("title", "") for r in rows]
+                ids_ordered = [r["id"] for r in rows]
+                pairs = tfidf_similarity(titles)
 
-            graph = defaultdict(set)
-            for i, j, score in pairs:
-                graph[i].add(j)
-                graph[j].add(i)
-            visited = set()
-            groups = []
-            group_idx = 0
-            id_to_group = {}
-            for idx in range(len(rows)):
-                if idx in visited:
-                    continue
-                cluster = set()
-                stack = [idx]
-                while stack:
-                    node = stack.pop()
-                    if node in visited:
+                graph = defaultdict(set)
+                for i, j, score in pairs:
+                    graph[i].add(j)
+                    graph[j].add(i)
+                visited = set()
+                groups = []
+                group_idx = 0
+                id_to_group = {}
+                for idx in range(len(rows)):
+                    if idx in visited:
                         continue
-                    visited.add(node)
-                    cluster.add(node)
-                    stack.extend(graph[node] - visited)
-                if len(cluster) >= 2:
-                    group_idx += 1
-                    member_ids = [ids_ordered[i] for i in sorted(cluster)]
-                    member_titles = [titles[i] for i in sorted(cluster)]
-                    for mid in member_ids:
-                        id_to_group[mid] = group_idx
-                    groups.append({
-                        "group": group_idx,
-                        "count": len(member_ids),
-                        "ids": member_ids,
-                        "titles": member_titles,
-                    })
+                    cluster = set()
+                    stack = [idx]
+                    while stack:
+                        node = stack.pop()
+                        if node in visited:
+                            continue
+                        visited.add(node)
+                        cluster.add(node)
+                        stack.extend(graph[node] - visited)
+                    if len(cluster) >= 2:
+                        group_idx += 1
+                        member_ids = [ids_ordered[i] for i in sorted(cluster)]
+                        member_titles = [titles[i] for i in sorted(cluster)]
+                        for mid in member_ids:
+                            id_to_group[mid] = group_idx
+                        groups.append({
+                            "group": group_idx,
+                            "count": len(member_ids),
+                            "ids": member_ids,
+                            "titles": member_titles,
+                        })
 
-            self._json({"status": "ok", "tags": tags_map, "groups": groups, "id_to_group": id_to_group})
+                self._json({"status": "ok", "tags": tags_map, "groups": groups, "id_to_group": id_to_group})
+            finally:
+                cur.close()
         except Exception as e:
             self._json({"status": "error", "message": str(e), "type": type(e).__name__})
 
@@ -947,18 +959,21 @@ async function login() {
         try:
             conn = get_connection()
             cur = conn.cursor()
-            ph = "%s" if _is_postgres() else "?"
-            placeholders = ",".join([ph] * len(news_ids))
-            cur.execute(f"SELECT * FROM news WHERE id IN ({placeholders})", news_ids)
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
-            else:
-                news_list = [dict(row) for row in cur.fetchall()]
+            try:
+                ph = "%s" if _is_postgres() else "?"
+                placeholders = ",".join([ph] * len(news_ids))
+                cur.execute(f"SELECT * FROM news WHERE id IN ({placeholders})", news_ids)
+                if _is_postgres():
+                    columns = [desc[0] for desc in cur.description]
+                    news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+                else:
+                    news_list = [dict(row) for row in cur.fetchall()]
 
-            from checks.pipeline import run_review_pipeline
-            result = run_review_pipeline(news_list)
-            self._json({"status": "ok", **result})
+                from checks.pipeline import run_review_pipeline
+                result = run_review_pipeline(news_list)
+                self._json({"status": "ok", **result})
+            finally:
+                cur.close()
         except Exception as e:
             self._json({"status": "error", "message": str(e), "type": type(e).__name__})
 
@@ -969,72 +984,75 @@ async function login() {
         try:
             conn = get_connection()
             cur = conn.cursor()
-            ph = "%s" if _is_postgres() else "?"
-            if status:
-                cur.execute(f"SELECT * FROM news WHERE status = {ph} ORDER BY parsed_at DESC LIMIT {ph}", (status, limit))
-            else:
-                cur.execute(f"SELECT * FROM news ORDER BY parsed_at DESC LIMIT {ph}", (limit,))
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
-            else:
-                news_list = [dict(row) for row in cur.fetchall()]
+            try:
+                ph = "%s" if _is_postgres() else "?"
+                if status:
+                    cur.execute(f"SELECT * FROM news WHERE status = {ph} ORDER BY parsed_at DESC LIMIT {ph}", (status, limit))
+                else:
+                    cur.execute(f"SELECT * FROM news ORDER BY parsed_at DESC LIMIT {ph}", (limit,))
+                if _is_postgres():
+                    columns = [desc[0] for desc in cur.description]
+                    news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+                else:
+                    news_list = [dict(row) for row in cur.fetchall()]
 
-            if not news_list:
-                self._json({"status": "ok", "results": [], "groups": []})
-                return
+                if not news_list:
+                    self._json({"status": "ok", "results": [], "groups": []})
+                    return
 
-            from checks.pipeline import run_review_pipeline
-            # Прогоняем pipeline но НЕ меняем статусы
-            from checks.deduplication import tfidf_similarity, build_groups
-            from checks.quality import check_quality
-            from checks.relevance import check_relevance
-            from checks.freshness import check_freshness
-            from checks.viral_score import viral_score
-            from checks.tags import auto_tag
-            from checks.sentiment import analyze_sentiment
-            from checks.momentum import get_momentum
+                from checks.pipeline import run_review_pipeline
+                # Прогоняем pipeline но НЕ меняем статусы
+                from checks.deduplication import tfidf_similarity, build_groups
+                from checks.quality import check_quality
+                from checks.relevance import check_relevance
+                from checks.freshness import check_freshness
+                from checks.viral_score import viral_score
+                from checks.tags import auto_tag
+                from checks.sentiment import analyze_sentiment
+                from checks.momentum import get_momentum
 
-            results = []
-            for news in news_list:
-                result = {
-                    "id": news["id"],
-                    "title": news.get("title", ""),
-                    "source": news.get("source", ""),
-                    "url": news.get("url", ""),
-                    "published_at": news.get("published_at", ""),
-                    "status": news.get("status", ""),
-                    "checks": {},
-                }
-                result["checks"]["quality"] = check_quality(news)
-                result["checks"]["relevance"] = check_relevance(news)
-                result["checks"]["freshness"] = check_freshness(news)
-                result["checks"]["viral"] = viral_score(news)
-                result["tags"] = auto_tag(news)
-                result["sentiment"] = analyze_sentiment(news)
-                result["momentum"] = get_momentum(news)
+                results = []
+                for news in news_list:
+                    result = {
+                        "id": news["id"],
+                        "title": news.get("title", ""),
+                        "source": news.get("source", ""),
+                        "url": news.get("url", ""),
+                        "published_at": news.get("published_at", ""),
+                        "status": news.get("status", ""),
+                        "checks": {},
+                    }
+                    result["checks"]["quality"] = check_quality(news)
+                    result["checks"]["relevance"] = check_relevance(news)
+                    result["checks"]["freshness"] = check_freshness(news)
+                    result["checks"]["viral"] = viral_score(news)
+                    result["tags"] = auto_tag(news)
+                    result["sentiment"] = analyze_sentiment(news)
+                    result["momentum"] = get_momentum(news)
 
-                all_pass = all(c["pass"] for c in result["checks"].values())
-                total_score = sum(c["score"] for c in result["checks"].values()) // 4
-                momentum_bonus = result["momentum"]["score"] // 5
-                total_score = min(100, total_score + momentum_bonus)
-                result["overall_pass"] = all_pass
-                result["total_score"] = total_score
-                results.append(result)
+                    all_pass = all(c["pass"] for c in result["checks"].values())
+                    total_score = sum(c["score"] for c in result["checks"].values()) // 4
+                    momentum_bonus = result["momentum"]["score"] // 5
+                    total_score = min(100, total_score + momentum_bonus)
+                    result["overall_pass"] = all_pass
+                    result["total_score"] = total_score
+                    results.append(result)
 
-            # Dedup
-            titles = [r["title"] for r in results]
-            pairs = tfidf_similarity(titles)
-            groups = build_groups(results, pairs)
-            for group in groups:
-                for idx in group.get("duplicate_indices", []):
-                    if idx < len(results):
-                        results[idx]["overall_pass"] = False
-                        results[idx]["is_duplicate"] = True
-                for member in group["members"]:
-                    member["dedup_status"] = group["status"]
+                # Dedup
+                titles = [r["title"] for r in results]
+                pairs = tfidf_similarity(titles)
+                groups = build_groups(results, pairs)
+                for group in groups:
+                    for idx in group.get("duplicate_indices", []):
+                        if idx < len(results):
+                            results[idx]["overall_pass"] = False
+                            results[idx]["is_duplicate"] = True
+                    for member in group["members"]:
+                        member["dedup_status"] = group["status"]
 
-            self._json({"status": "ok", "results": results, "groups": groups})
+                self._json({"status": "ok", "results": results, "groups": groups})
+            finally:
+                cur.close()
         except Exception as e:
             self._json({"status": "error", "message": str(e), "type": type(e).__name__})
 
@@ -1043,51 +1061,54 @@ async function login() {
         try:
             conn = get_connection()
             cur = conn.cursor()
-            ph = "%s" if _is_postgres() else "?"
-            BATCH_SIZE = 20
+            try:
+                ph = "%s" if _is_postgres() else "?"
+                BATCH_SIZE = 20
 
-            # Считаем сколько всего непроверенных
-            cur.execute(f"""
-                SELECT COUNT(*) FROM news n
-                LEFT JOIN news_analysis a ON n.id = a.news_id
-                WHERE n.status IN ('new', 'in_review')
-                  AND (a.reviewed_at IS NULL OR a.reviewed_at = '')
-            """)
-            total_pending = cur.fetchone()[0]
+                # Считаем сколько всего непроверенных
+                cur.execute(f"""
+                    SELECT COUNT(*) FROM news n
+                    LEFT JOIN news_analysis a ON n.id = a.news_id
+                    WHERE n.status IN ('new', 'in_review')
+                      AND (a.reviewed_at IS NULL OR a.reviewed_at = '')
+                """)
+                total_pending = cur.fetchone()[0]
 
-            if total_pending == 0:
-                self._json({"status": "ok", "reviewed": 0, "message": "Нет новых для проверки"})
-                return
+                if total_pending == 0:
+                    self._json({"status": "ok", "reviewed": 0, "message": "Нет новых для проверки"})
+                    return
 
-            # Берём один батч
-            cur.execute(f"""
-                SELECT n.* FROM news n
-                LEFT JOIN news_analysis a ON n.id = a.news_id
-                WHERE n.status IN ('new', 'in_review')
-                  AND (a.reviewed_at IS NULL OR a.reviewed_at = '')
-                ORDER BY n.parsed_at DESC LIMIT {ph}
-            """, (BATCH_SIZE,))
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
-            else:
-                news_list = [dict(row) for row in cur.fetchall()]
+                # Берём один батч
+                cur.execute(f"""
+                    SELECT n.* FROM news n
+                    LEFT JOIN news_analysis a ON n.id = a.news_id
+                    WHERE n.status IN ('new', 'in_review')
+                      AND (a.reviewed_at IS NULL OR a.reviewed_at = '')
+                    ORDER BY n.parsed_at DESC LIMIT {ph}
+                """, (BATCH_SIZE,))
+                if _is_postgres():
+                    columns = [desc[0] for desc in cur.description]
+                    news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+                else:
+                    news_list = [dict(row) for row in cur.fetchall()]
 
-            from checks.pipeline import run_review_pipeline
-            result = run_review_pipeline(news_list, update_status=True)
-            reviewed = len(result.get("results", []))
-            dupes = sum(1 for r in result.get("results", []) if r.get("is_duplicate"))
-            rejected = sum(1 for r in result.get("results", []) if r.get("auto_rejected"))
-            remaining = total_pending - reviewed
-            self._json({
-                "status": "ok",
-                "reviewed": reviewed,
-                "duplicates": dupes,
-                "auto_rejected": rejected,
-                "remaining": remaining,
-                "message": f"Проверено: {reviewed}, дубликатов: {dupes}, отклонено: {rejected}" +
-                           (f". Осталось: {remaining}" if remaining > 0 else "")
-            })
+                from checks.pipeline import run_review_pipeline
+                result = run_review_pipeline(news_list, update_status=True)
+                reviewed = len(result.get("results", []))
+                dupes = sum(1 for r in result.get("results", []) if r.get("is_duplicate"))
+                rejected = sum(1 for r in result.get("results", []) if r.get("auto_rejected"))
+                remaining = total_pending - reviewed
+                self._json({
+                    "status": "ok",
+                    "reviewed": reviewed,
+                    "duplicates": dupes,
+                    "auto_rejected": rejected,
+                    "remaining": remaining,
+                    "message": f"Проверено: {reviewed}, дубликатов: {dupes}, отклонено: {rejected}" +
+                               (f". Осталось: {remaining}" if remaining > 0 else "")
+                })
+            finally:
+                cur.close()
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
 
@@ -1323,17 +1344,19 @@ async function login() {
         task_ids = []
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        for nid in news_ids:
-            try:
-                cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
-                row = cur.fetchone()
-                title = (row[0] if _is_postgres() else row["title"]) if row else ""
-            except Exception:
-                title = ""
-            tid = _create_task("full_auto", nid, title)
-            task_ids.append(tid)
-        cur.close()
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            for nid in news_ids:
+                try:
+                    cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
+                    row = cur.fetchone()
+                    title = (row[0] if _is_postgres() else row["title"]) if row else ""
+                except Exception:
+                    title = ""
+                tid = _create_task("full_auto", nid, title)
+                task_ids.append(tid)
+        finally:
+            cur.close()
 
         # Run in background
         import threading
@@ -1370,17 +1393,19 @@ async function login() {
         task_ids = []
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        for nid in news_ids:
-            try:
-                cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
-                row = cur.fetchone()
-                title = (row[0] if _is_postgres() else row["title"]) if row else ""
-            except Exception:
-                title = ""
-            tid = _create_task("no_llm", nid, title)
-            task_ids.append(tid)
-        cur.close()
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            for nid in news_ids:
+                try:
+                    cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
+                    row = cur.fetchone()
+                    title = (row[0] if _is_postgres() else row["title"]) if row else ""
+                except Exception:
+                    title = ""
+                tid = _create_task("no_llm", nid, title)
+                task_ids.append(tid)
+        finally:
+            cur.close()
 
         import threading
         threading.Thread(
@@ -1513,17 +1538,19 @@ async function login() {
         task_ids = []
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        for nid in news_ids:
-            try:
-                cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
-                row = cur.fetchone()
-                title = (row[0] if _is_postgres() else row["title"]) if row else ""
-            except Exception:
-                title = ""
-            tid = _create_task("mod_rewrite", nid, title, style)
-            task_ids.append(tid)
-        cur.close()
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            for nid in news_ids:
+                try:
+                    cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
+                    row = cur.fetchone()
+                    title = (row[0] if _is_postgres() else row["title"]) if row else ""
+                except Exception:
+                    title = ""
+                tid = _create_task("mod_rewrite", nid, title, style)
+                task_ids.append(tid)
+        finally:
+            cur.close()
 
         # Process rewrites in background (no enrichment, just LLM rewrite)
         import threading
@@ -1659,13 +1686,16 @@ async function login() {
             return
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        for nid in news_ids:
-            cur.execute(f"DELETE FROM news_analysis WHERE news_id = {ph}", (nid,))
-            cur.execute(f"DELETE FROM news WHERE id = {ph}", (nid,))
-        conn.commit()
-        self._json({"status": "ok", "deleted": len(news_ids)})
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            for nid in news_ids:
+                cur.execute(f"DELETE FROM news_analysis WHERE news_id = {ph}", (nid,))
+                cur.execute(f"DELETE FROM news WHERE id = {ph}", (nid,))
+            conn.commit()
+            self._json({"status": "ok", "deleted": len(news_ids)})
 
+        finally:
+            cur.close()
     def _test_parse(self, body):
         url = body.get("url", "")
         if not url:
@@ -1715,31 +1745,37 @@ async function login() {
     def _get_sources_stats(self):
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT source, COUNT(*) as cnt, MAX(parsed_at) as last_parsed FROM news GROUP BY source ORDER BY cnt DESC")
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            return [dict(zip(columns, row)) for row in cur.fetchall()]
-        else:
-            return [dict(row) for row in cur.fetchall()]
+        try:
+            cur.execute("SELECT source, COUNT(*) as cnt, MAX(parsed_at) as last_parsed FROM news GROUP BY source ORDER BY cnt DESC")
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                return [dict(row) for row in cur.fetchall()]
 
+        finally:
+            cur.close()
     def _get_db_info(self):
         conn = get_connection()
         cur = conn.cursor()
-        info = {"type": "PostgreSQL" if _is_postgres() else "SQLite"}
-        cur.execute("SELECT COUNT(*) FROM news")
-        info["total_news"] = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM news_analysis")
-        info["total_analyzed"] = cur.fetchone()[0]
-        for status in ["new", "in_review", "approved", "processed", "rejected", "duplicate"]:
-            ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"SELECT COUNT(*) FROM news WHERE status = {ph}", (status,))
-            info[f"status_{status}"] = cur.fetchone()[0]
-        cur.execute("SELECT MIN(parsed_at), MAX(parsed_at) FROM news")
-        row = cur.fetchone()
-        info["oldest"] = str(row[0]) if row[0] else "-"
-        info["newest"] = str(row[1]) if row[1] else "-"
-        return info
+        try:
+            info = {"type": "PostgreSQL" if _is_postgres() else "SQLite"}
+            cur.execute("SELECT COUNT(*) FROM news")
+            info["total_news"] = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM news_analysis")
+            info["total_analyzed"] = cur.fetchone()[0]
+            for status in ["new", "in_review", "approved", "processed", "rejected", "duplicate"]:
+                ph = "%s" if _is_postgres() else "?"
+                cur.execute(f"SELECT COUNT(*) FROM news WHERE status = {ph}", (status,))
+                info[f"status_{status}"] = cur.fetchone()[0]
+            cur.execute("SELECT MIN(parsed_at), MAX(parsed_at) FROM news")
+            row = cur.fetchone()
+            info["oldest"] = str(row[0]) if row[0] else "-"
+            info["newest"] = str(row[1]) if row[1] else "-"
+            return info
 
+        finally:
+            cur.close()
     def _export_sheets_bulk(self, body):
         news_ids = body.get("news_ids", [])
         if not news_ids:
@@ -1749,41 +1785,44 @@ async function login() {
             from storage.sheets import write_news_row
             conn = get_connection()
             cur = conn.cursor()
-            ph = "%s" if _is_postgres() else "?"
-            exported = 0
-            skipped = 0
-            errors = 0
-            for nid in news_ids:
-                try:
-                    cur.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
-                    row = cur.fetchone()
-                    if not row:
-                        continue
-                    if _is_postgres():
-                        columns = [desc[0] for desc in cur.description]
-                        news = dict(zip(columns, row))
-                    else:
-                        news = dict(row)
-                    cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (nid,))
-                    arow = cur.fetchone()
-                    if arow:
+            try:
+                ph = "%s" if _is_postgres() else "?"
+                exported = 0
+                skipped = 0
+                errors = 0
+                for nid in news_ids:
+                    try:
+                        cur.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
+                        row = cur.fetchone()
+                        if not row:
+                            continue
                         if _is_postgres():
                             columns = [desc[0] for desc in cur.description]
-                            analysis = dict(zip(columns, arow))
+                            news = dict(zip(columns, row))
                         else:
-                            analysis = dict(arow)
-                    else:
-                        analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
-                                   "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
-                    sheet_row = write_news_row(news, analysis)
-                    if sheet_row and sheet_row > 0:
-                        exported += 1
-                    elif sheet_row == -1:
-                        skipped += 1
-                except Exception as e:
-                    logger.warning("Bulk export error for %s: %s", nid, e)
-                    errors += 1
-            self._json({"status": "ok", "exported": exported, "skipped": skipped, "errors": errors})
+                            news = dict(row)
+                        cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (nid,))
+                        arow = cur.fetchone()
+                        if arow:
+                            if _is_postgres():
+                                columns = [desc[0] for desc in cur.description]
+                                analysis = dict(zip(columns, arow))
+                            else:
+                                analysis = dict(arow)
+                        else:
+                            analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
+                                       "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
+                        sheet_row = write_news_row(news, analysis)
+                        if sheet_row and sheet_row > 0:
+                            exported += 1
+                        elif sheet_row == -1:
+                            skipped += 1
+                    except Exception as e:
+                        logger.warning("Bulk export error for %s: %s", nid, e)
+                        errors += 1
+                self._json({"status": "ok", "exported": exported, "skipped": skipped, "errors": errors})
+            finally:
+                cur.close()
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
 
@@ -1794,25 +1833,28 @@ async function login() {
         try:
             conn = get_connection()
             cur = conn.cursor()
-            ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"SELECT title, plain_text, description FROM news WHERE id = {ph}", (news_id,))
-            row = cur.fetchone()
-            if not row:
-                self._json({"status": "error", "message": "News not found"})
-                return
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                news = dict(zip(columns, row))
-            else:
-                news = dict(row)
-            title = news.get("title", "")
-            text = news.get("plain_text", "") or news.get("description", "")
-            from apis.llm import rewrite_news
-            result = rewrite_news(title, text, style, language)
-            if result:
-                self._json({"status": "ok", "result": result, "original_title": title})
-            else:
-                self._json({"status": "error", "message": "LLM returned no result"})
+            try:
+                ph = "%s" if _is_postgres() else "?"
+                cur.execute(f"SELECT title, plain_text, description FROM news WHERE id = {ph}", (news_id,))
+                row = cur.fetchone()
+                if not row:
+                    self._json({"status": "error", "message": "News not found"})
+                    return
+                if _is_postgres():
+                    columns = [desc[0] for desc in cur.description]
+                    news = dict(zip(columns, row))
+                else:
+                    news = dict(row)
+                title = news.get("title", "")
+                text = news.get("plain_text", "") or news.get("description", "")
+                from apis.llm import rewrite_news
+                result = rewrite_news(title, text, style, language)
+                if result:
+                    self._json({"status": "ok", "result": result, "original_title": title})
+                else:
+                    self._json({"status": "error", "message": "LLM returned no result"})
+            finally:
+                cur.close()
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
 
@@ -1824,20 +1866,23 @@ async function login() {
         try:
             conn = get_connection()
             cur = conn.cursor()
-            ph = "%s" if _is_postgres() else "?"
-            placeholders = ",".join([ph] * len(news_ids))
-            cur.execute(f"SELECT id, source, title, plain_text FROM news WHERE id IN ({placeholders})", news_ids)
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
-            else:
-                news_list = [dict(row) for row in cur.fetchall()]
-            from apis.llm import merge_news
-            result = merge_news(news_list)
-            if result:
-                self._json({"status": "ok", "result": result, "sources": [n["source"] for n in news_list]})
-            else:
-                self._json({"status": "error", "message": "LLM returned no result"})
+            try:
+                ph = "%s" if _is_postgres() else "?"
+                placeholders = ",".join([ph] * len(news_ids))
+                cur.execute(f"SELECT id, source, title, plain_text FROM news WHERE id IN ({placeholders})", news_ids)
+                if _is_postgres():
+                    columns = [desc[0] for desc in cur.description]
+                    news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+                else:
+                    news_list = [dict(row) for row in cur.fetchall()]
+                from apis.llm import merge_news
+                result = merge_news(news_list)
+                if result:
+                    self._json({"status": "ok", "result": result, "sources": [n["source"] for n in news_list]})
+                else:
+                    self._json({"status": "error", "message": "LLM returned no result"})
+            finally:
+                cur.close()
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
 
@@ -1848,29 +1893,32 @@ async function login() {
             return
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
-        row = cur.fetchone()
-        if not row:
-            self._json({"status": "error", "message": "Not found"})
-            return
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            news = dict(zip(columns, row))
-        else:
-            news = dict(row)
-        # Get analysis too
-        cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (news_id,))
-        arow = cur.fetchone()
-        analysis = None
-        if arow:
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
+            row = cur.fetchone()
+            if not row:
+                self._json({"status": "error", "message": "Not found"})
+                return
             if _is_postgres():
                 columns = [desc[0] for desc in cur.description]
-                analysis = dict(zip(columns, arow))
+                news = dict(zip(columns, row))
             else:
-                analysis = dict(arow)
-        self._json({"status": "ok", "news": news, "analysis": analysis})
+                news = dict(row)
+            # Get analysis too
+            cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (news_id,))
+            arow = cur.fetchone()
+            analysis = None
+            if arow:
+                if _is_postgres():
+                    columns = [desc[0] for desc in cur.description]
+                    analysis = dict(zip(columns, arow))
+                else:
+                    analysis = dict(arow)
+            self._json({"status": "ok", "news": news, "analysis": analysis})
 
+        finally:
+            cur.close()
     def _analyze_news(self, body):
         """Полный анализ одной новости: viral, freshness, quality, relevance, sentiment, tags, trends, keyso."""
         news_id = body.get("news_id")
@@ -1879,71 +1927,74 @@ async function login() {
             return
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
-        row = cur.fetchone()
-        if not row:
-            self._json({"status": "error", "message": "Not found"})
-            return
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            news = dict(zip(columns, row))
-        else:
-            news = dict(row)
-
-        from checks.viral_score import viral_score
-        from checks.freshness import check_freshness
-        from checks.quality import check_quality
-        from checks.relevance import check_relevance
-        from checks.sentiment import analyze_sentiment
-        from checks.tags import auto_tag
-        from checks.momentum import get_momentum
-
-        result = {
-            "viral": viral_score(news),
-            "freshness": check_freshness(news),
-            "quality": check_quality(news),
-            "relevance": check_relevance(news),
-            "sentiment": analyze_sentiment(news),
-            "tags": auto_tag(news),
-            "momentum": get_momentum(news),
-        }
-
-        # Get existing analysis data (trends, keyso, llm)
-        cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (news_id,))
-        arow = cur.fetchone()
-        if arow:
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
+            row = cur.fetchone()
+            if not row:
+                self._json({"status": "error", "message": "Not found"})
+                return
             if _is_postgres():
                 columns = [desc[0] for desc in cur.description]
-                analysis = dict(zip(columns, arow))
+                news = dict(zip(columns, row))
             else:
-                analysis = dict(arow)
-            import json
-            try:
-                result["trends_data"] = json.loads(analysis.get("trends_data", "{}"))
-            except Exception:
+                news = dict(row)
+
+            from checks.viral_score import viral_score
+            from checks.freshness import check_freshness
+            from checks.quality import check_quality
+            from checks.relevance import check_relevance
+            from checks.sentiment import analyze_sentiment
+            from checks.tags import auto_tag
+            from checks.momentum import get_momentum
+
+            result = {
+                "viral": viral_score(news),
+                "freshness": check_freshness(news),
+                "quality": check_quality(news),
+                "relevance": check_relevance(news),
+                "sentiment": analyze_sentiment(news),
+                "tags": auto_tag(news),
+                "momentum": get_momentum(news),
+            }
+
+            # Get existing analysis data (trends, keyso, llm)
+            cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (news_id,))
+            arow = cur.fetchone()
+            if arow:
+                if _is_postgres():
+                    columns = [desc[0] for desc in cur.description]
+                    analysis = dict(zip(columns, arow))
+                else:
+                    analysis = dict(arow)
+                import json
+                try:
+                    result["trends_data"] = json.loads(analysis.get("trends_data", "{}"))
+                except Exception:
+                    result["trends_data"] = {}
+                try:
+                    result["keyso_data"] = json.loads(analysis.get("keyso_data", "{}"))
+                except Exception:
+                    result["keyso_data"] = {}
+                result["llm_recommendation"] = analysis.get("llm_recommendation", "")
+                result["llm_trend_forecast"] = analysis.get("llm_trend_forecast", "")
+                try:
+                    result["bigrams"] = json.loads(analysis.get("bigrams", "[]"))
+                except Exception:
+                    result["bigrams"] = []
+            else:
                 result["trends_data"] = {}
-            try:
-                result["keyso_data"] = json.loads(analysis.get("keyso_data", "{}"))
-            except Exception:
                 result["keyso_data"] = {}
-            result["llm_recommendation"] = analysis.get("llm_recommendation", "")
-            result["llm_trend_forecast"] = analysis.get("llm_trend_forecast", "")
-            try:
-                result["bigrams"] = json.loads(analysis.get("bigrams", "[]"))
-            except Exception:
+                result["llm_recommendation"] = ""
+                result["llm_trend_forecast"] = ""
                 result["bigrams"] = []
-        else:
-            result["trends_data"] = {}
-            result["keyso_data"] = {}
-            result["llm_recommendation"] = ""
-            result["llm_trend_forecast"] = ""
-            result["bigrams"] = []
 
-        total = sum(result[k]["score"] for k in ("viral", "freshness", "quality", "relevance")) // 4
-        result["total_score"] = min(100, total + result["momentum"]["score"] // 5)
-        self._json({"status": "ok", "analysis": result})
+            total = sum(result[k]["score"] for k in ("viral", "freshness", "quality", "relevance")) // 4
+            result["total_score"] = min(100, total + result["momentum"]["score"] // 5)
+            self._json({"status": "ok", "analysis": result})
 
+        finally:
+            cur.close()
     def _batch_rewrite(self, body):
         """Батч-переписка новостей: создаёт статьи из списка news_ids."""
         news_ids = body.get("news_ids", [])
@@ -1954,52 +2005,55 @@ async function login() {
             return
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        from apis.llm import rewrite_news
-        import uuid, json
-        from datetime import datetime, timezone
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            from apis.llm import rewrite_news
+            import uuid, json
+            from datetime import datetime, timezone
 
-        results = []
-        for nid in news_ids:
-            try:
-                cur.execute(f"SELECT id, title, plain_text, description, url, source FROM news WHERE id = {ph}", (nid,))
-                row = cur.fetchone()
-                if not row:
-                    results.append({"news_id": nid, "ok": False, "error": "not found"})
-                    continue
-                if _is_postgres():
-                    columns = [desc[0] for desc in cur.description]
-                    news = dict(zip(columns, row))
-                else:
-                    news = dict(row)
-                title = news.get("title", "")
-                text = news.get("plain_text", "") or news.get("description", "")
-                result = rewrite_news(title, text, style, language)
-                if not result:
-                    results.append({"news_id": nid, "ok": False, "error": "LLM failed"})
-                    continue
-                # Save as article
-                aid = str(uuid.uuid4())[:12]
-                now = datetime.now(timezone.utc).isoformat()
-                tags = json.dumps(result.get("tags", []), ensure_ascii=False)
-                cur.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
-                    style, language, original_title, original_text, source_url, status, created_at, updated_at)
-                    VALUES ({','.join([ph]*15)})""",
-                    (aid, nid, result.get("title", ""), result.get("text", ""),
-                     result.get("seo_title", ""), result.get("seo_description", ""), tags,
-                     style, language, title, text[:5000],
-                     news.get("url", ""), "draft", now, now))
-                if not _is_postgres():
-                    conn.commit()
-                results.append({"news_id": nid, "ok": True, "article_id": aid, "title": result.get("title", "")})
-            except Exception as e:
-                logger.warning("Batch rewrite error for %s: %s", nid, e)
-                results.append({"news_id": nid, "ok": False, "error": str(e)})
+            results = []
+            for nid in news_ids:
+                try:
+                    cur.execute(f"SELECT id, title, plain_text, description, url, source FROM news WHERE id = {ph}", (nid,))
+                    row = cur.fetchone()
+                    if not row:
+                        results.append({"news_id": nid, "ok": False, "error": "not found"})
+                        continue
+                    if _is_postgres():
+                        columns = [desc[0] for desc in cur.description]
+                        news = dict(zip(columns, row))
+                    else:
+                        news = dict(row)
+                    title = news.get("title", "")
+                    text = news.get("plain_text", "") or news.get("description", "")
+                    result = rewrite_news(title, text, style, language)
+                    if not result:
+                        results.append({"news_id": nid, "ok": False, "error": "LLM failed"})
+                        continue
+                    # Save as article
+                    aid = str(uuid.uuid4())[:12]
+                    now = datetime.now(timezone.utc).isoformat()
+                    tags = json.dumps(result.get("tags", []), ensure_ascii=False)
+                    cur.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
+                        style, language, original_title, original_text, source_url, status, created_at, updated_at)
+                        VALUES ({','.join([ph]*15)})""",
+                        (aid, nid, result.get("title", ""), result.get("text", ""),
+                         result.get("seo_title", ""), result.get("seo_description", ""), tags,
+                         style, language, title, text[:5000],
+                         news.get("url", ""), "draft", now, now))
+                    if not _is_postgres():
+                        conn.commit()
+                    results.append({"news_id": nid, "ok": True, "article_id": aid, "title": result.get("title", "")})
+                except Exception as e:
+                    logger.warning("Batch rewrite error for %s: %s", nid, e)
+                    results.append({"news_id": nid, "ok": False, "error": str(e)})
 
-        ok_count = sum(1 for r in results if r.get("ok"))
-        self._json({"status": "ok", "total": len(news_ids), "success": ok_count,
-                     "failed": len(news_ids) - ok_count, "results": results})
+            ok_count = sum(1 for r in results if r.get("ok"))
+            self._json({"status": "ok", "total": len(news_ids), "success": ok_count,
+                         "failed": len(news_ids) - ok_count, "results": results})
 
+        finally:
+            cur.close()
     # ---- Analytics methods ----
 
     def _get_analytics(self):
@@ -2007,244 +2061,259 @@ async function login() {
         import json
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
+        try:
+            ph = "%s" if _is_postgres() else "?"
 
-        # 1. Top sources (7 days)
-        if _is_postgres():
-            cur.execute("""SELECT source, COUNT(*) as cnt FROM news
-                WHERE parsed_at > (NOW() - INTERVAL '7 days')::text GROUP BY source ORDER BY cnt DESC LIMIT 15""")
-        else:
-            cur.execute("SELECT source, COUNT(*) as cnt FROM news WHERE parsed_at > datetime('now', '-7 days') GROUP BY source ORDER BY cnt DESC LIMIT 15")
-        top_sources = []
-        for row in cur.fetchall():
+            # 1. Top sources (7 days)
             if _is_postgres():
-                top_sources.append({"source": row[0], "count": row[1]})
+                cur.execute("""SELECT source, COUNT(*) as cnt FROM news
+                    WHERE parsed_at > (NOW() - INTERVAL '7 days')::text GROUP BY source ORDER BY cnt DESC LIMIT 15""")
             else:
-                top_sources.append({"source": row["source"], "count": row["cnt"]})
+                cur.execute("SELECT source, COUNT(*) as cnt FROM news WHERE parsed_at > datetime('now', '-7 days') GROUP BY source ORDER BY cnt DESC LIMIT 15")
+            top_sources = []
+            for row in cur.fetchall():
+                if _is_postgres():
+                    top_sources.append({"source": row[0], "count": row[1]})
+                else:
+                    top_sources.append({"source": row["source"], "count": row["cnt"]})
 
-        # 2. Status distribution
-        cur.execute("SELECT status, COUNT(*) as cnt FROM news GROUP BY status")
-        statuses = {}
-        for row in cur.fetchall():
+            # 2. Status distribution
+            cur.execute("SELECT status, COUNT(*) as cnt FROM news GROUP BY status")
+            statuses = {}
+            for row in cur.fetchall():
+                if _is_postgres():
+                    statuses[row[0]] = row[1]
+                else:
+                    statuses[row["status"]] = row["cnt"]
+
+            # 3. Approval rate
+            total_decisions = statuses.get("approved", 0) + statuses.get("processed", 0) + statuses.get("rejected", 0) + statuses.get("duplicate", 0)
+            approved_total = statuses.get("approved", 0) + statuses.get("processed", 0)
+            approval_rate = round(approved_total / total_decisions * 100, 1) if total_decisions > 0 else 0
+
+            # 4. Top viral triggers (from review results in last 7 days of news_analysis)
             if _is_postgres():
-                statuses[row[0]] = row[1]
+                cur.execute("SELECT bigrams FROM news_analysis WHERE processed_at > (NOW() - INTERVAL '7 days')::text LIMIT 500")
             else:
-                statuses[row["status"]] = row["cnt"]
+                cur.execute("SELECT bigrams FROM news_analysis WHERE processed_at > datetime('now', '-7 days') LIMIT 500")
+            all_bigrams = {}
+            for row in cur.fetchall():
+                raw = row[0] if _is_postgres() else row["bigrams"]
+                try:
+                    for bg in json.loads(raw or "[]"):
+                        term = bg[0] if isinstance(bg, list) else bg
+                        all_bigrams[term] = all_bigrams.get(term, 0) + 1
+                except Exception:
+                    pass
+            top_bigrams = sorted(all_bigrams.items(), key=lambda x: x[1], reverse=True)[:20]
 
-        # 3. Approval rate
-        total_decisions = statuses.get("approved", 0) + statuses.get("processed", 0) + statuses.get("rejected", 0) + statuses.get("duplicate", 0)
-        approved_total = statuses.get("approved", 0) + statuses.get("processed", 0)
-        approval_rate = round(approved_total / total_decisions * 100, 1) if total_decisions > 0 else 0
+            # 5. News per day (last 14 days)
+            if _is_postgres():
+                cur.execute("""SELECT DATE(parsed_at::timestamp) as d, COUNT(*) as cnt FROM news
+                    WHERE parsed_at > (NOW() - INTERVAL '14 days')::text GROUP BY d ORDER BY d""")
+            else:
+                cur.execute("SELECT DATE(parsed_at) as d, COUNT(*) as cnt FROM news WHERE parsed_at > datetime('now', '-14 days') GROUP BY d ORDER BY d")
+            daily = []
+            for row in cur.fetchall():
+                if _is_postgres():
+                    daily.append({"date": str(row[0]), "count": row[1]})
+                else:
+                    daily.append({"date": row["d"], "count": row["cnt"]})
 
-        # 4. Top viral triggers (from review results in last 7 days of news_analysis)
-        if _is_postgres():
-            cur.execute("SELECT bigrams FROM news_analysis WHERE processed_at > (NOW() - INTERVAL '7 days')::text LIMIT 500")
-        else:
-            cur.execute("SELECT bigrams FROM news_analysis WHERE processed_at > datetime('now', '-7 days') LIMIT 500")
-        all_bigrams = {}
-        for row in cur.fetchall():
-            raw = row[0] if _is_postgres() else row["bigrams"]
+            # 6. Peak hours
+            if _is_postgres():
+                cur.execute("""SELECT EXTRACT(HOUR FROM parsed_at::timestamp)::int as h, COUNT(*) as cnt FROM news
+                    WHERE parsed_at > (NOW() - INTERVAL '7 days')::text GROUP BY h ORDER BY cnt DESC""")
+            else:
+                cur.execute("SELECT CAST(strftime('%H', parsed_at) AS INTEGER) as h, COUNT(*) as cnt FROM news WHERE parsed_at > datetime('now', '-7 days') GROUP BY h ORDER BY cnt DESC")
+            peak_hours = []
+            for row in cur.fetchall():
+                if _is_postgres():
+                    peak_hours.append({"hour": row[0], "count": row[1]})
+                else:
+                    peak_hours.append({"hour": row["h"], "count": row["cnt"]})
+
+            # 7. Source weights
             try:
-                for bg in json.loads(raw or "[]"):
-                    term = bg[0] if isinstance(bg, list) else bg
-                    all_bigrams[term] = all_bigrams.get(term, 0) + 1
+                from checks.source_weight import get_source_stats
+                source_stats = get_source_stats()
             except Exception:
-                pass
-        top_bigrams = sorted(all_bigrams.items(), key=lambda x: x[1], reverse=True)[:20]
+                source_stats = []
 
-        # 5. News per day (last 14 days)
-        if _is_postgres():
-            cur.execute("""SELECT DATE(parsed_at::timestamp) as d, COUNT(*) as cnt FROM news
-                WHERE parsed_at > (NOW() - INTERVAL '14 days')::text GROUP BY d ORDER BY d""")
-        else:
-            cur.execute("SELECT DATE(parsed_at) as d, COUNT(*) as cnt FROM news WHERE parsed_at > datetime('now', '-14 days') GROUP BY d ORDER BY d")
-        daily = []
-        for row in cur.fetchall():
-            if _is_postgres():
-                daily.append({"date": str(row[0]), "count": row[1]})
-            else:
-                daily.append({"date": row["d"], "count": row["cnt"]})
+            # 8. Feedback summary
+            try:
+                from checks.feedback import get_feedback_summary
+                feedback = get_feedback_summary()
+            except Exception:
+                feedback = {"sources": [], "tags": []}
 
-        # 6. Peak hours
-        if _is_postgres():
-            cur.execute("""SELECT EXTRACT(HOUR FROM parsed_at::timestamp)::int as h, COUNT(*) as cnt FROM news
-                WHERE parsed_at > (NOW() - INTERVAL '7 days')::text GROUP BY h ORDER BY cnt DESC""")
-        else:
-            cur.execute("SELECT CAST(strftime('%H', parsed_at) AS INTEGER) as h, COUNT(*) as cnt FROM news WHERE parsed_at > datetime('now', '-7 days') GROUP BY h ORDER BY cnt DESC")
-        peak_hours = []
-        for row in cur.fetchall():
-            if _is_postgres():
-                peak_hours.append({"hour": row[0], "count": row[1]})
-            else:
-                peak_hours.append({"hour": row["h"], "count": row["cnt"]})
+            # 9. Articles stats
+            cur.execute("SELECT status, COUNT(*) as cnt FROM articles GROUP BY status")
+            art_stats = {}
+            for row in cur.fetchall():
+                if _is_postgres():
+                    art_stats[row[0]] = row[1]
+                else:
+                    art_stats[row["status"]] = row["cnt"]
 
-        # 7. Source weights
-        try:
-            from checks.source_weight import get_source_stats
-            source_stats = get_source_stats()
-        except Exception:
-            source_stats = []
+            return {
+                "status": "ok",
+                "top_sources": top_sources,
+                "statuses": statuses,
+                "approval_rate": approval_rate,
+                "top_bigrams": top_bigrams,
+                "daily": daily,
+                "peak_hours": peak_hours[:5],
+                "source_stats": source_stats,
+                "feedback": feedback,
+                "article_stats": art_stats,
+                "total_news": sum(statuses.values()),
+                "total_articles": sum(art_stats.values()),
+            }
 
-        # 8. Feedback summary
-        try:
-            from checks.feedback import get_feedback_summary
-            feedback = get_feedback_summary()
-        except Exception:
-            feedback = {"sources": [], "tags": []}
-
-        # 9. Articles stats
-        cur.execute("SELECT status, COUNT(*) as cnt FROM articles GROUP BY status")
-        art_stats = {}
-        for row in cur.fetchall():
-            if _is_postgres():
-                art_stats[row[0]] = row[1]
-            else:
-                art_stats[row["status"]] = row["cnt"]
-
-        return {
-            "status": "ok",
-            "top_sources": top_sources,
-            "statuses": statuses,
-            "approval_rate": approval_rate,
-            "top_bigrams": top_bigrams,
-            "daily": daily,
-            "peak_hours": peak_hours[:5],
-            "source_stats": source_stats,
-            "feedback": feedback,
-            "article_stats": art_stats,
-            "total_news": sum(statuses.values()),
-            "total_articles": sum(art_stats.values()),
-        }
-
+        finally:
+            cur.close()
     def _get_prompt_versions(self):
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT * FROM prompt_versions ORDER BY prompt_name, version DESC")
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-        else:
-            rows = [dict(row) for row in cur.fetchall()]
-        return {"status": "ok", "versions": rows}
+        try:
+            cur.execute("SELECT * FROM prompt_versions ORDER BY prompt_name, version DESC")
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                rows = [dict(row) for row in cur.fetchall()]
+            return {"status": "ok", "versions": rows}
 
+        finally:
+            cur.close()
     def _save_prompt_version(self, body):
         import uuid
         from datetime import datetime, timezone
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        name = body.get("prompt_name", "")
-        content = body.get("content", "")
-        notes = body.get("notes", "")
-        if not name or not content:
-            self._json({"status": "error", "message": "name and content required"})
-            return
-        # Get next version
-        cur.execute(f"SELECT MAX(version) as mv FROM prompt_versions WHERE prompt_name = {ph}", (name,))
-        row = cur.fetchone()
-        if _is_postgres():
-            max_v = row[0] if row and row[0] else 0
-        else:
-            max_v = row["mv"] if row and row["mv"] else 0
-        if max_v is None:
-            max_v = 0
-        version = max_v + 1
-        vid = str(uuid.uuid4())[:12]
-        now = datetime.now(timezone.utc).isoformat()
-        cur.execute(f"""INSERT INTO prompt_versions (id, prompt_name, version, content, is_active, created_at, notes)
-            VALUES ({','.join([ph]*7)})""", (vid, name, version, content, 0, now, notes))
-        if not _is_postgres():
-            conn.commit()
-        self._json({"status": "ok", "id": vid, "version": version})
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            name = body.get("prompt_name", "")
+            content = body.get("content", "")
+            notes = body.get("notes", "")
+            if not name or not content:
+                self._json({"status": "error", "message": "name and content required"})
+                return
+            # Get next version
+            cur.execute(f"SELECT MAX(version) as mv FROM prompt_versions WHERE prompt_name = {ph}", (name,))
+            row = cur.fetchone()
+            if _is_postgres():
+                max_v = row[0] if row and row[0] else 0
+            else:
+                max_v = row["mv"] if row and row["mv"] else 0
+            if max_v is None:
+                max_v = 0
+            version = max_v + 1
+            vid = str(uuid.uuid4())[:12]
+            now = datetime.now(timezone.utc).isoformat()
+            cur.execute(f"""INSERT INTO prompt_versions (id, prompt_name, version, content, is_active, created_at, notes)
+                VALUES ({','.join([ph]*7)})""", (vid, name, version, content, 0, now, notes))
+            if not _is_postgres():
+                conn.commit()
+            self._json({"status": "ok", "id": vid, "version": version})
 
+        finally:
+            cur.close()
     def _activate_prompt_version(self, body):
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        vid = body.get("id", "")
-        if not vid:
-            self._json({"status": "error", "message": "id required"})
-            return
-        # Get prompt name and content
-        cur.execute(f"SELECT prompt_name, content FROM prompt_versions WHERE id = {ph}", (vid,))
-        row = cur.fetchone()
-        if not row:
-            self._json({"status": "error", "message": "not found"})
-            return
-        if _is_postgres():
-            name, content = row[0], row[1]
-        else:
-            name, content = row["prompt_name"], row["content"]
-        # Deactivate all for this name
-        cur.execute(f"UPDATE prompt_versions SET is_active = 0 WHERE prompt_name = {ph}", (name,))
-        # Activate this one
-        cur.execute(f"UPDATE prompt_versions SET is_active = 1 WHERE id = {ph}", (vid,))
-        if not _is_postgres():
-            conn.commit()
-        # Apply to live prompts
-        import apis.llm as llm
-        prompt_map = {
-            "trend_forecast": "PROMPT_TREND_FORECAST",
-            "merge_analysis": "PROMPT_MERGE_ANALYSIS",
-            "keyso_queries": "PROMPT_KEYSO_QUERIES",
-            "rewrite": "PROMPT_REWRITE",
-        }
-        attr = prompt_map.get(name)
-        if attr and hasattr(llm, attr):
-            setattr(llm, attr, content)
-            logger.info("Activated prompt version %s for %s", vid, name)
-        self._json({"status": "ok", "prompt_name": name, "applied": bool(attr)})
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            vid = body.get("id", "")
+            if not vid:
+                self._json({"status": "error", "message": "id required"})
+                return
+            # Get prompt name and content
+            cur.execute(f"SELECT prompt_name, content FROM prompt_versions WHERE id = {ph}", (vid,))
+            row = cur.fetchone()
+            if not row:
+                self._json({"status": "error", "message": "not found"})
+                return
+            if _is_postgres():
+                name, content = row[0], row[1]
+            else:
+                name, content = row["prompt_name"], row["content"]
+            # Deactivate all for this name
+            cur.execute(f"UPDATE prompt_versions SET is_active = 0 WHERE prompt_name = {ph}", (name,))
+            # Activate this one
+            cur.execute(f"UPDATE prompt_versions SET is_active = 1 WHERE id = {ph}", (vid,))
+            if not _is_postgres():
+                conn.commit()
+            # Apply to live prompts
+            import apis.llm as llm
+            prompt_map = {
+                "trend_forecast": "PROMPT_TREND_FORECAST",
+                "merge_analysis": "PROMPT_MERGE_ANALYSIS",
+                "keyso_queries": "PROMPT_KEYSO_QUERIES",
+                "rewrite": "PROMPT_REWRITE",
+            }
+            attr = prompt_map.get(name)
+            if attr and hasattr(llm, attr):
+                setattr(llm, attr, content)
+                logger.info("Activated prompt version %s for %s", vid, name)
+            self._json({"status": "ok", "prompt_name": name, "applied": bool(attr)})
 
+        finally:
+            cur.close()
     def _generate_digest(self, body):
         """Генерирует дайджест за указанный период."""
         period = body.get("period", "today")  # today, week
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        if period == "week":
-            interval = "7 days"
-        else:
-            interval = "1 day"
-        if _is_postgres():
-            cur.execute(f"SELECT id, title, source, url FROM news WHERE status IN ('approved', 'processed') AND parsed_at > (NOW() - INTERVAL '{interval}')::text ORDER BY parsed_at DESC LIMIT 30")
-            columns = [desc[0] for desc in cur.description]
-            news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
-        else:
-            cur.execute(f"SELECT id, title, source, url FROM news WHERE status IN ('approved', 'processed') AND parsed_at > datetime('now', '-{interval}') ORDER BY parsed_at DESC LIMIT 30")
-            news_list = [dict(row) for row in cur.fetchall()]
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            if period == "week":
+                interval = "7 days"
+            else:
+                interval = "1 day"
+            if _is_postgres():
+                cur.execute(f"SELECT id, title, source, url FROM news WHERE status IN ('approved', 'processed') AND parsed_at > (NOW() - INTERVAL '{interval}')::text ORDER BY parsed_at DESC LIMIT 30")
+                columns = [desc[0] for desc in cur.description]
+                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                cur.execute(f"SELECT id, title, source, url FROM news WHERE status IN ('approved', 'processed') AND parsed_at > datetime('now', '-{interval}') ORDER BY parsed_at DESC LIMIT 30")
+                news_list = [dict(row) for row in cur.fetchall()]
 
-        if not news_list:
-            self._json({"status": "ok", "digest": {"title": "Нет данных", "summary": "Нет одобренных новостей за выбранный период.", "top_news": [], "trends": []}, "news_count": 0})
-            return
+            if not news_list:
+                self._json({"status": "ok", "digest": {"title": "Нет данных", "summary": "Нет одобренных новостей за выбранный период.", "top_news": [], "trends": []}, "news_count": 0})
+                return
 
-        from apis.llm import _call_llm
-        news_text = "\n".join(f"- [{n['source']}] {n['title']}" for n in news_list)
-        period_label = 'неделю' if period == 'week' else 'день'
-        prompt = f"""Ты — главный редактор крупного игрового портала. Составь профессиональный дайджест «Главное за {period_label}» из новостей ниже.
+            from apis.llm import _call_llm
+            news_text = "\n".join(f"- [{n['source']}] {n['title']}" for n in news_list)
+            period_label = 'неделю' if period == 'week' else 'день'
+            prompt = f"""Ты — главный редактор крупного игрового портала. Составь профессиональный дайджест «Главное за {period_label}» из новостей ниже.
+    
+    ## Новости ({len(news_list)} шт.):
+    {news_text}
+    
+    ## Правила:
+    1. title — яркий заголовок дайджеста (напр. «Игровой дайджест: GTA 6, новый патч Elden Ring и скандал вокруг Ubisoft»)
+    2. summary — связный текст на 4-6 предложений, охватывающий самые значимые события, не простое перечисление
+    3. top_news — 3-5 самых важных новостей, одной фразой каждая (не копируй заголовки дословно, перефразируй)
+    4. trends — 2-3 тенденции, которые прослеживаются в потоке новостей (напр. «Рост интереса к ретро-играм», «Волна переносов релизов»)
+    5. Язык: русский
+    
+    Ответь строго JSON без markdown:
+    {{
+      "title": "Заголовок дайджеста",
+      "summary": "Связный обзорный текст",
+      "top_news": ["Ключевая новость 1", "Ключевая новость 2", "Ключевая новость 3"],
+      "trends": ["Тенденция 1", "Тенденция 2"]
+    }}"""
+            result = _call_llm(prompt)
+            if result:
+                self._json({"status": "ok", "digest": result, "news_count": len(news_list)})
+            else:
+                self._json({"status": "error", "message": "LLM failed"})
 
-## Новости ({len(news_list)} шт.):
-{news_text}
-
-## Правила:
-1. title — яркий заголовок дайджеста (напр. «Игровой дайджест: GTA 6, новый патч Elden Ring и скандал вокруг Ubisoft»)
-2. summary — связный текст на 4-6 предложений, охватывающий самые значимые события, не простое перечисление
-3. top_news — 3-5 самых важных новостей, одной фразой каждая (не копируй заголовки дословно, перефразируй)
-4. trends — 2-3 тенденции, которые прослеживаются в потоке новостей (напр. «Рост интереса к ретро-играм», «Волна переносов релизов»)
-5. Язык: русский
-
-Ответь строго JSON без markdown:
-{{
-  "title": "Заголовок дайджеста",
-  "summary": "Связный обзорный текст",
-  "top_news": ["Ключевая новость 1", "Ключевая новость 2", "Ключевая новость 3"],
-  "trends": ["Тенденция 1", "Тенденция 2"]
-}}"""
-        result = _call_llm(prompt)
-        if result:
-            self._json({"status": "ok", "digest": result, "news_count": len(news_list)})
-        else:
-            self._json({"status": "error", "message": "LLM failed"})
-
+        finally:
+            cur.close()
     def _get_event_chain(self, body):
         news_id = body.get("news_id", "")
         if not news_id:
@@ -2252,39 +2321,45 @@ async function login() {
             return
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            row = cur.fetchone()
-            if not row:
-                self._json({"status": "error", "message": "not found"})
-                return
-            news = dict(zip(columns, row))
-        else:
-            row = cur.fetchone()
-            if not row:
-                self._json({"status": "error", "message": "not found"})
-                return
-            news = dict(row)
-        from checks.temporal_clusters import get_event_chain
-        chain = get_event_chain(news)
-        self._json({"status": "ok", **chain})
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                row = cur.fetchone()
+                if not row:
+                    self._json({"status": "error", "message": "not found"})
+                    return
+                news = dict(zip(columns, row))
+            else:
+                row = cur.fetchone()
+                if not row:
+                    self._json({"status": "error", "message": "not found"})
+                    return
+                news = dict(row)
+            from checks.temporal_clusters import get_event_chain
+            chain = get_event_chain(news)
+            self._json({"status": "ok", **chain})
 
+        finally:
+            cur.close()
     # ---- Queue methods ----
 
     def _get_queue(self):
         conn = get_connection()
         cur = conn.cursor()
-        q = "SELECT * FROM task_queue ORDER BY created_at DESC LIMIT 200"
-        cur.execute(q)
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-        else:
-            rows = [dict(row) for row in cur.fetchall()]
-        return {"status": "ok", "tasks": rows}
+        try:
+            q = "SELECT * FROM task_queue ORDER BY created_at DESC LIMIT 200"
+            cur.execute(q)
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                rows = [dict(row) for row in cur.fetchall()]
+            return {"status": "ok", "tasks": rows}
 
+        finally:
+            cur.close()
     def _cancel_queue_task(self, body):
         task_id = body.get("task_id")
         if not task_id:
@@ -2292,35 +2367,44 @@ async function login() {
             return
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
-        cur.execute(f"UPDATE task_queue SET status = 'cancelled', updated_at = {ph} WHERE id = {ph} AND status = 'pending'", (now, task_id))
-        if not _is_postgres():
-            conn.commit()
-        self._json({"status": "ok"})
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+            cur.execute(f"UPDATE task_queue SET status = 'cancelled', updated_at = {ph} WHERE id = {ph} AND status = 'pending'", (now, task_id))
+            if not _is_postgres():
+                conn.commit()
+            self._json({"status": "ok"})
 
+        finally:
+            cur.close()
     def _cancel_all_queue(self, body):
         task_type = body.get("task_type", "")
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
-        if task_type:
-            cur.execute(f"UPDATE task_queue SET status = 'cancelled', updated_at = {ph} WHERE status = 'pending' AND task_type = {ph}", (now, task_type))
-        else:
-            cur.execute(f"UPDATE task_queue SET status = 'cancelled', updated_at = {ph} WHERE status = 'pending'", (now,))
-        if not _is_postgres():
-            conn.commit()
-        self._json({"status": "ok"})
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+            if task_type:
+                cur.execute(f"UPDATE task_queue SET status = 'cancelled', updated_at = {ph} WHERE status = 'pending' AND task_type = {ph}", (now, task_type))
+            else:
+                cur.execute(f"UPDATE task_queue SET status = 'cancelled', updated_at = {ph} WHERE status = 'pending'", (now,))
+            if not _is_postgres():
+                conn.commit()
+            self._json({"status": "ok"})
 
+        finally:
+            cur.close()
     def _clear_done_queue(self, body):
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute("DELETE FROM task_queue WHERE status IN ('done', 'cancelled', 'skipped', 'error')")
-        if not _is_postgres():
-            conn.commit()
-        self._json({"status": "ok"})
+        try:
+            cur.execute("DELETE FROM task_queue WHERE status IN ('done', 'cancelled', 'skipped', 'error')")
+            if not _is_postgres():
+                conn.commit()
+            self._json({"status": "ok"})
 
+        finally:
+            cur.close()
     def _queue_batch_rewrite(self, body):
         """Ставит новости в очередь на переписку и запускает обработку в фоне."""
         news_ids = body.get("news_ids", [])
@@ -2334,111 +2418,117 @@ async function login() {
         from datetime import datetime, timezone
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        now = datetime.now(timezone.utc).isoformat()
-        created = []
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            now = datetime.now(timezone.utc).isoformat()
+            created = []
 
-        for nid in news_ids:
-            cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
-            row = cur.fetchone()
-            title = ""
-            if row:
-                title = row[0] if _is_postgres() else row["title"]
-            tid = str(uuid.uuid4())[:12]
-            cur.execute(f"""INSERT INTO task_queue (id, task_type, news_id, news_title, style, status, created_at, updated_at)
-                VALUES ({','.join([ph]*8)})""",
-                (tid, "rewrite", nid, title[:200], style, "pending", now, now))
-            created.append(tid)
+            for nid in news_ids:
+                cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
+                row = cur.fetchone()
+                title = ""
+                if row:
+                    title = row[0] if _is_postgres() else row["title"]
+                tid = str(uuid.uuid4())[:12]
+                cur.execute(f"""INSERT INTO task_queue (id, task_type, news_id, news_title, style, status, created_at, updated_at)
+                    VALUES ({','.join([ph]*8)})""",
+                    (tid, "rewrite", nid, title[:200], style, "pending", now, now))
+                created.append(tid)
 
-        if not _is_postgres():
-            conn.commit()
+            if not _is_postgres():
+                conn.commit()
 
-        # Process in background thread
-        def _process_rewrite_queue():
-            import json as _json
-            from apis.llm import rewrite_news
-            conn2 = get_connection()
-            cur2 = conn2.cursor()
-            for tid in created:
-                cur2.execute(f"SELECT * FROM task_queue WHERE id = {ph}", (tid,))
-                if _is_postgres():
-                    cols = [d[0] for d in cur2.description]
-                    task = dict(zip(cols, cur2.fetchone()))
-                else:
-                    task = dict(cur2.fetchone())
-                if task["status"] != "pending":
-                    continue
-                nid = task["news_id"]
-                _now = datetime.now(timezone.utc).isoformat()
-                cur2.execute(f"UPDATE task_queue SET status = 'processing', updated_at = {ph} WHERE id = {ph}", (_now, tid))
-                if not _is_postgres():
-                    conn2.commit()
+            # Process in background thread
+            def _process_rewrite_queue():
+                import json as _json
+                from apis.llm import rewrite_news
+                conn2 = get_connection()
+                cur2 = conn2.cursor()
                 try:
-                    cur2.execute(f"SELECT id, title, plain_text, description, url, source FROM news WHERE id = {ph}", (nid,))
-                    row = cur2.fetchone()
-                    if not row:
-                        raise Exception("news not found")
-                    if _is_postgres():
-                        cols = [d[0] for d in cur2.description]
-                        news = dict(zip(cols, row))
-                    else:
-                        news = dict(row)
-                    ntitle = news.get("title", "")
-                    ntext = news.get("plain_text", "") or news.get("description", "")
-                    result = rewrite_news(ntitle, ntext, style, language)
-                    if not result:
-                        raise Exception("LLM failed")
-                    aid = str(uuid.uuid4())[:12]
-                    tags = _json.dumps(result.get("tags", []), ensure_ascii=False)
-                    cur2.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
-                        style, language, original_title, original_text, source_url, status, created_at, updated_at)
-                        VALUES ({','.join([ph]*15)})""",
-                        (aid, nid, result.get("title", ""), result.get("text", ""),
-                         result.get("seo_title", ""), result.get("seo_description", ""), tags,
-                         style, language, ntitle, ntext[:5000],
-                         news.get("url", ""), "draft", _now, _now))
-                    if not _is_postgres():
-                        conn2.commit()
-
-                    # Export to Sheets/Ready
-                    try:
-                        from storage.sheets import write_ready_row
-                        # Fetch full news + analysis for Sheets
-                        cur2.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
+                    for tid in created:
+                        cur2.execute(f"SELECT * FROM task_queue WHERE id = {ph}", (tid,))
                         if _is_postgres():
-                            nc = [d[0] for d in cur2.description]
-                            full_news = dict(zip(nc, cur2.fetchone()))
+                            cols = [d[0] for d in cur2.description]
+                            task = dict(zip(cols, cur2.fetchone()))
                         else:
-                            full_news = dict(cur2.fetchone())
-                        cur2.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (nid,))
-                        arow = cur2.fetchone()
-                        analysis = None
-                        if arow:
+                            task = dict(cur2.fetchone())
+                        if task["status"] != "pending":
+                            continue
+                        nid = task["news_id"]
+                        _now = datetime.now(timezone.utc).isoformat()
+                        cur2.execute(f"UPDATE task_queue SET status = 'processing', updated_at = {ph} WHERE id = {ph}", (_now, tid))
+                        if not _is_postgres():
+                            conn2.commit()
+                        try:
+                            cur2.execute(f"SELECT id, title, plain_text, description, url, source FROM news WHERE id = {ph}", (nid,))
+                            row = cur2.fetchone()
+                            if not row:
+                                raise Exception("news not found")
                             if _is_postgres():
-                                ac = [d[0] for d in cur2.description]
-                                analysis = dict(zip(ac, arow))
+                                cols = [d[0] for d in cur2.description]
+                                news = dict(zip(cols, row))
                             else:
-                                analysis = dict(arow)
-                        write_ready_row(full_news, analysis, result)
-                    except Exception as sheets_err:
-                        logger.warning("Sheets Ready export failed for %s: %s", nid, sheets_err)
+                                news = dict(row)
+                            ntitle = news.get("title", "")
+                            ntext = news.get("plain_text", "") or news.get("description", "")
+                            result = rewrite_news(ntitle, ntext, style, language)
+                            if not result:
+                                raise Exception("LLM failed")
+                            aid = str(uuid.uuid4())[:12]
+                            tags = _json.dumps(result.get("tags", []), ensure_ascii=False)
+                            cur2.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
+                                style, language, original_title, original_text, source_url, status, created_at, updated_at)
+                                VALUES ({','.join([ph]*15)})""",
+                                (aid, nid, result.get("title", ""), result.get("text", ""),
+                                 result.get("seo_title", ""), result.get("seo_description", ""), tags,
+                                 style, language, ntitle, ntext[:5000],
+                                 news.get("url", ""), "draft", _now, _now))
+                            if not _is_postgres():
+                                conn2.commit()
 
-                    _now2 = datetime.now(timezone.utc).isoformat()
-                    res_data = _json.dumps({"article_id": aid, "title": result.get("title", "")}, ensure_ascii=False)
-                    cur2.execute(f"UPDATE task_queue SET status = 'done', result = {ph}, updated_at = {ph} WHERE id = {ph}", (res_data, _now2, tid))
-                    if not _is_postgres():
-                        conn2.commit()
-                except Exception as e:
-                    logger.warning("Queue rewrite error %s: %s", tid, e)
-                    _now2 = datetime.now(timezone.utc).isoformat()
-                    cur2.execute(f"UPDATE task_queue SET status = 'error', result = {ph}, updated_at = {ph} WHERE id = {ph}", (str(e), _now2, tid))
-                    if not _is_postgres():
-                        conn2.commit()
+                            # Export to Sheets/Ready
+                            try:
+                                from storage.sheets import write_ready_row
+                                # Fetch full news + analysis for Sheets
+                                cur2.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
+                                if _is_postgres():
+                                    nc = [d[0] for d in cur2.description]
+                                    full_news = dict(zip(nc, cur2.fetchone()))
+                                else:
+                                    full_news = dict(cur2.fetchone())
+                                cur2.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (nid,))
+                                arow = cur2.fetchone()
+                                analysis = None
+                                if arow:
+                                    if _is_postgres():
+                                        ac = [d[0] for d in cur2.description]
+                                        analysis = dict(zip(ac, arow))
+                                    else:
+                                        analysis = dict(arow)
+                                write_ready_row(full_news, analysis, result)
+                            except Exception as sheets_err:
+                                logger.warning("Sheets Ready export failed for %s: %s", nid, sheets_err)
 
-        t = threading.Thread(target=_process_rewrite_queue, daemon=True)
-        t.start()
-        self._json({"status": "ok", "queued": len(created), "task_ids": created})
+                            _now2 = datetime.now(timezone.utc).isoformat()
+                            res_data = _json.dumps({"article_id": aid, "title": result.get("title", "")}, ensure_ascii=False)
+                            cur2.execute(f"UPDATE task_queue SET status = 'done', result = {ph}, updated_at = {ph} WHERE id = {ph}", (res_data, _now2, tid))
+                            if not _is_postgres():
+                                conn2.commit()
+                        except Exception as e:
+                            logger.warning("Queue rewrite error %s: %s", tid, e)
+                            _now2 = datetime.now(timezone.utc).isoformat()
+                            cur2.execute(f"UPDATE task_queue SET status = 'error', result = {ph}, updated_at = {ph} WHERE id = {ph}", (str(e), _now2, tid))
+                            if not _is_postgres():
+                                conn2.commit()
 
+                finally:
+                    cur2.close()
+            t = threading.Thread(target=_process_rewrite_queue, daemon=True)
+            t.start()
+            self._json({"status": "ok", "queued": len(created), "task_ids": created})
+
+        finally:
+            cur.close()
     def _queue_sheets_export(self, body):
         """Ставит новости в очередь на экспорт в Sheets и запускает обработку в фоне."""
         news_ids = body.get("news_ids", [])
@@ -2450,88 +2540,94 @@ async function login() {
         from datetime import datetime, timezone
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        now = datetime.now(timezone.utc).isoformat()
-        created = []
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            now = datetime.now(timezone.utc).isoformat()
+            created = []
 
-        for nid in news_ids:
-            cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
-            row = cur.fetchone()
-            title = ""
-            if row:
-                title = row[0] if _is_postgres() else row["title"]
-            tid = str(uuid.uuid4())[:12]
-            cur.execute(f"""INSERT INTO task_queue (id, task_type, news_id, news_title, style, status, created_at, updated_at)
-                VALUES ({','.join([ph]*8)})""",
-                (tid, "sheets", nid, title[:200], "", "pending", now, now))
-            created.append(tid)
+            for nid in news_ids:
+                cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
+                row = cur.fetchone()
+                title = ""
+                if row:
+                    title = row[0] if _is_postgres() else row["title"]
+                tid = str(uuid.uuid4())[:12]
+                cur.execute(f"""INSERT INTO task_queue (id, task_type, news_id, news_title, style, status, created_at, updated_at)
+                    VALUES ({','.join([ph]*8)})""",
+                    (tid, "sheets", nid, title[:200], "", "pending", now, now))
+                created.append(tid)
 
-        if not _is_postgres():
-            conn.commit()
+            if not _is_postgres():
+                conn.commit()
 
-        # Process in background
-        def _process_sheets_queue():
-            import json as _json
-            from storage.sheets import write_news_row
-            conn2 = get_connection()
-            cur2 = conn2.cursor()
-            for tid in created:
-                cur2.execute(f"SELECT * FROM task_queue WHERE id = {ph}", (tid,))
-                if _is_postgres():
-                    cols = [d[0] for d in cur2.description]
-                    task = dict(zip(cols, cur2.fetchone()))
-                else:
-                    task = dict(cur2.fetchone())
-                if task["status"] != "pending":
-                    continue
-                nid = task["news_id"]
-                _now = datetime.now(timezone.utc).isoformat()
-                cur2.execute(f"UPDATE task_queue SET status = 'processing', updated_at = {ph} WHERE id = {ph}", (_now, tid))
-                if not _is_postgres():
-                    conn2.commit()
+            # Process in background
+            def _process_sheets_queue():
+                import json as _json
+                from storage.sheets import write_news_row
+                conn2 = get_connection()
+                cur2 = conn2.cursor()
                 try:
-                    cur2.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
-                    row = cur2.fetchone()
-                    if not row:
-                        raise Exception("news not found")
-                    if _is_postgres():
-                        cols = [d[0] for d in cur2.description]
-                        news = dict(zip(cols, row))
-                    else:
-                        news = dict(row)
-                    cur2.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (nid,))
-                    arow = cur2.fetchone()
-                    if arow:
+                    for tid in created:
+                        cur2.execute(f"SELECT * FROM task_queue WHERE id = {ph}", (tid,))
                         if _is_postgres():
                             cols = [d[0] for d in cur2.description]
-                            analysis = dict(zip(cols, arow))
+                            task = dict(zip(cols, cur2.fetchone()))
                         else:
-                            analysis = dict(arow)
-                    else:
-                        analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
-                                   "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
-                    sheet_row = write_news_row(news, analysis)
-                    _now2 = datetime.now(timezone.utc).isoformat()
-                    if sheet_row and sheet_row > 0:
-                        res_data = _json.dumps({"row": sheet_row}, ensure_ascii=False)
-                        cur2.execute(f"UPDATE task_queue SET status = 'done', result = {ph}, updated_at = {ph} WHERE id = {ph}", (res_data, _now2, tid))
-                    elif sheet_row == -1:
-                        cur2.execute(f"UPDATE task_queue SET status = 'skipped', result = 'duplicate', updated_at = {ph} WHERE id = {ph}", (_now2, tid))
-                    else:
-                        cur2.execute(f"UPDATE task_queue SET status = 'error', result = 'no row', updated_at = {ph} WHERE id = {ph}", (_now2, tid))
-                    if not _is_postgres():
-                        conn2.commit()
-                except Exception as e:
-                    logger.warning("Queue sheets error %s: %s", tid, e)
-                    _now2 = datetime.now(timezone.utc).isoformat()
-                    cur2.execute(f"UPDATE task_queue SET status = 'error', result = {ph}, updated_at = {ph} WHERE id = {ph}", (str(e), _now2, tid))
-                    if not _is_postgres():
-                        conn2.commit()
+                            task = dict(cur2.fetchone())
+                        if task["status"] != "pending":
+                            continue
+                        nid = task["news_id"]
+                        _now = datetime.now(timezone.utc).isoformat()
+                        cur2.execute(f"UPDATE task_queue SET status = 'processing', updated_at = {ph} WHERE id = {ph}", (_now, tid))
+                        if not _is_postgres():
+                            conn2.commit()
+                        try:
+                            cur2.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
+                            row = cur2.fetchone()
+                            if not row:
+                                raise Exception("news not found")
+                            if _is_postgres():
+                                cols = [d[0] for d in cur2.description]
+                                news = dict(zip(cols, row))
+                            else:
+                                news = dict(row)
+                            cur2.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (nid,))
+                            arow = cur2.fetchone()
+                            if arow:
+                                if _is_postgres():
+                                    cols = [d[0] for d in cur2.description]
+                                    analysis = dict(zip(cols, arow))
+                                else:
+                                    analysis = dict(arow)
+                            else:
+                                analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
+                                           "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
+                            sheet_row = write_news_row(news, analysis)
+                            _now2 = datetime.now(timezone.utc).isoformat()
+                            if sheet_row and sheet_row > 0:
+                                res_data = _json.dumps({"row": sheet_row}, ensure_ascii=False)
+                                cur2.execute(f"UPDATE task_queue SET status = 'done', result = {ph}, updated_at = {ph} WHERE id = {ph}", (res_data, _now2, tid))
+                            elif sheet_row == -1:
+                                cur2.execute(f"UPDATE task_queue SET status = 'skipped', result = 'duplicate', updated_at = {ph} WHERE id = {ph}", (_now2, tid))
+                            else:
+                                cur2.execute(f"UPDATE task_queue SET status = 'error', result = 'no row', updated_at = {ph} WHERE id = {ph}", (_now2, tid))
+                            if not _is_postgres():
+                                conn2.commit()
+                        except Exception as e:
+                            logger.warning("Queue sheets error %s: %s", tid, e)
+                            _now2 = datetime.now(timezone.utc).isoformat()
+                            cur2.execute(f"UPDATE task_queue SET status = 'error', result = {ph}, updated_at = {ph} WHERE id = {ph}", (str(e), _now2, tid))
+                            if not _is_postgres():
+                                conn2.commit()
 
-        t = threading.Thread(target=_process_sheets_queue, daemon=True)
-        t.start()
-        self._json({"status": "ok", "queued": len(created), "task_ids": created})
+                finally:
+                    cur2.close()
+            t = threading.Thread(target=_process_sheets_queue, daemon=True)
+            t.start()
+            self._json({"status": "ok", "queued": len(created), "task_ids": created})
 
+        finally:
+            cur.close()
     def _serve_docx_bulk(self, article_ids):
         """Генерирует ZIP с несколькими DOCX файлами."""
         import io
@@ -2543,94 +2639,100 @@ async function login() {
 
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
+        try:
+            ph = "%s" if _is_postgres() else "?"
 
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for aid in article_ids:
-                cur.execute(f"SELECT * FROM articles WHERE id = {ph}", (aid,))
-                row = cur.fetchone()
-                if not row:
-                    continue
-                if _is_postgres():
-                    columns = [desc[0] for desc in cur.description]
-                    article = dict(zip(columns, row))
-                else:
-                    article = dict(row)
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for aid in article_ids:
+                    cur.execute(f"SELECT * FROM articles WHERE id = {ph}", (aid,))
+                    row = cur.fetchone()
+                    if not row:
+                        continue
+                    if _is_postgres():
+                        columns = [desc[0] for desc in cur.description]
+                        article = dict(zip(columns, row))
+                    else:
+                        article = dict(row)
 
-                doc = Document()
-                style = doc.styles['Normal']
-                style.font.name = 'Calibri'
-                style.font.size = Pt(11)
+                    doc = Document()
+                    style = doc.styles['Normal']
+                    style.font.name = 'Calibri'
+                    style.font.size = Pt(11)
 
-                doc.add_heading(article.get("title", ""), level=1)
+                    doc.add_heading(article.get("title", ""), level=1)
 
-                meta_p = doc.add_paragraph()
-                run = meta_p.add_run(f"Стиль: {article.get('style', '')} | Язык: {article.get('language', '')}")
-                run.font.size = Pt(9)
-                run.font.color.rgb = RGBColor(128, 128, 128)
-                if article.get("source_url"):
-                    run2 = meta_p.add_run(f"\nИсточник: {article['source_url']}")
-                    run2.font.size = Pt(9)
-                    run2.font.color.rgb = RGBColor(128, 128, 128)
+                    meta_p = doc.add_paragraph()
+                    run = meta_p.add_run(f"Стиль: {article.get('style', '')} | Язык: {article.get('language', '')}")
+                    run.font.size = Pt(9)
+                    run.font.color.rgb = RGBColor(128, 128, 128)
+                    if article.get("source_url"):
+                        run2 = meta_p.add_run(f"\nИсточник: {article['source_url']}")
+                        run2.font.size = Pt(9)
+                        run2.font.color.rgb = RGBColor(128, 128, 128)
 
-                if article.get("seo_title") or article.get("seo_description"):
-                    doc.add_heading("SEO", level=2)
-                    if article.get("seo_title"):
+                    if article.get("seo_title") or article.get("seo_description"):
+                        doc.add_heading("SEO", level=2)
+                        if article.get("seo_title"):
+                            p = doc.add_paragraph()
+                            p.add_run("Title: ").bold = True
+                            p.add_run(article["seo_title"])
+                        if article.get("seo_description"):
+                            p = doc.add_paragraph()
+                            p.add_run("Description: ").bold = True
+                            p.add_run(article["seo_description"])
+
+                    tags = []
+                    try:
+                        tags = json.loads(article.get("tags", "[]"))
+                    except Exception:
+                        pass
+                    if tags:
                         p = doc.add_paragraph()
-                        p.add_run("Title: ").bold = True
-                        p.add_run(article["seo_title"])
-                    if article.get("seo_description"):
-                        p = doc.add_paragraph()
-                        p.add_run("Description: ").bold = True
-                        p.add_run(article["seo_description"])
+                        p.add_run("Теги: ").bold = True
+                        p.add_run(", ".join(tags))
 
-                tags = []
-                try:
-                    tags = json.loads(article.get("tags", "[]"))
-                except Exception:
-                    pass
-                if tags:
-                    p = doc.add_paragraph()
-                    p.add_run("Теги: ").bold = True
-                    p.add_run(", ".join(tags))
+                    doc.add_paragraph("")
+                    doc.add_heading("Текст статьи", level=2)
+                    text = article.get("text", "")
+                    for paragraph in text.split("\n"):
+                        paragraph = paragraph.strip()
+                        if paragraph:
+                            if paragraph.startswith("## "):
+                                doc.add_heading(paragraph[3:], level=3)
+                            elif paragraph.startswith("# "):
+                                doc.add_heading(paragraph[2:], level=2)
+                            else:
+                                doc.add_paragraph(paragraph)
 
-                doc.add_paragraph("")
-                doc.add_heading("Текст статьи", level=2)
-                text = article.get("text", "")
-                for paragraph in text.split("\n"):
-                    paragraph = paragraph.strip()
-                    if paragraph:
-                        if paragraph.startswith("## "):
-                            doc.add_heading(paragraph[3:], level=3)
-                        elif paragraph.startswith("# "):
-                            doc.add_heading(paragraph[2:], level=2)
-                        else:
-                            doc.add_paragraph(paragraph)
+                    doc_buffer = io.BytesIO()
+                    doc.save(doc_buffer)
+                    safe_title = "".join(c for c in article.get("title", "article")[:40] if c.isalnum() or c in " _-").strip() or "article"
+                    zf.writestr(f"{safe_title}.docx", doc_buffer.getvalue())
 
-                doc_buffer = io.BytesIO()
-                doc.save(doc_buffer)
-                safe_title = "".join(c for c in article.get("title", "article")[:40] if c.isalnum() or c in " _-").strip() or "article"
-                zf.writestr(f"{safe_title}.docx", doc_buffer.getvalue())
+            data = zip_buffer.getvalue()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", 'attachment; filename="articles.zip"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
 
-        data = zip_buffer.getvalue()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/zip")
-        self.send_header("Content-Disposition", 'attachment; filename="articles.zip"')
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
+        finally:
+            cur.close()
     # --- Articles ---
     def _get_articles(self):
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT * FROM articles ORDER BY updated_at DESC")
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            return [dict(zip(columns, row)) for row in cur.fetchall()]
-        return [dict(row) for row in cur.fetchall()]
+        try:
+            cur.execute("SELECT * FROM articles ORDER BY updated_at DESC")
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                return [dict(zip(columns, row)) for row in cur.fetchall()]
+            return [dict(row) for row in cur.fetchall()]
 
+        finally:
+            cur.close()
     def _save_article(self, body):
         import uuid
         from datetime import datetime, timezone
@@ -2638,21 +2740,24 @@ async function login() {
         now = datetime.now(timezone.utc).isoformat()
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        import json
-        tags = json.dumps(body.get("tags", []), ensure_ascii=False)
-        cur.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
-            style, language, original_title, original_text, source_url, status, created_at, updated_at)
-            VALUES ({','.join([ph]*15)})""",
-            (aid, body.get("news_id", ""), body.get("title", ""), body.get("text", ""),
-             body.get("seo_title", ""), body.get("seo_description", ""), tags,
-             body.get("style", ""), body.get("language", "русский"),
-             body.get("original_title", ""), body.get("original_text", ""),
-             body.get("source_url", ""), "draft", now, now))
-        if not _is_postgres():
-            conn.commit()
-        self._json({"status": "ok", "id": aid})
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            import json
+            tags = json.dumps(body.get("tags", []), ensure_ascii=False)
+            cur.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
+                style, language, original_title, original_text, source_url, status, created_at, updated_at)
+                VALUES ({','.join([ph]*15)})""",
+                (aid, body.get("news_id", ""), body.get("title", ""), body.get("text", ""),
+                 body.get("seo_title", ""), body.get("seo_description", ""), tags,
+                 body.get("style", ""), body.get("language", "русский"),
+                 body.get("original_title", ""), body.get("original_text", ""),
+                 body.get("source_url", ""), "draft", now, now))
+            if not _is_postgres():
+                conn.commit()
+            self._json({"status": "ok", "id": aid})
 
+        finally:
+            cur.close()
     def _update_article(self, body):
         from datetime import datetime, timezone
         aid = body.get("id")
@@ -2662,17 +2767,20 @@ async function login() {
         now = datetime.now(timezone.utc).isoformat()
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        import json
-        tags = json.dumps(body.get("tags", []), ensure_ascii=False)
-        cur.execute(f"""UPDATE articles SET title={ph}, text={ph}, seo_title={ph},
-            seo_description={ph}, tags={ph}, status={ph}, updated_at={ph} WHERE id={ph}""",
-            (body.get("title", ""), body.get("text", ""), body.get("seo_title", ""),
-             body.get("seo_description", ""), tags, body.get("status", "draft"), now, aid))
-        if not _is_postgres():
-            conn.commit()
-        self._json({"status": "ok"})
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            import json
+            tags = json.dumps(body.get("tags", []), ensure_ascii=False)
+            cur.execute(f"""UPDATE articles SET title={ph}, text={ph}, seo_title={ph},
+                seo_description={ph}, tags={ph}, status={ph}, updated_at={ph} WHERE id={ph}""",
+                (body.get("title", ""), body.get("text", ""), body.get("seo_title", ""),
+                 body.get("seo_description", ""), tags, body.get("status", "draft"), now, aid))
+            if not _is_postgres():
+                conn.commit()
+            self._json({"status": "ok"})
 
+        finally:
+            cur.close()
     def _delete_article(self, body):
         aid = body.get("id")
         if not aid:
@@ -2680,12 +2788,15 @@ async function login() {
             return
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        cur.execute(f"DELETE FROM articles WHERE id = {ph}", (aid,))
-        if not _is_postgres():
-            conn.commit()
-        self._json({"status": "ok"})
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"DELETE FROM articles WHERE id = {ph}", (aid,))
+            if not _is_postgres():
+                conn.commit()
+            self._json({"status": "ok"})
 
+        finally:
+            cur.close()
     def _article_detail(self, body):
         aid = body.get("id")
         if not aid:
@@ -2693,19 +2804,22 @@ async function login() {
             return
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        cur.execute(f"SELECT * FROM articles WHERE id = {ph}", (aid,))
-        row = cur.fetchone()
-        if not row:
-            self._json({"status": "error", "message": "Not found"})
-            return
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            article = dict(zip(columns, row))
-        else:
-            article = dict(row)
-        self._json({"status": "ok", "article": article})
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"SELECT * FROM articles WHERE id = {ph}", (aid,))
+            row = cur.fetchone()
+            if not row:
+                self._json({"status": "error", "message": "Not found"})
+                return
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                article = dict(zip(columns, row))
+            else:
+                article = dict(row)
+            self._json({"status": "ok", "article": article})
 
+        finally:
+            cur.close()
     def _rewrite_article(self, body):
         """Переписать существующую статью в другом стиле."""
         aid = body.get("id")
@@ -2713,188 +2827,197 @@ async function login() {
         language = body.get("language", "русский")
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        cur.execute(f"SELECT title, text, original_title, original_text FROM articles WHERE id = {ph}", (aid,))
-        row = cur.fetchone()
-        if not row:
-            self._json({"status": "error", "message": "Article not found"})
-            return
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            article = dict(zip(columns, row))
-        else:
-            article = dict(row)
-        # Use original text for rewriting to avoid degradation
-        src_title = article.get("original_title") or article.get("title", "")
-        src_text = article.get("original_text") or article.get("text", "")
-        from apis.llm import rewrite_news
-        result = rewrite_news(src_title, src_text, style, language)
-        if result:
-            self._json({"status": "ok", "result": result})
-        else:
-            self._json({"status": "error", "message": "LLM returned no result"})
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"SELECT title, text, original_title, original_text FROM articles WHERE id = {ph}", (aid,))
+            row = cur.fetchone()
+            if not row:
+                self._json({"status": "error", "message": "Article not found"})
+                return
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                article = dict(zip(columns, row))
+            else:
+                article = dict(row)
+            # Use original text for rewriting to avoid degradation
+            src_title = article.get("original_title") or article.get("title", "")
+            src_text = article.get("original_text") or article.get("text", "")
+            from apis.llm import rewrite_news
+            result = rewrite_news(src_title, src_text, style, language)
+            if result:
+                self._json({"status": "ok", "result": result})
+            else:
+                self._json({"status": "error", "message": "LLM returned no result"})
 
+        finally:
+            cur.close()
     def _improve_article(self, body):
         """Улучшить текст статьи через LLM (грамматика, стиль, SEO)."""
         aid = body.get("id")
         action = body.get("action", "improve")  # improve, expand, shorten, fix_grammar, add_seo
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        cur.execute(f"SELECT title, text FROM articles WHERE id = {ph}", (aid,))
-        row = cur.fetchone()
-        if not row:
-            self._json({"status": "error", "message": "Article not found"})
-            return
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            article = dict(zip(columns, row))
-        else:
-            article = dict(row)
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"SELECT title, text FROM articles WHERE id = {ph}", (aid,))
+            row = cur.fetchone()
+            if not row:
+                self._json({"status": "error", "message": "Article not found"})
+                return
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                article = dict(zip(columns, row))
+            else:
+                article = dict(row)
 
-        actions_map = {
-            "improve": "Улучши текст: исправь стилистические ошибки, сделай более профессиональным, сохрани факты.",
-            "expand": "Расширь текст: добавь подробностей, контекста, аналитики. Увеличь объём в 1.5-2 раза, не добавляя вымышленных фактов.",
-            "shorten": "Сократи текст в 2 раза, оставив только ключевые факты. Убери воду и повторы.",
-            "fix_grammar": "Исправь все грамматические, пунктуационные и стилистические ошибки. Не меняй смысл и структуру.",
-            "add_seo": "Добавь SEO-оптимизацию: включи ключевые слова естественно, добавь подзаголовки (## H2), улучши мета-описание.",
-            "make_engaging": "Сделай текст более вовлекающим: добавь интригу, живые примеры, вопросы к читателю. Сохрани факты.",
-        }
-        instruction = actions_map.get(action, actions_map["improve"])
+            actions_map = {
+                "improve": "Улучши текст: исправь стилистические ошибки, сделай более профессиональным, сохрани факты.",
+                "expand": "Расширь текст: добавь подробностей, контекста, аналитики. Увеличь объём в 1.5-2 раза, не добавляя вымышленных фактов.",
+                "shorten": "Сократи текст в 2 раза, оставив только ключевые факты. Убери воду и повторы.",
+                "fix_grammar": "Исправь все грамматические, пунктуационные и стилистические ошибки. Не меняй смысл и структуру.",
+                "add_seo": "Добавь SEO-оптимизацию: включи ключевые слова естественно, добавь подзаголовки (## H2), улучши мета-описание.",
+                "make_engaging": "Сделай текст более вовлекающим: добавь интригу, живые примеры, вопросы к читателю. Сохрани факты.",
+            }
+            instruction = actions_map.get(action, actions_map["improve"])
 
-        from apis.llm import _call_llm
-        prompt = f"""Ты — профессиональный редактор игровых новостей.
+            from apis.llm import _call_llm
+            prompt = f"""Ты — профессиональный редактор игровых новостей.
+    
+    Задача: {instruction}
+    
+    Заголовок: {article['title']}
+    Текст: {article['text'][:4000]}
+    
+    Верни строго JSON (без markdown):
+    {{
+      "title": "обновлённый заголовок",
+      "text": "обновлённый текст",
+      "seo_title": "SEO title до 60 символов",
+      "seo_description": "meta description до 155 символов",
+      "changes_summary": "что было изменено (1-2 предложения)"
+    }}"""
+            result = _call_llm(prompt)
+            if result:
+                self._json({"status": "ok", "result": result})
+            else:
+                self._json({"status": "error", "message": "LLM returned no result"})
 
-Задача: {instruction}
-
-Заголовок: {article['title']}
-Текст: {article['text'][:4000]}
-
-Верни строго JSON (без markdown):
-{{
-  "title": "обновлённый заголовок",
-  "text": "обновлённый текст",
-  "seo_title": "SEO title до 60 символов",
-  "seo_description": "meta description до 155 символов",
-  "changes_summary": "что было изменено (1-2 предложения)"
-}}"""
-        result = _call_llm(prompt)
-        if result:
-            self._json({"status": "ok", "result": result})
-        else:
-            self._json({"status": "error", "message": "LLM returned no result"})
-
+        finally:
+            cur.close()
     def _serve_docx(self, article_id):
         """Генерация и отдача DOCX файла."""
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        cur.execute(f"SELECT * FROM articles WHERE id = {ph}", (article_id,))
-        row = cur.fetchone()
-        if not row:
-            self.send_response(404)
-            self.end_headers()
-            return
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            article = dict(zip(columns, row))
-        else:
-            article = dict(row)
-
-        import io
-        import json
-        from docx import Document
-        from docx.shared import Pt, Inches, RGBColor
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
-
-        doc = Document()
-        style = doc.styles['Normal']
-        style.font.name = 'Calibri'
-        style.font.size = Pt(11)
-
-        # Title
-        title_p = doc.add_heading(article.get("title", ""), level=1)
-        title_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-
-        # Meta info block
-        meta_p = doc.add_paragraph()
-        meta_p.paragraph_format.space_after = Pt(6)
-        run = meta_p.add_run(f"Стиль: {article.get('style', '')} | Язык: {article.get('language', '')}")
-        run.font.size = Pt(9)
-        run.font.color.rgb = RGBColor(128, 128, 128)
-        if article.get("source_url"):
-            run2 = meta_p.add_run(f"\nИсточник: {article['source_url']}")
-            run2.font.size = Pt(9)
-            run2.font.color.rgb = RGBColor(128, 128, 128)
-
-        # SEO block
-        if article.get("seo_title") or article.get("seo_description"):
-            doc.add_heading("SEO", level=2)
-            if article.get("seo_title"):
-                p = doc.add_paragraph()
-                p.add_run("Title: ").bold = True
-                p.add_run(article["seo_title"])
-            if article.get("seo_description"):
-                p = doc.add_paragraph()
-                p.add_run("Description: ").bold = True
-                p.add_run(article["seo_description"])
-
-        # Tags
-        tags = []
         try:
-            tags = json.loads(article.get("tags", "[]"))
-        except Exception:
-            pass
-        if tags:
-            p = doc.add_paragraph()
-            p.add_run("Теги: ").bold = True
-            p.add_run(", ".join(tags))
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"SELECT * FROM articles WHERE id = {ph}", (article_id,))
+            row = cur.fetchone()
+            if not row:
+                self.send_response(404)
+                self.end_headers()
+                return
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                article = dict(zip(columns, row))
+            else:
+                article = dict(row)
 
-        doc.add_paragraph("")  # spacer
+            import io
+            import json
+            from docx import Document
+            from docx.shared import Pt, Inches, RGBColor
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-        # Article text
-        doc.add_heading("Текст статьи", level=2)
-        text = article.get("text", "")
-        for paragraph in text.split("\n"):
-            paragraph = paragraph.strip()
-            if paragraph:
-                if paragraph.startswith("## "):
-                    doc.add_heading(paragraph[3:], level=3)
-                elif paragraph.startswith("# "):
-                    doc.add_heading(paragraph[2:], level=2)
-                else:
-                    doc.add_paragraph(paragraph)
+            doc = Document()
+            style = doc.styles['Normal']
+            style.font.name = 'Calibri'
+            style.font.size = Pt(11)
 
-        # Original text if exists
-        if article.get("original_text"):
-            doc.add_page_break()
-            doc.add_heading("Оригинал", level=2)
-            orig_p = doc.add_paragraph()
-            if article.get("original_title"):
-                run = orig_p.add_run(article["original_title"] + "\n\n")
-                run.bold = True
-            for line in article["original_text"][:3000].split("\n"):
-                line = line.strip()
-                if line:
-                    p = doc.add_paragraph(line)
-                    for run in p.runs:
-                        run.font.color.rgb = RGBColor(128, 128, 128)
-                        run.font.size = Pt(10)
+            # Title
+            title_p = doc.add_heading(article.get("title", ""), level=1)
+            title_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-        buffer = io.BytesIO()
-        doc.save(buffer)
-        data = buffer.getvalue()
+            # Meta info block
+            meta_p = doc.add_paragraph()
+            meta_p.paragraph_format.space_after = Pt(6)
+            run = meta_p.add_run(f"Стиль: {article.get('style', '')} | Язык: {article.get('language', '')}")
+            run.font.size = Pt(9)
+            run.font.color.rgb = RGBColor(128, 128, 128)
+            if article.get("source_url"):
+                run2 = meta_p.add_run(f"\nИсточник: {article['source_url']}")
+                run2.font.size = Pt(9)
+                run2.font.color.rgb = RGBColor(128, 128, 128)
 
-        safe_title = "".join(c for c in article.get("title", "article")[:40] if c.isalnum() or c in " _-").strip() or "article"
-        filename = f"{safe_title}.docx"
+            # SEO block
+            if article.get("seo_title") or article.get("seo_description"):
+                doc.add_heading("SEO", level=2)
+                if article.get("seo_title"):
+                    p = doc.add_paragraph()
+                    p.add_run("Title: ").bold = True
+                    p.add_run(article["seo_title"])
+                if article.get("seo_description"):
+                    p = doc.add_paragraph()
+                    p.add_run("Description: ").bold = True
+                    p.add_run(article["seo_description"])
 
-        self.send_response(200)
-        self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+            # Tags
+            tags = []
+            try:
+                tags = json.loads(article.get("tags", "[]"))
+            except Exception:
+                pass
+            if tags:
+                p = doc.add_paragraph()
+                p.add_run("Теги: ").bold = True
+                p.add_run(", ".join(tags))
 
+            doc.add_paragraph("")  # spacer
+
+            # Article text
+            doc.add_heading("Текст статьи", level=2)
+            text = article.get("text", "")
+            for paragraph in text.split("\n"):
+                paragraph = paragraph.strip()
+                if paragraph:
+                    if paragraph.startswith("## "):
+                        doc.add_heading(paragraph[3:], level=3)
+                    elif paragraph.startswith("# "):
+                        doc.add_heading(paragraph[2:], level=2)
+                    else:
+                        doc.add_paragraph(paragraph)
+
+            # Original text if exists
+            if article.get("original_text"):
+                doc.add_page_break()
+                doc.add_heading("Оригинал", level=2)
+                orig_p = doc.add_paragraph()
+                if article.get("original_title"):
+                    run = orig_p.add_run(article["original_title"] + "\n\n")
+                    run.bold = True
+                for line in article["original_text"][:3000].split("\n"):
+                    line = line.strip()
+                    if line:
+                        p = doc.add_paragraph(line)
+                        for run in p.runs:
+                            run.font.color.rgb = RGBColor(128, 128, 128)
+                            run.font.size = Pt(10)
+
+            buffer = io.BytesIO()
+            doc.save(buffer)
+            data = buffer.getvalue()
+
+            safe_title = "".join(c for c in article.get("title", "article")[:40] if c.isalnum() or c in " _-").strip() or "article"
+            filename = f"{safe_title}.docx"
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        finally:
+            cur.close()
     # --- Logs, Cache, Rate, Translate, AI ---
 
     def _get_viral(self):
@@ -2917,152 +3040,155 @@ async function login() {
 
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
+        try:
+            ph = "%s" if _is_postgres() else "?"
 
-        conditions = []
-        params = []
-        if source_filter:
-            conditions.append(f"n.source = {ph}")
-            params.append(source_filter)
-        if date_from:
-            conditions.append(f"n.parsed_at >= {ph}")
-            params.append(date_from)
-        if date_to:
-            conditions.append(f"n.parsed_at <= {ph}")
-            params.append(date_to + "T23:59:59")
-        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+            conditions = []
+            params = []
+            if source_filter:
+                conditions.append(f"n.source = {ph}")
+                params.append(source_filter)
+            if date_from:
+                conditions.append(f"n.parsed_at >= {ph}")
+                params.append(date_from)
+            if date_to:
+                conditions.append(f"n.parsed_at <= {ph}")
+                params.append(date_to + "T23:59:59")
+            where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
-        cur.execute(f"""
-            SELECT n.id, n.source, n.title, n.url, n.description, n.plain_text,
-                   n.published_at, n.parsed_at, n.status
-            FROM news n {where}
-            ORDER BY n.parsed_at DESC LIMIT {ph}
-        """, params + [limit])
+            cur.execute(f"""
+                SELECT n.id, n.source, n.title, n.url, n.description, n.plain_text,
+                       n.published_at, n.parsed_at, n.status
+                FROM news n {where}
+                ORDER BY n.parsed_at DESC LIMIT {ph}
+            """, params + [limit])
 
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-        else:
-            rows = [dict(row) for row in cur.fetchall()]
-
-        items = []
-        stats = {"total": 0, "high": 0, "medium": 0, "low": 0, "none": 0}
-        trigger_counts = {}
-        category_counts = {}
-        sentiment_counts = {"positive": 0, "negative": 0, "neutral": 0}
-        source_scores = {}
-
-        # Category mapping from trigger_id prefix
-        CATEGORY_MAP = {
-            "scandal": "Скандалы", "leak": "Утечки", "shadow": "Shadow Drops",
-            "bad": "Плохие релизы", "ai": "AI", "major_event": "Ивенты",
-            "event": "Ивенты", "money": "Деньги", "culture": "Культура",
-            "person": "Персоны", "speed": "Скорость",
-            "sequel": "Базовые", "free_content": "Базовые", "delay": "Базовые",
-            "canceled": "Базовые", "award": "Базовые", "next_gen": "Базовые",
-            "big_update": "Базовые", "release_date": "Базовые",
-            "trailer": "Базовые", "record": "Базовые", "digest": "Базовые",
-        }
-
-        for row in rows:
-            ck = cache_key("viral_tab", row["id"])
-            cached = cache_get(ck)
-            if cached:
-                vr = cached["viral"]
-                sent = cached["sentiment"]
-                tags = cached["tags"]
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                rows = [dict(zip(columns, row)) for row in cur.fetchall()]
             else:
-                vr = viral_score(row)
-                sent = analyze_sentiment(row)
-                tags = auto_tag(row)
-                cache_set(ck, {"viral": vr, "sentiment": sent, "tags": tags}, ttl=3600)
+                rows = [dict(row) for row in cur.fetchall()]
 
-            # Determine categories of triggers
-            trigger_categories = set()
-            for t in vr["triggers"]:
-                tid = t["id"]
-                prefix = tid.split("_")[0]
-                cat = CATEGORY_MAP.get(tid, CATEGORY_MAP.get(prefix, "Прочее"))
-                trigger_categories.add(cat)
+            items = []
+            stats = {"total": 0, "high": 0, "medium": 0, "low": 0, "none": 0}
+            trigger_counts = {}
+            category_counts = {}
+            sentiment_counts = {"positive": 0, "negative": 0, "neutral": 0}
+            source_scores = {}
 
-            # Apply filters
-            if level_filter and vr["level"] != level_filter:
-                continue
-            if min_score and vr["score"] < min_score:
-                continue
-            if sentiment_filter and sent["label"] != sentiment_filter:
-                continue
-            if trigger_filter:
-                if not any(t["id"] == trigger_filter for t in vr["triggers"]):
-                    continue
-            if category_filter:
-                if category_filter not in trigger_categories:
-                    continue
-
-            item = {
-                "id": row["id"],
-                "source": row["source"],
-                "title": row["title"],
-                "url": row["url"],
-                "published_at": row["published_at"],
-                "parsed_at": row["parsed_at"],
-                "status": row["status"],
-                "viral_score": vr["score"],
-                "viral_level": vr["level"],
-                "triggers": vr["triggers"],
-                "sentiment": sent["label"],
-                "sentiment_score": sent["score"],
-                "tags": [{"id": t["id"], "label": t["label"]} for t in tags[:3]],
+            # Category mapping from trigger_id prefix
+            CATEGORY_MAP = {
+                "scandal": "Скандалы", "leak": "Утечки", "shadow": "Shadow Drops",
+                "bad": "Плохие релизы", "ai": "AI", "major_event": "Ивенты",
+                "event": "Ивенты", "money": "Деньги", "culture": "Культура",
+                "person": "Персоны", "speed": "Скорость",
+                "sequel": "Базовые", "free_content": "Базовые", "delay": "Базовые",
+                "canceled": "Базовые", "award": "Базовые", "next_gen": "Базовые",
+                "big_update": "Базовые", "release_date": "Базовые",
+                "trailer": "Базовые", "record": "Базовые", "digest": "Базовые",
             }
-            items.append(item)
 
-            # Aggregate stats
-            stats["total"] += 1
-            stats[vr["level"]] = stats.get(vr["level"], 0) + 1
-            sentiment_counts[sent["label"]] = sentiment_counts.get(sent["label"], 0) + 1
-            for t in vr["triggers"]:
-                trigger_counts[t["label"]] = trigger_counts.get(t["label"], 0) + 1
-                prefix = t["id"].split("_")[0]
-                cat = CATEGORY_MAP.get(t["id"], CATEGORY_MAP.get(prefix, "Прочее"))
-                category_counts[cat] = category_counts.get(cat, 0) + 1
-            src = row["source"]
-            if src not in source_scores:
-                source_scores[src] = {"total": 0, "sum": 0}
-            source_scores[src]["total"] += 1
-            source_scores[src]["sum"] += vr["score"]
+            for row in rows:
+                ck = cache_key("viral_tab", row["id"])
+                cached = cache_get(ck)
+                if cached:
+                    vr = cached["viral"]
+                    sent = cached["sentiment"]
+                    tags = cached["tags"]
+                else:
+                    vr = viral_score(row)
+                    sent = analyze_sentiment(row)
+                    tags = auto_tag(row)
+                    cache_set(ck, {"viral": vr, "sentiment": sent, "tags": tags}, ttl=3600)
 
-        # Sort by viral_score desc
-        items.sort(key=lambda x: x["viral_score"], reverse=True)
+                # Determine categories of triggers
+                trigger_categories = set()
+                for t in vr["triggers"]:
+                    tid = t["id"]
+                    prefix = tid.split("_")[0]
+                    cat = CATEGORY_MAP.get(tid, CATEGORY_MAP.get(prefix, "Прочее"))
+                    trigger_categories.add(cat)
 
-        # Top triggers sorted
-        top_triggers = sorted(trigger_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+                # Apply filters
+                if level_filter and vr["level"] != level_filter:
+                    continue
+                if min_score and vr["score"] < min_score:
+                    continue
+                if sentiment_filter and sent["label"] != sentiment_filter:
+                    continue
+                if trigger_filter:
+                    if not any(t["id"] == trigger_filter for t in vr["triggers"]):
+                        continue
+                if category_filter:
+                    if category_filter not in trigger_categories:
+                        continue
 
-        # Top categories sorted
-        top_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)
+                item = {
+                    "id": row["id"],
+                    "source": row["source"],
+                    "title": row["title"],
+                    "url": row["url"],
+                    "published_at": row["published_at"],
+                    "parsed_at": row["parsed_at"],
+                    "status": row["status"],
+                    "viral_score": vr["score"],
+                    "viral_level": vr["level"],
+                    "triggers": vr["triggers"],
+                    "sentiment": sent["label"],
+                    "sentiment_score": sent["score"],
+                    "tags": [{"id": t["id"], "label": t["label"]} for t in tags[:3]],
+                }
+                items.append(item)
 
-        # Source avg scores
-        source_avg = []
-        for src, data in source_scores.items():
-            source_avg.append({"source": src, "avg": round(data["sum"] / data["total"], 1), "count": data["total"]})
-        source_avg.sort(key=lambda x: x["avg"], reverse=True)
+                # Aggregate stats
+                stats["total"] += 1
+                stats[vr["level"]] = stats.get(vr["level"], 0) + 1
+                sentiment_counts[sent["label"]] = sentiment_counts.get(sent["label"], 0) + 1
+                for t in vr["triggers"]:
+                    trigger_counts[t["label"]] = trigger_counts.get(t["label"], 0) + 1
+                    prefix = t["id"].split("_")[0]
+                    cat = CATEGORY_MAP.get(t["id"], CATEGORY_MAP.get(prefix, "Прочее"))
+                    category_counts[cat] = category_counts.get(cat, 0) + 1
+                src = row["source"]
+                if src not in source_scores:
+                    source_scores[src] = {"total": 0, "sum": 0}
+                source_scores[src]["total"] += 1
+                source_scores[src]["sum"] += vr["score"]
 
-        # Calendar event
-        cal_boost, cal_event = get_calendar_boost()
+            # Sort by viral_score desc
+            items.sort(key=lambda x: x["viral_score"], reverse=True)
 
-        # Available triggers for filter
-        all_triggers = [{"id": k, "label": v["label"], "category": CATEGORY_MAP.get(k, CATEGORY_MAP.get(k.split("_")[0], "Прочее"))} for k, v in VIRAL_TRIGGERS.items()]
+            # Top triggers sorted
+            top_triggers = sorted(trigger_counts.items(), key=lambda x: x[1], reverse=True)[:20]
 
-        return {
-            "items": items,
-            "stats": stats,
-            "sentiment": sentiment_counts,
-            "top_triggers": top_triggers,
-            "top_categories": top_categories,
-            "source_avg": source_avg[:15],
-            "calendar": {"boost": cal_boost, "event": cal_event},
-            "all_triggers": all_triggers,
-        }
+            # Top categories sorted
+            top_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)
 
+            # Source avg scores
+            source_avg = []
+            for src, data in source_scores.items():
+                source_avg.append({"source": src, "avg": round(data["sum"] / data["total"], 1), "count": data["total"]})
+            source_avg.sort(key=lambda x: x["avg"], reverse=True)
+
+            # Calendar event
+            cal_boost, cal_event = get_calendar_boost()
+
+            # Available triggers for filter
+            all_triggers = [{"id": k, "label": v["label"], "category": CATEGORY_MAP.get(k, CATEGORY_MAP.get(k.split("_")[0], "Прочее"))} for k, v in VIRAL_TRIGGERS.items()]
+
+            return {
+                "items": items,
+                "stats": stats,
+                "sentiment": sentiment_counts,
+                "top_triggers": top_triggers,
+                "top_categories": top_categories,
+                "source_avg": source_avg[:15],
+                "calendar": {"boost": cal_boost, "event": cal_event},
+                "all_triggers": all_triggers,
+            }
+
+        finally:
+            cur.close()
     def _get_logs(self):
         qs = parse_qs(urlparse(self.path).query)
         limit = int(qs.get("limit", [100])[0])
@@ -3090,29 +3216,32 @@ async function login() {
             return
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        cur.execute(f"SELECT title FROM news WHERE id = {ph}", (news_id,))
-        row = cur.fetchone()
-        if not row:
-            self._json({"status": "error", "message": "not found"})
-            return
-        title = row[0] if _is_postgres() else row["title"]
         try:
-            from apis.llm import translate_title
-            result = translate_title(title)
-            if result:
-                # Save translated title as h1 if not Russian
-                if not result.get("is_russian") and result.get("translated"):
-                    cur.execute(f"UPDATE news SET h1 = {ph} WHERE id = {ph}", (result["translated"], news_id))
-                    if not _is_postgres():
-                        conn.commit()
-                self._json({"status": "ok", **result})
-            else:
-                self._json({"status": "error", "message": "LLM not responding. Check API keys and rate limits."})
-        except Exception as e:
-            logger.error("Translate error: %s", e)
-            self._json({"status": "error", "message": str(e)})
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"SELECT title FROM news WHERE id = {ph}", (news_id,))
+            row = cur.fetchone()
+            if not row:
+                self._json({"status": "error", "message": "not found"})
+                return
+            title = row[0] if _is_postgres() else row["title"]
+            try:
+                from apis.llm import translate_title
+                result = translate_title(title)
+                if result:
+                    # Save translated title as h1 if not Russian
+                    if not result.get("is_russian") and result.get("translated"):
+                        cur.execute(f"UPDATE news SET h1 = {ph} WHERE id = {ph}", (result["translated"], news_id))
+                        if not _is_postgres():
+                            conn.commit()
+                    self._json({"status": "ok", **result})
+                else:
+                    self._json({"status": "error", "message": "LLM not responding. Check API keys and rate limits."})
+            except Exception as e:
+                logger.error("Translate error: %s", e)
+                self._json({"status": "error", "message": str(e)})
 
+        finally:
+            cur.close()
     def _ai_recommend(self, body):
         news_id = body.get("news_id", "")
         if not news_id:
@@ -3120,41 +3249,44 @@ async function login() {
             return
         conn = get_connection()
         cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
-        row = cur.fetchone()
-        if not row:
-            self._json({"status": "error", "message": "not found"})
-            return
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            news = dict(zip(columns, row))
-        else:
-            news = dict(row)
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
+            row = cur.fetchone()
+            if not row:
+                self._json({"status": "error", "message": "not found"})
+                return
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                news = dict(zip(columns, row))
+            else:
+                news = dict(row)
 
-        # Run checks for context
-        from checks.quality import check_quality
-        from checks.relevance import check_relevance
-        from checks.freshness import check_freshness
-        from checks.viral_score import viral_score
-        checks = {
-            "quality": check_quality(news),
-            "relevance": check_relevance(news),
-            "freshness": check_freshness(news),
-            "viral": viral_score(news),
-        }
-        from apis.llm import ai_recommendation
-        result = ai_recommendation(
-            title=news.get("title", ""),
-            text=news.get("plain_text", "") or news.get("description", ""),
-            source=news.get("source", ""),
-            checks=checks,
-        )
-        if result:
-            self._json({"status": "ok", "recommendation": result, "checks": {k: v.get("score", 0) for k, v in checks.items()}})
-        else:
-            self._json({"status": "error", "message": "AI recommendation failed"})
+            # Run checks for context
+            from checks.quality import check_quality
+            from checks.relevance import check_relevance
+            from checks.freshness import check_freshness
+            from checks.viral_score import viral_score
+            checks = {
+                "quality": check_quality(news),
+                "relevance": check_relevance(news),
+                "freshness": check_freshness(news),
+                "viral": viral_score(news),
+            }
+            from apis.llm import ai_recommendation
+            result = ai_recommendation(
+                title=news.get("title", ""),
+                text=news.get("plain_text", "") or news.get("description", ""),
+                source=news.get("source", ""),
+                checks=checks,
+            )
+            if result:
+                self._json({"status": "ok", "recommendation": result, "checks": {k: v.get("score", 0) for k, v in checks.items()}})
+            else:
+                self._json({"status": "error", "message": "AI recommendation failed"})
 
+        finally:
+            cur.close()
     # --- Dashboard HTML ---
     def _serve_dashboard(self):
         html = DASHBOARD_HTML
@@ -7758,27 +7890,30 @@ def _load_active_prompts():
     try:
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT prompt_name, content FROM prompt_versions WHERE is_active = 1")
-        import apis.llm as llm
-        prompt_map = {
-            "trend_forecast": "PROMPT_TREND_FORECAST",
-            "merge_analysis": "PROMPT_MERGE_ANALYSIS",
-            "keyso_queries": "PROMPT_KEYSO_QUERIES",
-            "rewrite": "PROMPT_REWRITE",
-        }
-        if _is_postgres():
-            for row in cur.fetchall():
-                attr = prompt_map.get(row[0])
-                if attr and hasattr(llm, attr):
-                    setattr(llm, attr, row[1])
-                    logger.info("Loaded active prompt: %s", row[0])
-        else:
-            for row in cur.fetchall():
-                r = dict(row)
-                attr = prompt_map.get(r["prompt_name"])
-                if attr and hasattr(llm, attr):
-                    setattr(llm, attr, r["content"])
-                    logger.info("Loaded active prompt: %s", r["prompt_name"])
+        try:
+            cur.execute("SELECT prompt_name, content FROM prompt_versions WHERE is_active = 1")
+            import apis.llm as llm
+            prompt_map = {
+                "trend_forecast": "PROMPT_TREND_FORECAST",
+                "merge_analysis": "PROMPT_MERGE_ANALYSIS",
+                "keyso_queries": "PROMPT_KEYSO_QUERIES",
+                "rewrite": "PROMPT_REWRITE",
+            }
+            if _is_postgres():
+                for row in cur.fetchall():
+                    attr = prompt_map.get(row[0])
+                    if attr and hasattr(llm, attr):
+                        setattr(llm, attr, row[1])
+                        logger.info("Loaded active prompt: %s", row[0])
+            else:
+                for row in cur.fetchall():
+                    r = dict(row)
+                    attr = prompt_map.get(r["prompt_name"])
+                    if attr and hasattr(llm, attr):
+                        setattr(llm, attr, r["content"])
+                        logger.info("Loaded active prompt: %s", r["prompt_name"])
+        finally:
+            cur.close()
     except Exception as e:
         logger.debug("Could not load active prompts: %s", e)
 
