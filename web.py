@@ -127,6 +127,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/editorial": lambda: self._json(self._get_editorial()),
             "/api/moderation_list": lambda: self._json(self._get_moderation_list()),
             "/api/digests": lambda: self._json(self._get_digests()),
+            "/api/viral_triggers": lambda: self._json(self._get_viral_triggers()),
         }
 
         # DOCX download (GET with query param)
@@ -223,6 +224,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/queue/cancel": lambda: self._cancel_queue_task(body),
             "/api/queue/cancel_all": lambda: self._cancel_all_queue(body),
             "/api/queue/clear_done": lambda: self._clear_done_queue(body),
+            "/api/queue/retry": lambda: self._retry_queue_tasks(body),
+            "/api/viral_triggers/save": lambda: self._save_viral_trigger(body),
+            "/api/viral_triggers/delete": lambda: self._delete_viral_trigger(body),
             "/api/run_auto_review": lambda: self._run_auto_review(body),
             "/api/queue/rewrite": lambda: self._queue_batch_rewrite(body),
             "/api/queue/sheets": lambda: self._queue_sheets_export(body),
@@ -2545,6 +2549,157 @@ async function login() {
 
         finally:
             cur.close()
+    def _retry_queue_tasks(self, body):
+        """Повторяет выбранные задачи из очереди (error → pending)."""
+        task_ids = body.get("task_ids", [])
+        if not task_ids:
+            self._json({"status": "error", "message": "task_ids required"})
+            return
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat()
+            count = 0
+            for tid in task_ids:
+                cur.execute(f"UPDATE task_queue SET status = 'pending', result = '', updated_at = {ph} WHERE id = {ph} AND status IN ('error', 'cancelled')", (now, tid))
+                count += cur.rowcount if hasattr(cur, 'rowcount') else 1
+            if not _is_postgres():
+                conn.commit()
+
+            # Re-run pending tasks in background
+            cur.execute("SELECT id, task_type, news_id, news_title, style FROM task_queue WHERE status = 'pending' ORDER BY created_at")
+            if _is_postgres():
+                cols = [d[0] for d in cur.description]
+                pending = [dict(zip(cols, r)) for r in cur.fetchall()]
+            else:
+                pending = [dict(r) for r in cur.fetchall()]
+
+            if pending:
+                import threading
+                no_llm_tasks = [t for t in pending if t["task_type"] == "no_llm"]
+                full_auto_tasks = [t for t in pending if t["task_type"] == "full_auto"]
+
+                if no_llm_tasks:
+                    nids = [t["news_id"] for t in no_llm_tasks]
+                    tids = [t["id"] for t in no_llm_tasks]
+                    from scheduler import run_no_llm_pipeline
+                    threading.Thread(target=run_no_llm_pipeline, args=(nids, tids), daemon=True).start()
+                if full_auto_tasks:
+                    nids = [t["news_id"] for t in full_auto_tasks]
+                    tids = [t["id"] for t in full_auto_tasks]
+                    from scheduler import run_full_auto_pipeline
+                    threading.Thread(target=run_full_auto_pipeline, args=(nids, tids), daemon=True).start()
+
+            self._json({"status": "ok", "retried": count})
+        finally:
+            cur.close()
+
+    def _get_viral_triggers(self):
+        """Возвращает все триггеры виральности (дефолтные + кастомные из БД)."""
+        from checks.viral_score import VIRAL_TRIGGERS
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            # Load DB overrides
+            db_triggers = {}
+            try:
+                cur.execute("SELECT trigger_id, label, weight, keywords, is_active, is_custom FROM viral_triggers_config")
+                for row in cur.fetchall():
+                    if _is_postgres():
+                        tid, label, weight, kw_json, active, custom = row
+                    else:
+                        tid, label, weight, kw_json, active, custom = row["trigger_id"], row["label"], row["weight"], row["keywords"], row["is_active"], row["is_custom"]
+                    import json as _j
+                    kws = _j.loads(kw_json) if isinstance(kw_json, str) else (kw_json or [])
+                    db_triggers[tid] = {"label": label, "weight": weight, "keywords": kws, "is_active": bool(active), "is_custom": bool(custom)}
+            except Exception:
+                pass
+
+            result = []
+            # Default triggers
+            for tid, tdata in VIRAL_TRIGGERS.items():
+                if tid in db_triggers:
+                    dt = db_triggers[tid]
+                    result.append({"id": tid, "label": dt["label"], "weight": dt["weight"], "keywords": dt["keywords"], "is_active": dt["is_active"], "is_custom": False, "modified": True})
+                else:
+                    result.append({"id": tid, "label": tdata["label"], "weight": tdata["weight"], "keywords": tdata["keywords"], "is_active": True, "is_custom": False, "modified": False})
+
+            # Custom-only triggers (not in defaults)
+            for tid, dt in db_triggers.items():
+                if tid not in VIRAL_TRIGGERS:
+                    result.append({"id": tid, "label": dt["label"], "weight": dt["weight"], "keywords": dt["keywords"], "is_active": dt["is_active"], "is_custom": True, "modified": False})
+
+            result.sort(key=lambda x: (-x["weight"], x["label"]))
+            return {"triggers": result, "total": len(result)}
+        finally:
+            cur.close()
+
+    def _save_viral_trigger(self, body):
+        """Сохраняет/обновляет триггер виральности."""
+        trigger_id = body.get("trigger_id", "").strip()
+        label = body.get("label", "").strip()
+        weight = int(body.get("weight", 0))
+        keywords = body.get("keywords", [])
+        is_active = bool(body.get("is_active", True))
+        is_custom = bool(body.get("is_custom", False))
+
+        if not trigger_id or not label:
+            self._json({"status": "error", "message": "trigger_id and label required"})
+            return
+
+        if isinstance(keywords, str):
+            keywords = [k.strip() for k in keywords.split(",") if k.strip()]
+
+        import json as _j
+        from datetime import datetime, timezone
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            now = datetime.now(timezone.utc).isoformat()
+            kw_json = _j.dumps(keywords, ensure_ascii=False)
+
+            if _is_postgres():
+                cur.execute(f"""
+                    INSERT INTO viral_triggers_config (trigger_id, label, weight, keywords, is_active, is_custom, updated_at)
+                    VALUES ({','.join([ph]*7)})
+                    ON CONFLICT (trigger_id) DO UPDATE SET label={ph}, weight={ph}, keywords={ph}, is_active={ph}, updated_at={ph}
+                """, (trigger_id, label, weight, kw_json, 1 if is_active else 0, 1 if is_custom else 0, now,
+                      label, weight, kw_json, 1 if is_active else 0, now))
+            else:
+                cur.execute(f"INSERT OR REPLACE INTO viral_triggers_config (trigger_id, label, weight, keywords, is_active, is_custom, updated_at) VALUES ({','.join([ph]*7)})",
+                            (trigger_id, label, weight, kw_json, 1 if is_active else 0, 1 if is_custom else 0, now))
+                conn.commit()
+
+            # Rebuild index
+            from checks.viral_score import reload_viral_triggers
+            reload_viral_triggers()
+
+            self._json({"status": "ok", "trigger_id": trigger_id})
+        finally:
+            cur.close()
+
+    def _delete_viral_trigger(self, body):
+        """Удаляет кастомный триггер или сбрасывает изменённый дефолтный."""
+        trigger_id = body.get("trigger_id", "")
+        if not trigger_id:
+            self._json({"status": "error", "message": "trigger_id required"})
+            return
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"DELETE FROM viral_triggers_config WHERE trigger_id = {ph}", (trigger_id,))
+            if not _is_postgres():
+                conn.commit()
+            from checks.viral_score import reload_viral_triggers
+            reload_viral_triggers()
+            self._json({"status": "ok"})
+        finally:
+            cur.close()
+
     def _queue_batch_rewrite(self, body):
         """Ставит новости в очередь на переписку и запускает обработку в фоне."""
         news_ids = body.get("news_ids", [])
@@ -4412,6 +4567,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <div class="settings-tab active" data-stab="general">Общие</div>
       <div class="settings-tab" data-stab="sources">Источники</div>
       <div class="settings-tab" data-stab="prompts">Промпты</div>
+      <div class="settings-tab" data-stab="viral_cfg">Виральность</div>
       <div class="settings-tab" data-stab="tools">Инструменты</div>
       <div class="settings-tab" data-stab="queue">Очередь <span id="queue-badge" class="badge badge-new" style="display:none">0</span></div>
       <div class="settings-tab" data-stab="logs">Логи</div>
@@ -4518,6 +4674,43 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     </div>
 
     <!-- Tools (moved from separate tab) -->
+    <div class="settings-section" id="stab-viral_cfg">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px">
+        <h2 style="margin:0">Триггеры виральности</h2>
+        <div style="display:flex;gap:8px">
+          <input id="vt-search" placeholder="Поиск..." oninput="filterViralTriggers()" style="padding:6px 10px;border-radius:6px;border:1px solid #38444d;background:#15202b;color:#d9d9d9;width:200px" autocomplete="off">
+          <button class="btn btn-primary" onclick="showAddViralTrigger()">+ Новый триггер</button>
+          <button class="btn btn-secondary" onclick="loadViralTriggers()">Обновить</button>
+        </div>
+      </div>
+      <div id="vt-add-form" style="display:none;margin-bottom:15px;padding:15px;background:#192734;border-radius:8px;border:1px solid #38444d">
+        <div style="display:grid;grid-template-columns:1fr 1fr 100px;gap:10px;margin-bottom:10px">
+          <div><label style="color:#8899a6;font-size:0.8em">ID</label><input id="vt-new-id" placeholder="my_trigger" style="width:100%;padding:6px;border-radius:4px;border:1px solid #38444d;background:#15202b;color:#d9d9d9" autocomplete="off"></div>
+          <div><label style="color:#8899a6;font-size:0.8em">Название</label><input id="vt-new-label" placeholder="My Trigger" style="width:100%;padding:6px;border-radius:4px;border:1px solid #38444d;background:#15202b;color:#d9d9d9" autocomplete="off"></div>
+          <div><label style="color:#8899a6;font-size:0.8em">Скор</label><input id="vt-new-weight" type="number" value="30" min="0" max="100" style="width:100%;padding:6px;border-radius:4px;border:1px solid #38444d;background:#15202b;color:#d9d9d9" autocomplete="off"></div>
+        </div>
+        <div><label style="color:#8899a6;font-size:0.8em">Ключевые слова (через запятую)</label><textarea id="vt-new-keywords" rows="2" placeholder="keyword1, keyword2, ключ3" style="width:100%;padding:6px;border-radius:4px;border:1px solid #38444d;background:#15202b;color:#d9d9d9;resize:vertical" autocomplete="off"></textarea></div>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button class="btn btn-success" onclick="saveNewViralTrigger()">Сохранить</button>
+          <button class="btn btn-secondary" onclick="document.getElementById('vt-add-form').style.display='none'">Отмена</button>
+        </div>
+      </div>
+      <div style="max-height:600px;overflow-y:auto">
+        <table>
+          <thead><tr>
+            <th style="width:30px"></th>
+            <th style="cursor:pointer" onclick="sortViralTriggers('label')">Название</th>
+            <th style="width:70px;cursor:pointer" onclick="sortViralTriggers('weight')">Скор</th>
+            <th>Ключевые слова</th>
+            <th style="width:80px">Тип</th>
+            <th style="width:120px">Действия</th>
+          </tr></thead>
+          <tbody id="vt-table"></tbody>
+        </table>
+      </div>
+      <div id="vt-stats" style="margin-top:10px;color:#8899a6;font-size:0.85em"></div>
+    </div>
+
     <div class="settings-section" id="stab-tools">
       <div class="grid-2">
         <div class="card">
@@ -4584,6 +4777,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <div style="margin-top:8px;display:flex;gap:8px">
         <span id="queue-selected-count" style="color:#8899a6;font-size:0.85em;line-height:28px"></span>
         <button class="btn btn-sm btn-danger" onclick="cancelSelectedQueue()">Отменить выбранные</button>
+        <button class="btn btn-sm btn-primary" onclick="retrySelectedQueue()">Повторить ошибки</button>
       </div>
     </div>
 
@@ -4675,7 +4869,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   if (t.dataset.tab === 'viral') { loadViral(); }
   if (t.dataset.tab === 'analytics') { loadAnalytics(); loadSavedDigests(); }
   if (t.dataset.tab === 'health') { loadHealth(); }
-  if (t.dataset.tab === 'settings') { loadSettings(); loadLogs(); loadQueue(); }
+  if (t.dataset.tab === 'settings') { loadSettings(); loadLogs(); loadQueue(); loadViralTriggers(); }
 }));
 
 // Settings sub-tabs
@@ -4691,6 +4885,7 @@ document.querySelectorAll('.settings-tab').forEach(t => t.addEventListener('clic
   if (s === 'logs') loadLogs();
   if (s === 'queue') loadQueue();
   if (s === 'users') loadUsers();
+  if (s === 'viral_cfg') loadViralTriggers();
 }));
 
 function toast(msg, isError) {
@@ -6162,6 +6357,8 @@ function renderQueueTable() {
 
   document.getElementById('queue-table').innerHTML = tasks.map(t => {
     const canCancel = t.status === 'pending';
+    const canRetry = t.status === 'error' || t.status === 'cancelled';
+    const canCheck = canCancel || canRetry;
     const timeAgo = t.created_at ? new Date(t.created_at).toLocaleString('ru') : '';
     let resultText = '';
     if (t.result) {
@@ -6182,14 +6379,14 @@ function renderQueueTable() {
     }
     if (resultText.length > 60) resultText = resultText.substring(0, 60) + '...';
     return `<tr style="opacity:${t.status==='cancelled'?'0.5':'1'}">
-      <td><input type="checkbox" class="queue-check" value="${t.id}" style="width:16px;height:16px" ${canCancel?'':'disabled'}></td>
+      <td><input type="checkbox" class="queue-check" value="${t.id}" data-status="${t.status}" style="width:16px;height:16px" ${canCheck?'':'disabled'}></td>
       <td>${typeIcons[t.task_type]||''} ${typeLabels[t.task_type]||t.task_type}</td>
       <td style="max-width:300px"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px" title="${(t.news_title||'').replace(/"/g,'&quot;')}">${t.news_title||t.news_id}</div></td>
       <td>${t.style||'—'}</td>
       <td><span style="color:${statColors[t.status]||'#8899a6'}">${statusIcons[t.status]||''} ${statLabels[t.status]||t.status}</span></td>
       <td style="max-width:200px;font-size:0.82em;color:#8899a6"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">${resultText}</div></td>
       <td style="font-size:0.82em;color:#8899a6;white-space:nowrap">${timeAgo}</td>
-      <td>${canCancel ? `<button class="btn btn-sm btn-danger" onclick="cancelQueueTask('${t.id}')">Отменить</button>` : ''}</td>
+      <td style="white-space:nowrap">${canCancel ? `<button class="btn btn-sm btn-danger" onclick="cancelQueueTask('${t.id}')">Отменить</button>` : ''}${canRetry ? `<button class="btn btn-sm btn-primary" onclick="retryQueueTask('${t.id}')">Повторить</button>` : ''}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="8" style="text-align:center;color:#8899a6;padding:20px">Очередь пуста</td></tr>';
   updateQueueSelectedCount();
@@ -6225,6 +6422,21 @@ async function clearDoneQueue() {
   const d = await r.json();
   if (d.status === 'ok') { toast('Очищено'); loadQueue(); }
   else toast(d.message||'Ошибка', true);
+}
+
+async function retryQueueTask(id) {
+  const r = await api('/api/queue/retry', {task_ids: [id]});
+  if (r.status === 'ok') { toast('Задача перезапущена'); loadQueue(); }
+  else toast(r.message, true);
+}
+
+async function retrySelectedQueue() {
+  const checks = [...document.querySelectorAll('.queue-check:checked')].filter(c => c.dataset.status === 'error' || c.dataset.status === 'cancelled');
+  if (!checks.length) { toast('Выберите задачи с ошибками', true); return; }
+  const ids = checks.map(c => c.value);
+  const r = await api('/api/queue/retry', {task_ids: ids});
+  if (r.status === 'ok') { toast(`Перезапущено: ${r.retried}`); loadQueue(); }
+  else toast(r.message, true);
 }
 
 function toggleAllQueue(el) {
@@ -6296,6 +6508,121 @@ async function clearApiCache() {
   await api('/api/cache/clear', {});
   toast('Кэш очищен');
   loadLogs();
+}
+
+// ─── Viral Triggers Management ───
+let _vtData = [];
+let _vtSortField = 'weight';
+let _vtSortDir = 'desc';
+
+async function loadViralTriggers() {
+  const r = await (await fetch('/api/viral_triggers')).json();
+  _vtData = r.triggers || [];
+  renderViralTriggers();
+  document.getElementById('vt-stats').textContent = `Всего триггеров: ${_vtData.length}, активных: ${_vtData.filter(t=>t.is_active).length}`;
+}
+
+function filterViralTriggers() {
+  renderViralTriggers();
+}
+
+function sortViralTriggers(field) {
+  if (_vtSortField === field) _vtSortDir = _vtSortDir === 'asc' ? 'desc' : 'asc';
+  else { _vtSortField = field; _vtSortDir = field === 'label' ? 'asc' : 'desc'; }
+  renderViralTriggers();
+}
+
+function renderViralTriggers() {
+  const search = (document.getElementById('vt-search').value || '').toLowerCase();
+  let data = _vtData;
+  if (search) data = data.filter(t => t.label.toLowerCase().includes(search) || t.id.toLowerCase().includes(search) || t.keywords.some(k => k.includes(search)));
+  data.sort((a,b) => {
+    let va = a[_vtSortField], vb = b[_vtSortField];
+    if (typeof va === 'string') { va = va.toLowerCase(); vb = (vb||'').toLowerCase(); }
+    if (va < vb) return _vtSortDir === 'asc' ? -1 : 1;
+    if (va > vb) return _vtSortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+
+  const tbody = document.getElementById('vt-table');
+  tbody.innerHTML = data.map(t => {
+    const wColor = t.weight >= 50 ? '#e0245e' : t.weight >= 30 ? '#ffad1f' : '#1da1f2';
+    const typeLabel = t.is_custom ? '<span style="color:#794bc4">Кастомный</span>' : (t.modified ? '<span style="color:#ffad1f">Изменён</span>' : '<span style="color:#657786">Стандартный</span>');
+    const kwShort = t.keywords.slice(0,5).join(', ') + (t.keywords.length > 5 ? ` +${t.keywords.length-5}` : '');
+    const opacity = t.is_active ? '1' : '0.4';
+    return `<tr style="opacity:${opacity}">
+      <td><input type="checkbox" ${t.is_active?'checked':''} onchange="toggleViralTrigger('${t.id}',this.checked)" title="Вкл/выкл" style="width:16px;height:16px"></td>
+      <td><b style="color:#d9d9d9">${t.label}</b><br><span style="color:#657786;font-size:0.75em">${t.id}</span></td>
+      <td style="text-align:center"><span style="color:${wColor};font-weight:bold;font-size:1.1em">${t.weight}</span></td>
+      <td style="font-size:0.82em;color:#8899a6;max-width:300px"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px" title="${t.keywords.join(', ')}">${kwShort}</div></td>
+      <td style="font-size:0.82em">${typeLabel}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-secondary" onclick="editViralTrigger('${t.id}')">&#9998;</button>
+        ${t.is_custom ? `<button class="btn btn-sm btn-danger" onclick="deleteViralTrigger('${t.id}')">&#10005;</button>` : (t.modified ? `<button class="btn btn-sm btn-secondary" onclick="resetViralTrigger('${t.id}')" title="Сбросить">&#8634;</button>` : '')}
+      </td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" style="text-align:center;color:#8899a6;padding:20px">Нет триггеров</td></tr>';
+}
+
+function showAddViralTrigger() {
+  document.getElementById('vt-add-form').style.display = 'block';
+  document.getElementById('vt-new-id').value = '';
+  document.getElementById('vt-new-label').value = '';
+  document.getElementById('vt-new-weight').value = '30';
+  document.getElementById('vt-new-keywords').value = '';
+  document.getElementById('vt-new-id').readOnly = false;
+  document.getElementById('vt-add-form').dataset.mode = 'add';
+}
+
+function editViralTrigger(id) {
+  const t = _vtData.find(x => x.id === id);
+  if (!t) return;
+  document.getElementById('vt-add-form').style.display = 'block';
+  document.getElementById('vt-new-id').value = t.id;
+  document.getElementById('vt-new-label').value = t.label;
+  document.getElementById('vt-new-weight').value = t.weight;
+  document.getElementById('vt-new-keywords').value = t.keywords.join(', ');
+  document.getElementById('vt-new-id').readOnly = true;
+  document.getElementById('vt-add-form').dataset.mode = 'edit';
+}
+
+async function saveNewViralTrigger() {
+  const mode = document.getElementById('vt-add-form').dataset.mode || 'add';
+  const id = document.getElementById('vt-new-id').value.trim();
+  const label = document.getElementById('vt-new-label').value.trim();
+  const weight = parseInt(document.getElementById('vt-new-weight').value) || 0;
+  const kwText = document.getElementById('vt-new-keywords').value;
+  const keywords = kwText.split(',').map(k => k.trim().toLowerCase()).filter(k => k);
+  if (!id || !label) { toast('Заполните ID и название', true); return; }
+  if (!keywords.length) { toast('Добавьте хотя бы одно ключевое слово', true); return; }
+  const isCustom = mode === 'add' && !_vtData.find(x => x.id === id && !x.is_custom);
+  const r = await api('/api/viral_triggers/save', {trigger_id: id, label, weight, keywords, is_active: true, is_custom: isCustom});
+  if (r.status === 'ok') {
+    toast('Триггер сохранён');
+    document.getElementById('vt-add-form').style.display = 'none';
+    loadViralTriggers();
+  } else toast(r.message, true);
+}
+
+async function toggleViralTrigger(id, active) {
+  const t = _vtData.find(x => x.id === id);
+  if (!t) return;
+  await api('/api/viral_triggers/save', {trigger_id: id, label: t.label, weight: t.weight, keywords: t.keywords, is_active: active, is_custom: t.is_custom});
+  loadViralTriggers();
+}
+
+async function deleteViralTrigger(id) {
+  if (!confirm(`Удалить кастомный триггер "${id}"?`)) return;
+  const r = await api('/api/viral_triggers/delete', {trigger_id: id});
+  if (r.status === 'ok') { toast('Триггер удалён'); loadViralTriggers(); }
+  else toast(r.message, true);
+}
+
+async function resetViralTrigger(id) {
+  if (!confirm(`Сбросить триггер "${id}" к стандартным значениям?`)) return;
+  const r = await api('/api/viral_triggers/delete', {trigger_id: id});
+  if (r.status === 'ok') { toast('Сброшено к стандартным'); loadViralTriggers(); }
+  else toast(r.message, true);
 }
 
 // Translate title

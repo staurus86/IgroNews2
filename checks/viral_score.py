@@ -718,17 +718,67 @@ VIRAL_TRIGGERS = {
 
 from nlp.game_entities import get_entity_boost, TIER_BOOST
 
-# Pre-build keyword->trigger_id lookup for fast matching
-# Maps each keyword to the (trigger_id, label, weight) that contains it
-_KEYWORD_TO_TRIGGER = {}  # {keyword: [(trigger_id, label, weight), ...]}
-for _tid, _tdata in VIRAL_TRIGGERS.items():
-    for _kw in _tdata["keywords"]:
-        if _kw not in _KEYWORD_TO_TRIGGER:
-            _KEYWORD_TO_TRIGGER[_kw] = []
-        _KEYWORD_TO_TRIGGER[_kw].append((_tid, _tdata["label"], _tdata["weight"]))
+import json as _json
+import logging as _logging
 
-# Sort keywords longest-first for efficient scanning
-_SORTED_KEYWORDS = sorted(_KEYWORD_TO_TRIGGER.keys(), key=len, reverse=True)
+_vlog = _logging.getLogger(__name__)
+
+# ─── Merge default + DB triggers, rebuild lookup ─────────────────────
+
+_KEYWORD_TO_TRIGGER = {}
+_SORTED_KEYWORDS = []
+
+
+def _rebuild_trigger_index():
+    """Перестроить индекс ключевых слов из дефолтов + БД."""
+    global _KEYWORD_TO_TRIGGER, _SORTED_KEYWORDS
+
+    merged = {}
+    # 1. Defaults
+    for tid, tdata in VIRAL_TRIGGERS.items():
+        merged[tid] = tdata.copy()
+
+    # 2. DB overrides / custom triggers
+    try:
+        from storage.database import get_connection, _is_postgres
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT trigger_id, label, weight, keywords, is_active FROM viral_triggers_config")
+            for row in cur.fetchall():
+                if _is_postgres():
+                    tid, label, weight, kw_json, active = row
+                else:
+                    tid, label, weight, kw_json, active = row["trigger_id"], row["label"], row["weight"], row["keywords"], row["is_active"]
+                if not active:
+                    merged.pop(tid, None)
+                    continue
+                kws = _json.loads(kw_json) if isinstance(kw_json, str) else (kw_json or [])
+                merged[tid] = {"label": label, "weight": weight, "keywords": kws}
+        finally:
+            cur.close()
+    except Exception as e:
+        _vlog.debug("Viral triggers DB load skipped: %s", e)
+
+    # Rebuild index
+    kw_map = {}
+    for tid, tdata in merged.items():
+        for kw in tdata.get("keywords", []):
+            if kw not in kw_map:
+                kw_map[kw] = []
+            kw_map[kw].append((tid, tdata["label"], tdata["weight"]))
+
+    _KEYWORD_TO_TRIGGER = kw_map
+    _SORTED_KEYWORDS = sorted(kw_map.keys(), key=len, reverse=True)
+
+
+def reload_viral_triggers():
+    """Публичная функция для перезагрузки триггеров (после изменений в БД)."""
+    _rebuild_trigger_index()
+
+
+# Initial build
+_rebuild_trigger_index()
 
 GAMING_EVENTS_CALENDAR = [
     (1, 15, 25, "Xbox Developer Direct", 20),

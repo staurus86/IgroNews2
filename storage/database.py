@@ -114,6 +114,18 @@ def init_db():
         )
     """
 
+    viral_triggers_sql = """
+        CREATE TABLE IF NOT EXISTS viral_triggers_config (
+            trigger_id TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            weight INTEGER DEFAULT 0,
+            keywords TEXT DEFAULT '[]',
+            is_active INTEGER DEFAULT 1,
+            is_custom INTEGER DEFAULT 0,
+            updated_at TEXT
+        )
+    """
+
     news_sql = """
         CREATE TABLE IF NOT EXISTS news (
             id TEXT PRIMARY KEY,
@@ -151,6 +163,7 @@ def init_db():
         cur.execute(feedback_sql)
         cur.execute(prompt_versions_sql)
         cur.execute(digests_sql)
+        cur.execute(viral_triggers_sql)
     else:
         cur.execute(news_sql)
         cur.execute(analysis_sql)
@@ -159,6 +172,7 @@ def init_db():
         cur.execute(feedback_sql)
         cur.execute(prompt_versions_sql)
         cur.execute(digests_sql)
+        cur.execute(viral_triggers_sql)
         conn.commit()
 
     # Add check_data columns if missing (stores viral, sentiment, freshness, tags as JSON)
