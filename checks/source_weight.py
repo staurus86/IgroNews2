@@ -41,7 +41,7 @@ def get_source_weight(source: str) -> float:
                 cur.execute("""
                     SELECT status, COUNT(*) as cnt FROM news
                     WHERE source = %s
-                    AND parsed_at > (NOW() - INTERVAL '30 days')
+                    AND parsed_at::timestamptz > (NOW() - INTERVAL '30 days')
                     GROUP BY status
                 """, (source,))
                 rows = cur.fetchall()
@@ -94,7 +94,7 @@ def get_source_stats() -> list[dict]:
             if _is_postgres():
                 cur.execute("""
                     SELECT source, status, COUNT(*) as cnt FROM news
-                    WHERE parsed_at > (NOW() - INTERVAL '30 days')
+                    WHERE parsed_at::timestamptz > (NOW() - INTERVAL '30 days')
                     GROUP BY source, status
                     ORDER BY source
                 """)

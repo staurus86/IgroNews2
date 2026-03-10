@@ -2138,7 +2138,7 @@ async function login() {
             # 1. Top sources (7 days)
             if _is_postgres():
                 cur.execute("""SELECT source, COUNT(*) as cnt FROM news
-                    WHERE parsed_at > (NOW() - INTERVAL '7 days')::text GROUP BY source ORDER BY cnt DESC LIMIT 15""")
+                    WHERE parsed_at::timestamptz > (NOW() - INTERVAL '7 days') GROUP BY source ORDER BY cnt DESC LIMIT 15""")
             else:
                 cur.execute("SELECT source, COUNT(*) as cnt FROM news WHERE parsed_at > datetime('now', '-7 days') GROUP BY source ORDER BY cnt DESC LIMIT 15")
             top_sources = []
@@ -2181,7 +2181,7 @@ async function login() {
             # 5. News per day (last 14 days)
             if _is_postgres():
                 cur.execute("""SELECT DATE(parsed_at::timestamp) as d, COUNT(*) as cnt FROM news
-                    WHERE parsed_at > (NOW() - INTERVAL '14 days')::text GROUP BY d ORDER BY d""")
+                    WHERE parsed_at::timestamptz > (NOW() - INTERVAL '14 days') GROUP BY d ORDER BY d""")
             else:
                 cur.execute("SELECT DATE(parsed_at) as d, COUNT(*) as cnt FROM news WHERE parsed_at > datetime('now', '-14 days') GROUP BY d ORDER BY d")
             daily = []
@@ -2194,7 +2194,7 @@ async function login() {
             # 6. Peak hours
             if _is_postgres():
                 cur.execute("""SELECT EXTRACT(HOUR FROM parsed_at::timestamp)::int as h, COUNT(*) as cnt FROM news
-                    WHERE parsed_at > (NOW() - INTERVAL '7 days')::text GROUP BY h ORDER BY cnt DESC""")
+                    WHERE parsed_at::timestamptz > (NOW() - INTERVAL '7 days') GROUP BY h ORDER BY cnt DESC""")
             else:
                 cur.execute("SELECT CAST(strftime('%H', parsed_at) AS INTEGER) as h, COUNT(*) as cnt FROM news WHERE parsed_at > datetime('now', '-7 days') GROUP BY h ORDER BY cnt DESC")
             peak_hours = []
@@ -2344,7 +2344,7 @@ async function login() {
             else:
                 interval = "1 day"
             if _is_postgres():
-                cur.execute(f"SELECT id, title, source, url FROM news WHERE status IN ('approved', 'processed') AND parsed_at > (NOW() - INTERVAL '{interval}')::text ORDER BY parsed_at DESC LIMIT 30")
+                cur.execute(f"SELECT id, title, source, url FROM news WHERE status IN ('approved', 'processed') AND parsed_at::timestamptz > (NOW() - INTERVAL '{interval}') ORDER BY parsed_at DESC LIMIT 30")
                 columns = [desc[0] for desc in cur.description]
                 news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
             else:
@@ -2406,7 +2406,7 @@ async function login() {
                     FROM news n
                     LEFT JOIN news_analysis a ON a.news_id = n.id
                     WHERE n.status IN ('approved', 'processed', 'in_review', 'ready')
-                      AND n.parsed_at > (NOW() - INTERVAL '24 hours')::text
+                      AND n.parsed_at::timestamptz > (NOW() - INTERVAL '24 hours')
                     ORDER BY COALESCE(a.total_score, 0) DESC
                     LIMIT 20
                 """)
@@ -6305,7 +6305,10 @@ async function translateTitle(newsId) {
   if (r.status === 'ok') {
     if (r.is_russian) { toast('Заголовок уже на русском'); return; }
     toast(`Переведено с ${r.source_lang}: ${r.translated}`);
-    loadAll();
+    // Update title in the current row visually
+    const row = document.querySelector(`tr[data-id="${newsId}"] td:nth-child(2) a`) || document.querySelector(`tr[data-id="${newsId}"] td:nth-child(2)`);
+    if (row && r.translated) row.textContent = r.translated;
+    loadEditorial();
   } else toast(r.message, true);
 }
 
@@ -6691,8 +6694,13 @@ function renderEdTable() {
 
     // Tags
     let tags = [];
-    try { tags = JSON.parse(n.tags_data || '[]'); } catch(e) {}
-    const tagsHtml = tags.slice(0,3).map(t => `<span class="tag tag-${t.id}" style="font-size:0.7em;padding:1px 5px">${t.label}</span>`).join(' ');
+    try { tags = typeof n.tags_data === 'string' ? JSON.parse(n.tags_data || '[]') : (n.tags_data || []); } catch(e) {}
+    if (!Array.isArray(tags)) tags = [];
+    const tagsHtml = tags.slice(0,3).map(t => {
+      const label = typeof t === 'object' ? (t.label || t.id || '') : String(t);
+      const tid = typeof t === 'object' ? (t.id || '') : '';
+      return `<span class="tag tag-${tid}" style="font-size:0.7em;padding:1px 5px">${label}</span>`;
+    }).join(' ');
 
     // Entities
     let ents = [];
@@ -6703,10 +6711,10 @@ function renderEdTable() {
     // Viral triggers tooltip
     let vTriggers = [];
     try {
-      const vRaw = JSON.parse(n.viral_data || '[]');
+      const vRaw = typeof n.viral_data === 'string' ? JSON.parse(n.viral_data || '[]') : (n.viral_data || []);
       vTriggers = Array.isArray(vRaw) ? vRaw : [];
     } catch(e) {}
-    const vTriggersTooltip = vTriggers.map(t => `${t.label||'?'} (${t.weight||0})`).join('\\n') || 'Нет триггеров';
+    const vTriggersTooltip = (vTriggers.map(t => `${(t.label||'?').replace(/"/g,'&quot;')} (${t.weight||0})`).join('&#10;') || 'Нет триггеров');
 
     // Quality / Relevance
     const qs = n.quality_score || 0;
@@ -6749,9 +6757,9 @@ function renderEdTable() {
 function _edRenderDetail(n, ents, tags) {
   // Viral triggers
   let triggers = [];
-  try { triggers = JSON.parse(n.viral_data || '[]'); } catch(e) {}
+  try { const trRaw = typeof n.viral_data === 'string' ? JSON.parse(n.viral_data || '[]') : (n.viral_data || []); triggers = Array.isArray(trRaw) ? trRaw : []; } catch(e) {}
   const trigHtml = triggers.map(t =>
-    `<span style="display:inline-block;padding:2px 6px;border-radius:4px;font-size:0.75em;margin:1px;background:${t.weight>=40?'#e0245e33':t.weight>=20?'#ffad1f33':'#1da1f233'};color:${t.weight>=40?'#e0245e':t.weight>=20?'#ffad1f':'#1da1f2'}">${t.label} +${t.weight}</span>`
+    `<span style="display:inline-block;padding:2px 6px;border-radius:4px;font-size:0.75em;margin:1px;background:${(t.weight||0)>=40?'#e0245e33':(t.weight||0)>=20?'#ffad1f33':'#1da1f233'};color:${(t.weight||0)>=40?'#e0245e':(t.weight||0)>=20?'#ffad1f':'#1da1f2'}">${t.label||'?'} +${t.weight||0}</span>`
   ).join(' ');
 
   // Entities
@@ -7298,14 +7306,17 @@ function renderModTable() {
   tbody.innerHTML = _modData.map(n => {
     const score = n.total_score || 0;
     const scoreColor = score >= 70 ? '#17bf63' : score >= 40 ? '#ffad1f' : '#e0245e';
-    const tags = n.tags ? (typeof n.tags === 'string' ? JSON.parse(n.tags || '[]') : n.tags) : [];
-    const tagsHtml = (Array.isArray(tags) ? tags : []).slice(0, 3).map(t =>
-      `<span style="background:#253341;color:#8899a6;padding:2px 6px;border-radius:4px;font-size:0.75em">${t}</span>`
-    ).join(' ');
+    let tags = [];
+    try { tags = typeof n.tags === 'string' ? JSON.parse(n.tags || '[]') : (n.tags || []); } catch(e) {}
+    if (!Array.isArray(tags)) tags = [];
+    const tagsHtml = tags.slice(0, 3).map(t => {
+      const label = typeof t === 'object' ? (t.label || t.id || '') : String(t);
+      return `<span style="background:#253341;color:#8899a6;padding:2px 6px;border-radius:4px;font-size:0.75em">${label}</span>`;
+    }).join(' ');
     const freshH = n.freshness_hours != null && n.freshness_hours >= 0 ? n.freshness_hours.toFixed(1) + 'ч' : '?';
     let modVT = [];
-    try { const mvRaw = JSON.parse(n.viral_data || '[]'); modVT = Array.isArray(mvRaw) ? mvRaw : []; } catch(e) {}
-    const modVTip = modVT.map(t => `${t.label||'?'} (${t.weight||0})`).join('\\n') || 'Нет триггеров';
+    try { const mvRaw = typeof n.viral_data === 'string' ? JSON.parse(n.viral_data || '[]') : (n.viral_data || []); modVT = Array.isArray(mvRaw) ? mvRaw : []; } catch(e) {}
+    const modVTip = (modVT.map(t => `${(t.label||'?').replace(/"/g,'&quot;')} (${t.weight||0})`).join('&#10;') || 'Нет триггеров');
     return `<tr>
       <td><input type="checkbox" class="mod-cb" value="${n.id}" onchange="modUpdateSelected()"></td>
       <td style="font-size:0.85em">${n.source || ''}</td>

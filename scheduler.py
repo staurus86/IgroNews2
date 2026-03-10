@@ -698,7 +698,7 @@ def generate_auto_digest():
                     FROM news n
                     LEFT JOIN news_analysis a ON a.news_id = n.id
                     WHERE n.status IN ('approved', 'processed', 'in_review', 'ready')
-                      AND n.parsed_at > (NOW() - INTERVAL '24 hours')::text
+                      AND n.parsed_at::timestamptz > (NOW() - INTERVAL '24 hours')
                     ORDER BY COALESCE(a.total_score, 0) DESC
                     LIMIT 20
                 """)
