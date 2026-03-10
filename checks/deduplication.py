@@ -28,9 +28,7 @@ def entity_overlap(text1: str, text2: str) -> float:
 def tfidf_similarity(titles: list[str], texts: list[str] | None = None) -> list[tuple]:
     """Комбинированная похожесть: TF-IDF (0.6) + entity overlap (0.4).
 
-    Args:
-        titles: список заголовков
-        texts: опционально полные тексты для entity overlap (если нет — берём titles)
+    Оптимизировано: entity results кешируются, не пересчитываются в O(n²) цикле.
     """
     if len(titles) < 2:
         return []
@@ -42,13 +40,23 @@ def tfidf_similarity(titles: list[str], texts: list[str] | None = None) -> list[
 
     compare_texts = texts if texts else titles
 
+    # Предвычисляем entity sets для всех текстов (O(n) вместо O(n²))
+    ent_sets = []
+    for t in compare_texts:
+        ent_sets.append(set(e["name"] for e in find_entities(t)))
+
     pairs = []
     for i in range(len(titles)):
         for j in range(i + 1, len(titles)):
             tfidf_score = sim[i][j]
-            ent_score = entity_overlap(compare_texts[i], compare_texts[j])
 
-            # Комбинированный скор: TF-IDF + entity overlap
+            # Быстрый entity overlap из предвычисленных sets
+            e1, e2 = ent_sets[i], ent_sets[j]
+            if not e1 and not e2:
+                ent_score = 0
+            else:
+                ent_score = len(e1 & e2) / max(len(e1 | e2), 1)
+
             combined = 0.6 * tfidf_score + 0.4 * ent_score
 
             if combined > 0.35:

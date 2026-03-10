@@ -2,14 +2,29 @@
 
 import logging
 from datetime import datetime, timezone, timedelta
-from checks.deduplication import tfidf_similarity, normalize
+from checks.deduplication import normalize
 from storage.database import get_connection, _is_postgres
 
 logger = logging.getLogger(__name__)
 
 
+def _word_overlap(title1: str, title2: str) -> float:
+    """Быстрое сравнение заголовков по пересечению слов (без TF-IDF)."""
+    words1 = set(normalize(title1).split())
+    words2 = set(normalize(title2).split())
+    # Убираем стоп-слова (короткие)
+    words1 = {w for w in words1 if len(w) > 2}
+    words2 = {w for w in words2 if len(w) > 2}
+    if not words1 or not words2:
+        return 0
+    return len(words1 & words2) / min(len(words1), len(words2))
+
+
 def get_momentum(news: dict) -> dict:
-    """Проверяет сколько источников написали о похожей теме за последние часы."""
+    """Проверяет сколько источников написали о похожей теме за последние часы.
+
+    Использует быстрое сравнение по словам вместо TF-IDF (экономия CPU).
+    """
     conn = get_connection()
     cur = conn.cursor()
     ph = "%s" if _is_postgres() else "?"
@@ -17,13 +32,13 @@ def get_momentum(news: dict) -> dict:
     title = news.get("title", "")
     now = datetime.now(timezone.utc)
 
-    # Берём новости за последние 24ч
+    # Берём новости за последние 24ч (лимит 100 вместо 500)
     cutoff = (now - timedelta(hours=24)).isoformat()
     cur.execute(f"""
         SELECT id, source, title, parsed_at FROM news
         WHERE parsed_at > {ph}
         ORDER BY parsed_at DESC
-        LIMIT 500
+        LIMIT 100
     """, (cutoff,))
 
     if _is_postgres():
@@ -35,17 +50,12 @@ def get_momentum(news: dict) -> dict:
     if not recent:
         return {"sources_1h": 0, "sources_6h": 0, "sources_24h": 0, "level": "none", "score": 0}
 
-    # Сравниваем заголовок с остальными
-    titles = [title] + [r["title"] for r in recent]
-    pairs = tfidf_similarity(titles)
-
-    # Находим похожие (которые матчатся с индексом 0 — наш заголовок)
-    similar_indices = set()
-    for i, j, score in pairs:
-        if i == 0:
-            similar_indices.add(j - 1)  # offset by 1 because we prepended
-        elif j == 0:
-            similar_indices.add(i - 1)
+    # Быстрое сравнение по пересечению слов (вместо TF-IDF)
+    similar_indices = []
+    for idx, r in enumerate(recent):
+        overlap = _word_overlap(title, r["title"])
+        if overlap >= 0.5:  # 50%+ общих слов
+            similar_indices.append(idx)
 
     # Считаем по временным окнам
     sources_1h = set()
@@ -53,8 +63,6 @@ def get_momentum(news: dict) -> dict:
     sources_24h = set()
 
     for idx in similar_indices:
-        if idx < 0 or idx >= len(recent):
-            continue
         r = recent[idx]
         source = r["source"]
         parsed = r.get("parsed_at", "")

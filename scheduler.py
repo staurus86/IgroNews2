@@ -42,7 +42,7 @@ def _auto_review_new():
         conn = get_connection()
         cur = conn.cursor()
         ph = "%s" if _is_postgres() else "?"
-        cur.execute(f"SELECT * FROM news WHERE status = 'new' ORDER BY parsed_at DESC LIMIT {ph}", (50,))
+        cur.execute(f"SELECT * FROM news WHERE status = 'new' ORDER BY parsed_at DESC LIMIT {ph}", (20,))
         if _is_postgres():
             columns = [desc[0] for desc in cur.description]
             news_list = [dict(zip(columns, row)) for row in cur.fetchall()]

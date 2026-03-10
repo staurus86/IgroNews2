@@ -200,26 +200,28 @@ _build_lookup()
 
 
 import re
+from functools import lru_cache
 
 # Короткие ключи (<=3 символов) требуют word boundary, иначе ловят подстроки
 _SHORT_KEY_THRESHOLD = 3
 
+# Прекомпилированные regex для коротких ключей (один раз при загрузке модуля)
+_SHORT_KEY_PATTERNS = {}
+# Отсортированные ключи (один раз)
+_SORTED_KEYS = sorted(_LOOKUP.keys(), key=len, reverse=True)
 
-def find_entities(text: str) -> list[dict]:
-    """Находит все известные сущности в тексте.
+for _k in _SORTED_KEYS:
+    if len(_k) <= _SHORT_KEY_THRESHOLD:
+        _SHORT_KEY_PATTERNS[_k] = re.compile(r'\b' + re.escape(_k) + r'\b')
 
-    Возвращает список: [{"name": "gta 6", "type": "game", "tier": "S", "freq": 100}, ...]
-    Сортировка: по freq (высокие сначала).
-    Короткие ключи (<=3 символов) проверяются с word boundary.
-    """
-    text_lower = text.lower()
-    found = {}  # name -> entry (дедупликация по canonical name)
 
-    # Сортируем по длине ключа — длинные сначала (greedy match)
-    for key in sorted(_LOOKUP.keys(), key=len, reverse=True):
+@lru_cache(maxsize=256)
+def _find_entities_cached(text_lower: str) -> tuple:
+    """Кешированный поиск сущностей. Возвращает tuple для hashability."""
+    found = {}
+    for key in _SORTED_KEYS:
         if len(key) <= _SHORT_KEY_THRESHOLD:
-            # Для коротких ключей — word boundary regex
-            if re.search(r'\b' + re.escape(key) + r'\b', text_lower):
+            if _SHORT_KEY_PATTERNS[key].search(text_lower):
                 entry = _LOOKUP[key]
                 canonical = entry["name"]
                 if canonical not in found:
@@ -230,8 +232,17 @@ def find_entities(text: str) -> list[dict]:
                 canonical = entry["name"]
                 if canonical not in found:
                     found[canonical] = entry
+    return tuple(sorted(found.values(), key=lambda e: e["freq"], reverse=True))
 
-    return sorted(found.values(), key=lambda e: e["freq"], reverse=True)
+
+def find_entities(text: str) -> list[dict]:
+    """Находит все известные сущности в тексте.
+
+    Возвращает список: [{"name": "gta 6", "type": "game", "tier": "S", "freq": 100}, ...]
+    Сортировка: по freq (высокие сначала).
+    Результаты кешируются (LRU 256).
+    """
+    return list(_find_entities_cached(text.lower()))
 
 
 def get_entity_boost(text: str) -> tuple[int, list[dict]]:

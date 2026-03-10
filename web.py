@@ -922,40 +922,54 @@ async function login() {
             self._json({"status": "error", "message": str(e), "type": type(e).__name__})
 
     def _run_auto_review(self, body):
-        """Запускает авто-ревью для всех новых новостей (сохраняет результаты в БД)."""
+        """Запускает авто-ревью батчами по 20 (сохраняет результаты в БД)."""
         try:
             conn = get_connection()
             cur = conn.cursor()
             ph = "%s" if _is_postgres() else "?"
-            # Берём все new + те in_review у которых нет результатов проверки
+            BATCH_SIZE = 20
+
+            # Считаем сколько всего непроверенных
+            cur.execute(f"""
+                SELECT COUNT(*) FROM news n
+                LEFT JOIN news_analysis a ON n.id = a.news_id
+                WHERE n.status IN ('new', 'in_review')
+                  AND (a.reviewed_at IS NULL OR a.reviewed_at = '')
+            """)
+            total_pending = cur.fetchone()[0]
+
+            if total_pending == 0:
+                self._json({"status": "ok", "reviewed": 0, "message": "Нет новых для проверки"})
+                return
+
+            # Берём один батч
             cur.execute(f"""
                 SELECT n.* FROM news n
                 LEFT JOIN news_analysis a ON n.id = a.news_id
                 WHERE n.status IN ('new', 'in_review')
                   AND (a.reviewed_at IS NULL OR a.reviewed_at = '')
                 ORDER BY n.parsed_at DESC LIMIT {ph}
-            """, (200,))
+            """, (BATCH_SIZE,))
             if _is_postgres():
                 columns = [desc[0] for desc in cur.description]
                 news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
             else:
                 news_list = [dict(row) for row in cur.fetchall()]
 
-            if not news_list:
-                self._json({"status": "ok", "reviewed": 0, "message": "Нет новых для проверки"})
-                return
-
             from checks.pipeline import run_review_pipeline
             result = run_review_pipeline(news_list, update_status=True)
             reviewed = len(result.get("results", []))
             dupes = sum(1 for r in result.get("results", []) if r.get("is_duplicate"))
             rejected = sum(1 for r in result.get("results", []) if r.get("auto_rejected"))
+            remaining = total_pending - reviewed
             self._json({
                 "status": "ok",
                 "reviewed": reviewed,
                 "duplicates": dupes,
                 "auto_rejected": rejected,
-                "message": f"Проверено: {reviewed}, дубликатов: {dupes}, авто-отклонено: {rejected}"
+                "remaining": remaining,
+                "message": f"Проверено: {reviewed}, дубликатов: {dupes}, отклонено: {rejected}" +
+                           (f". Осталось: {remaining}" if remaining > 0 else "")
             })
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
@@ -6561,12 +6575,15 @@ async function edRunAutoReview() {
   const btn = document.getElementById('ed-review-btn');
   btn.disabled = true;
   btn.innerHTML = '&#8987; Проверка...';
-  toast('Запуск проверки новых новостей...');
+  toast('Запуск проверки (батч 20)...');
   try {
     const r = await api('/api/run_auto_review', {});
     if (r.status === 'ok') {
       toast(r.message);
       loadEditorial(0);
+      if (r.remaining > 0) {
+        btn.innerHTML = `&#9654; Проверить ещё (${r.remaining})`;
+      }
     } else {
       toast(r.message || 'Ошибка', true);
     }
@@ -6574,7 +6591,7 @@ async function edRunAutoReview() {
     toast('Ошибка: ' + e, true);
   }
   btn.disabled = false;
-  btn.innerHTML = '&#9654; Проверить новые';
+  if (!btn.innerHTML.includes('ещё')) btn.innerHTML = '&#9654; Проверить новые';
 }
 
 // Quick rewrite single news from editorial detail panel
