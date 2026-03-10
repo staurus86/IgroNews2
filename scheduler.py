@@ -15,6 +15,25 @@ from storage.sheets import write_news_row
 
 logger = logging.getLogger(__name__)
 
+# Global pipeline stop flag (thread-safe via GIL)
+_pipeline_stop = False
+
+
+def pipeline_stop():
+    """Сигнал остановки пайплайна."""
+    global _pipeline_stop
+    _pipeline_stop = True
+
+
+def pipeline_reset():
+    """Сброс флага остановки."""
+    global _pipeline_stop
+    _pipeline_stop = False
+
+
+def is_pipeline_stopped():
+    return _pipeline_stop
+
 
 def parse_sources(interval_min: int):
     """Парсит все источники с указанным интервалом."""
@@ -402,11 +421,19 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
 
     score → enrich (Keys.so+Trends+LLM) → фильтр publish_now → rewrite → Sheets/Ready
     """
+    pipeline_reset()
     from checks.pipeline import run_review_pipeline
     from apis.llm import rewrite_news
     from storage.sheets import write_ready_row
 
-    for news_id, task_id in zip(news_ids, task_ids):
+    for i, (news_id, task_id) in enumerate(zip(news_ids, task_ids)):
+        if _pipeline_stop:
+            # Cancel remaining tasks
+            for remaining_tid in task_ids[i:]:
+                _update_task(remaining_tid, "cancelled", {"reason": "Остановлено пользователем"})
+            logger.info("Full-auto pipeline stopped by user at %d/%d", i, len(news_ids))
+            break
+
         try:
             news = _fetch_news_by_id(news_id)
             if not news:
@@ -414,7 +441,7 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
                 continue
 
             # Stage 1: Local scoring (reuse if already scored)
-            _update_task(task_id, "running", {"stage": "scoring"})
+            _update_task(task_id, "running", {"stage": "scoring", "progress": f"{i+1}/{len(news_ids)}"})
             status = news.get("status", "new")
             analysis = _fetch_analysis_by_id(news_id)
 
@@ -555,17 +582,24 @@ def run_no_llm_pipeline(news_ids: list[str], task_ids: list[str]):
     Для новых — скорит локально.
     Всех годных → Sheets/NotReady + статус moderation.
     """
+    pipeline_reset()
     from checks.pipeline import run_review_pipeline
     from storage.sheets import write_not_ready_row
 
-    for news_id, task_id in zip(news_ids, task_ids):
+    for i, (news_id, task_id) in enumerate(zip(news_ids, task_ids)):
+        if _pipeline_stop:
+            for remaining_tid in task_ids[i:]:
+                _update_task(remaining_tid, "cancelled", {"reason": "Остановлено пользователем"})
+            logger.info("No-LLM pipeline stopped by user at %d/%d", i, len(news_ids))
+            break
+
         try:
             news = _fetch_news_by_id(news_id)
             if not news:
                 _update_task(task_id, "error", {"stage": "init", "error": "News not found"})
                 continue
 
-            _update_task(task_id, "running", {"stage": "scoring"})
+            _update_task(task_id, "running", {"stage": "scoring", "progress": f"{i+1}/{len(news_ids)}"})
 
             status = news.get("status", "new")
             analysis = _fetch_analysis_by_id(news_id)

@@ -106,6 +106,7 @@ class AdminHandler(BaseHTTPRequestHandler):
         routes = {
             "/": self._serve_dashboard,
             "/api/stats": lambda: self._json(self._get_stats()),
+            "/api/pipeline/status": lambda: self._json(self._get_pipeline_status()),
             "/api/news": lambda: self._json(self._get_news()),
             "/api/sources": lambda: self._json(self._get_sources()),
             "/api/prompts": lambda: self._json(self._get_prompts()),
@@ -220,6 +221,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/export_ready_all": lambda: self._export_ready_all(body),
             "/api/pipeline/full_auto": lambda: self._pipeline_full_auto(body),
             "/api/pipeline/no_llm": lambda: self._pipeline_no_llm(body),
+            "/api/pipeline/stop": lambda: self._pipeline_stop(body),
             "/api/moderation": lambda: self._get_moderation(body),
             "/api/moderation/rewrite": lambda: self._moderation_rewrite(body),
         }
@@ -1388,6 +1390,54 @@ async function login() {
         ).start()
 
         self._json({"status": "ok", "queued": len(news_ids), "task_ids": task_ids})
+
+    def _pipeline_stop(self, body):
+        """Остановка текущего пайплайна."""
+        from scheduler import pipeline_stop
+        pipeline_stop()
+        self._json({"status": "ok", "message": "Пайплайн остановлен"})
+
+    def _get_pipeline_status(self):
+        """Возвращает текущий статус пайплайна (running tasks)."""
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT task_type, status, COUNT(*) as cnt
+                FROM task_queue
+                WHERE status IN ('pending', 'running')
+                GROUP BY task_type, status
+            """)
+            if _is_postgres():
+                rows = [{"type": r[0], "status": r[1], "count": r[2]} for r in cur.fetchall()]
+            else:
+                rows = [{"type": r[0], "status": r[1], "count": r[2]} for r in cur.fetchall()]
+
+            # Any running pipeline?
+            running = any(r["status"] == "running" for r in rows)
+            pending = sum(r["count"] for r in rows if r["status"] == "pending")
+            running_count = sum(r["count"] for r in rows if r["status"] == "running")
+            # Determine active type
+            active_type = ""
+            for r in rows:
+                if r["status"] == "running" and r["type"] in ("full_auto", "no_llm"):
+                    active_type = r["type"]
+                    break
+            if not active_type:
+                for r in rows:
+                    if r["status"] == "pending" and r["type"] in ("full_auto", "no_llm"):
+                        active_type = r["type"]
+                        break
+
+            return {
+                "running": running or pending > 0,
+                "active_type": active_type,
+                "running_count": running_count,
+                "pending_count": pending,
+                "details": rows,
+            }
+        finally:
+            cur.close()
 
     def _get_moderation_list(self):
         """Возвращает новости со статусом moderation (с данными локального анализа)."""
@@ -3373,8 +3423,12 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <button class="btn btn-sm btn-secondary" onclick="edExportSheets()">&#9776; Sheets</button>
       <button class="btn btn-sm btn-secondary" onclick="edBatchRewrite()">&#9998; Рерайт</button>
       <span style="color:#38444d">|</span>
-      <button class="btn btn-sm" style="background:#1da1f2;color:#fff" onclick="runFullAuto()">&#128640; Полный автомат</button>
-      <button class="btn btn-sm" style="background:#794bc4;color:#fff" onclick="runNoLLM()">&#128203; Без LLM</button>
+      <span id="pipeline-controls">
+        <button id="btn-full-auto" class="btn btn-sm" style="background:#1da1f2;color:#fff" onclick="runFullAuto()">&#128640; Полный автомат</button>
+        <button id="btn-no-llm" class="btn btn-sm" style="background:#794bc4;color:#fff" onclick="runNoLLM()">&#128203; Без LLM</button>
+        <button id="btn-pipeline-stop" class="btn btn-sm btn-danger" style="display:none" onclick="stopPipeline()">&#9724; Стоп</button>
+        <span id="pipeline-status" style="color:#ffad1f;font-size:0.85em;margin-left:6px"></span>
+      </span>
       <span id="ed-selected-count" style="color:#8899a6;font-size:0.85em"></span>
     </div>
 
@@ -7400,9 +7454,75 @@ loadEditorial().then(() => {
   }
 });
 
+// Check if pipeline is already running on page load
+(async () => {
+  try {
+    const r = await api('/api/pipeline/status');
+    if (r.running && r.active_type) {
+      setPipelineActive(r.active_type);
+    }
+  } catch(e) {}
+})();
+
 // ═══════════════════════════════════════════
 // PIPELINE BUTTONS (Редакция)
 // ═══════════════════════════════════════════
+
+let _pipelinePolling = null;
+
+function setPipelineActive(type) {
+  const btnFull = document.getElementById('btn-full-auto');
+  const btnNoLLM = document.getElementById('btn-no-llm');
+  const btnStop = document.getElementById('btn-pipeline-stop');
+  const statusEl = document.getElementById('pipeline-status');
+
+  if (type) {
+    btnFull.disabled = true;
+    btnNoLLM.disabled = true;
+    btnFull.style.opacity = type === 'full_auto' ? '1' : '0.4';
+    btnNoLLM.style.opacity = type === 'no_llm' ? '1' : '0.4';
+    if (type === 'full_auto') btnFull.style.boxShadow = '0 0 8px #1da1f2';
+    if (type === 'no_llm') btnNoLLM.style.boxShadow = '0 0 8px #794bc4';
+    btnStop.style.display = 'inline-block';
+    statusEl.textContent = '';
+    // Start polling
+    if (!_pipelinePolling) {
+      _pipelinePolling = setInterval(pollPipelineStatus, 3000);
+    }
+  } else {
+    btnFull.disabled = false;
+    btnNoLLM.disabled = false;
+    btnFull.style.opacity = '1';
+    btnNoLLM.style.opacity = '1';
+    btnFull.style.boxShadow = '';
+    btnNoLLM.style.boxShadow = '';
+    btnStop.style.display = 'none';
+    statusEl.textContent = '';
+    if (_pipelinePolling) {
+      clearInterval(_pipelinePolling);
+      _pipelinePolling = null;
+    }
+  }
+}
+
+async function pollPipelineStatus() {
+  try {
+    const r = await api('/api/pipeline/status');
+    const statusEl = document.getElementById('pipeline-status');
+    if (r.running) {
+      const total = (r.running_count || 0) + (r.pending_count || 0);
+      const done = r.running_count || 0;
+      statusEl.textContent = `${r.active_type === 'full_auto' ? 'Автомат' : 'Без LLM'}: ${done} активных, ${r.pending_count || 0} в очереди`;
+      statusEl.style.color = '#ffad1f';
+    } else {
+      statusEl.textContent = 'Завершено';
+      statusEl.style.color = '#17bf63';
+      setPipelineActive(null);
+      loadEditorial();
+      setTimeout(() => { statusEl.textContent = ''; }, 3000);
+    }
+  } catch(e) {}
+}
 
 async function runFullAuto() {
   let ids = getEdSelectedIds();
@@ -7416,21 +7536,8 @@ async function runFullAuto() {
   toast('Запуск полного автомата...');
   const r = await api('/api/pipeline/full_auto', {news_ids: ids, all_new: allNew});
   if (r.status === 'ok') {
-    toast(r.queued + ' задач в очереди — откройте Очередь для мониторинга');
-    // Switch to settings > queue tab
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(p => { p.classList.remove('active'); p.style.display = ''; });
-    const st = document.querySelector('[data-tab="settings"]');
-    const sp = document.getElementById('panel-settings');
-    if (st) st.classList.add('active');
-    if (sp) { sp.classList.add('active'); sp.style.display = ''; }
-    document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.settings-section').forEach(s => s.classList.remove('active'));
-    const qt = document.querySelector('[data-stab="queue"]');
-    const qs = document.getElementById('stab-queue');
-    if (qt) qt.classList.add('active');
-    if (qs) qs.classList.add('active');
-    loadQueue();
+    toast(r.queued + ' задач в очереди');
+    setPipelineActive('full_auto');
   } else {
     toast(r.message || 'Ошибка', true);
   }
@@ -7448,20 +7555,21 @@ async function runNoLLM() {
   toast('Запуск анализа без LLM...');
   const r = await api('/api/pipeline/no_llm', {news_ids: ids, all_new: allNew});
   if (r.status === 'ok') {
-    toast(r.queued + ' задач в очереди → Модерация');
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(p => { p.classList.remove('active'); p.style.display = ''; });
-    const st = document.querySelector('[data-tab="settings"]');
-    const sp = document.getElementById('panel-settings');
-    if (st) st.classList.add('active');
-    if (sp) { sp.classList.add('active'); sp.style.display = ''; }
-    document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.settings-section').forEach(s => s.classList.remove('active'));
-    const qt = document.querySelector('[data-stab="queue"]');
-    const qs = document.getElementById('stab-queue');
-    if (qt) qt.classList.add('active');
-    if (qs) qs.classList.add('active');
-    loadQueue();
+    toast(r.queued + ' задач в очереди');
+    setPipelineActive('no_llm');
+  } else {
+    toast(r.message || 'Ошибка', true);
+  }
+}
+
+async function stopPipeline() {
+  if (!confirm('Остановить текущий пайплайн?')) return;
+  const r = await api('/api/pipeline/stop', {});
+  if (r.status === 'ok') {
+    toast('Пайплайн останавливается...');
+    document.getElementById('pipeline-status').textContent = 'Останавливается...';
+    document.getElementById('pipeline-status').style.color = '#e0245e';
+    // Will clear on next poll when pipeline actually stops
   } else {
     toast(r.message || 'Ошибка', true);
   }
