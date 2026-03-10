@@ -128,6 +128,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/moderation_list": lambda: self._json(self._get_moderation_list()),
             "/api/digests": lambda: self._json(self._get_digests()),
             "/api/viral_triggers": lambda: self._json(self._get_viral_triggers()),
+            "/api/final": lambda: self._json(self._get_final()),
         }
 
         # DOCX download (GET with query param)
@@ -523,6 +524,80 @@ async function login() {
             rows = [dict(row) for row in cur.fetchall()]
 
         return {"news": rows, "total": total_count, "limit": limit, "offset": offset}
+
+    def _get_final(self):
+        """Финальная подборка: только publish_now с финальным скором."""
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            return self._get_final_impl(cur)
+        finally:
+            cur.close()
+
+    def _get_final_impl(self, cur):
+        qs = parse_qs(urlparse(self.path).query)
+        limit = int(qs.get("limit", [100])[0])
+        offset = int(qs.get("offset", [0])[0])
+        source_filter = qs.get("source", [None])[0]
+        sort_field = qs.get("sort", ["final_score"])[0]
+        sort_dir = qs.get("dir", ["desc"])[0]
+
+        ph = "%s" if _is_postgres() else "?"
+        conditions = [
+            "n.status IN ('processed', 'ready')",
+            "LOWER(a.llm_recommendation) = 'publish_now'",
+        ]
+        params = []
+
+        if source_filter:
+            conditions.append(f"n.source = {ph}")
+            params.append(source_filter)
+
+        where = "WHERE " + " AND ".join(conditions)
+
+        cur.execute(f"SELECT COUNT(*) FROM news n JOIN news_analysis a ON n.id = a.news_id {where}", params[:])
+        total_count = cur.fetchone()[0]
+
+        # Финальный скор: внутренний (40%) + viral (15%) + keyso freq бонус (15%) + trends бонус (15%) + headline (15%)
+        # keyso/trends бонусы вычисляются в JS, здесь берём raw данные
+        allowed_sorts = {
+            "final_score": "a.total_score",
+            "total_score": "a.total_score",
+            "viral_score": "a.viral_score",
+            "freshness_hours": "a.freshness_hours",
+            "source": "n.source",
+            "parsed_at": "n.parsed_at",
+        }
+        order_col = allowed_sorts.get(sort_field, "a.total_score")
+        order_dir = "ASC" if sort_dir == "asc" else "DESC"
+
+        query = f"""
+            SELECT n.id, n.source, n.title, n.url, n.h1,
+                   n.published_at, n.parsed_at, n.status,
+                   a.bigrams, a.trigrams, a.trends_data, a.keyso_data,
+                   a.llm_recommendation, a.llm_trend_forecast,
+                   a.viral_score, a.viral_level, a.viral_data,
+                   a.sentiment_label, a.sentiment_score,
+                   a.freshness_status, a.freshness_hours,
+                   a.tags_data, a.momentum_score, a.headline_score,
+                   a.total_score, a.quality_score, a.relevance_score,
+                   a.entity_names, a.entity_best_tier, a.processed_at
+            FROM news n
+            JOIN news_analysis a ON n.id = a.news_id
+            {where}
+            ORDER BY {order_col} {order_dir} LIMIT {ph} OFFSET {ph}
+        """
+        params.append(limit)
+        params.append(offset)
+        cur.execute(query, params)
+
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            rows = [dict(row) for row in cur.fetchall()]
+
+        return {"news": rows, "total": total_count}
 
     def _get_editorial(self):
         """Единый endpoint для вкладки Редакция — все данные в одном запросе."""
@@ -3795,6 +3870,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   <div class="tabs">
     <div class="tab active" data-tab="editorial">Редакция</div>
     <div class="tab" data-tab="news">Обогащённые</div>
+    <div class="tab" data-tab="final">Финал</div>
     <div class="tab" data-tab="editor">Контент</div>
     <div class="tab" data-tab="viral">Виральность</div>
     <div class="tab" data-tab="analytics">Аналитика</div>
@@ -4350,6 +4426,46 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div id="news-pagination"></div>
   </div>
 
+  <!-- FINAL -->
+  <div class="panel" id="panel-final">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <h2>Финал <span style="font-size:0.65em;color:#8899a6;font-weight:normal">только publish_now</span></h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="filter-label">Источник:</span>
+        <select id="fin-source" onchange="loadFinal()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+          <option value="">Все</option>
+        </select>
+        <button class="btn btn-sm btn-secondary" onclick="loadFinal()">Обновить</button>
+        <button class="btn btn-sm btn-primary" onclick="finSendSelected()" style="background:#9b59b6;border-color:#9b59b6">&#9998; В контент</button>
+        <span id="fin-selected-count" style="color:#1da1f2;font-size:0.85em"></span>
+      </div>
+    </div>
+    <div class="stats" id="fin-stats"></div>
+    <div style="background:#192734;border-radius:10px;overflow-x:auto">
+      <table style="font-size:0.85em">
+        <thead><tr>
+          <th style="width:28px"><input type="checkbox" onchange="finToggleAll(this)" style="width:15px;height:15px"></th>
+          <th class="sortable" onclick="sortFinal('source')" style="width:80px">Источник</th>
+          <th class="sortable" onclick="sortFinal('title')">Заголовок</th>
+          <th class="sortable" onclick="sortFinal('total_score')" style="width:50px" title="Внутренний скор">Скор</th>
+          <th class="sortable" onclick="sortFinal('viral_score')" style="width:50px">Вирал</th>
+          <th class="sortable" onclick="sortFinal('freshness_hours')" style="width:55px">Свеж.</th>
+          <th style="width:45px">Тон</th>
+          <th style="width:110px">Теги</th>
+          <th style="width:120px">Биграммы</th>
+          <th style="width:55px">Keys.so</th>
+          <th style="width:50px">Похож.</th>
+          <th style="width:55px">Trends</th>
+          <th class="sortable" onclick="sortFinal('final_score')" style="width:55px;color:#17bf63;font-weight:700" title="Финальный скор = внутренний + обогащение">Финал</th>
+          <th style="width:70px">Действия</th>
+        </tr></thead>
+        <tbody id="fin-table"></tbody>
+      </table>
+    </div>
+    <div id="fin-pagination" style="margin-top:10px;display:flex;gap:8px;justify-content:center"></div>
+    <div id="fin-count" style="text-align:center;margin-top:6px;color:#8899a6;font-size:0.85em"></div>
+  </div>
+
   <!-- LOGS -->
   <!-- logs, sources, prompts, tools, users panels moved to settings sub-tabs -->
 
@@ -4657,6 +4773,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   if (t.dataset.tab === 'editorial') { loadEditorial(); }
   // moderation tab removed
   if (t.dataset.tab === 'news') { loadNewsPage(); }
+  if (t.dataset.tab === 'final') { loadFinal(); }
   if (t.dataset.tab === 'editor') { loadArticles(); }
   if (t.dataset.tab === 'viral') { loadViral(); }
   if (t.dataset.tab === 'analytics') { loadAnalytics(); loadSavedDigests(); }
@@ -5020,7 +5137,7 @@ async function loadHealth() {
 
 // Generic sort for news/viral arrays
 function sortNews(arr, field, dir) {
-  const numFields = ['total_score','viral_score','momentum_score','headline_score','quality_score','relevance_score','sentiment_score','freshness_hours'];
+  const numFields = ['total_score','viral_score','momentum_score','headline_score','quality_score','relevance_score','sentiment_score','freshness_hours','final_score'];
   const isNum = numFields.includes(field);
   return [...arr].sort((a, b) => {
     let va = a[field], vb = b[field];
@@ -6449,6 +6566,165 @@ function sortViralTab(field) {
     }
   });
   renderViralTable();
+}
+
+// === FINAL TAB ===
+let _finData = [];
+let _finSortField = 'final_score';
+let _finSortDir = 'desc';
+let _finTotal = 0;
+
+function calcFinalScore(n) {
+  // Финальный скор: internal(40%) + viral(20%) + keyso_bonus(15%) + trends_bonus(10%) + headline(15%)
+  const internal = Number(n.total_score) || 0;
+  const viral = Number(n.viral_score) || 0;
+  const headline = Number(n.headline_score) || 0;
+  let keysoBonus = 0;
+  try {
+    const kd = JSON.parse(n.keyso_data || '{}');
+    const freq = Number(kd.freq || kd.ws) || 0;
+    if (freq >= 10000) keysoBonus = 100;
+    else if (freq >= 5000) keysoBonus = 80;
+    else if (freq >= 1000) keysoBonus = 60;
+    else if (freq >= 100) keysoBonus = 40;
+    else if (freq > 0) keysoBonus = 20;
+  } catch(e){}
+  let trendsBonus = 0;
+  try {
+    const td = JSON.parse(n.trends_data || '{}');
+    const maxT = Math.max(...Object.values(td).map(Number).filter(v => !isNaN(v)), 0);
+    if (maxT >= 80) trendsBonus = 100;
+    else if (maxT >= 50) trendsBonus = 70;
+    else if (maxT >= 20) trendsBonus = 40;
+    else if (maxT > 0) trendsBonus = 20;
+  } catch(e){}
+  return Math.round(internal * 0.4 + viral * 0.2 + keysoBonus * 0.15 + trendsBonus * 0.1 + headline * 0.15);
+}
+
+async function loadFinal() {
+  const source = document.getElementById('fin-source')?.value || '';
+  let url = '/api/final?limit=200';
+  if (source) url += '&source=' + encodeURIComponent(source);
+  const resp = await api(url);
+  _finData = (resp.news || []).map(n => ({...n, final_score: calcFinalScore(n)}));
+  _finTotal = resp.total || _finData.length;
+
+  // Populate source filter
+  const srcEl = document.getElementById('fin-source');
+  const curVal = srcEl.value;
+  const sources = [...new Set(_finData.map(n => n.source))].sort();
+  srcEl.innerHTML = '<option value="">Все</option>' + sources.map(s => `<option value="${s}" ${s===curVal?'selected':''}>${s}</option>`).join('');
+
+  // Stats
+  const avg = _finData.length ? Math.round(_finData.reduce((s,n) => s + n.final_score, 0) / _finData.length) : 0;
+  const high = _finData.filter(n => n.final_score >= 60).length;
+  document.getElementById('fin-stats').innerHTML = `
+    <div class="stat"><div class="stat-value">${_finTotal}</div><div class="stat-label">Всего publish_now</div></div>
+    <div class="stat"><div class="stat-value" style="color:#17bf63">${high}</div><div class="stat-label">Финал &ge; 60</div></div>
+    <div class="stat"><div class="stat-value">${avg}</div><div class="stat-label">Средний финал</div></div>
+  `;
+
+  renderFinalTable();
+}
+
+function renderFinalTable() {
+  const sorted = sortNews(_finData, _finSortField, _finSortDir);
+  const tb = document.getElementById('fin-table');
+  if (!tb) return;
+  tb.innerHTML = sorted.map(n => {
+    let bigrams = '';
+    try { bigrams = JSON.parse(n.bigrams||'[]').map(b=>b[0]).join(', '); } catch(e){}
+    let keysoFreq = '-', keysoSimilar = 0;
+    try {
+      const kd = JSON.parse(n.keyso_data||'{}');
+      keysoFreq = kd.freq || kd.ws || '-';
+      keysoSimilar = (kd.similar || []).length;
+    } catch(e){}
+    let trendsLabel = '-';
+    try {
+      const td = JSON.parse(n.trends_data||'{}');
+      const vals = Object.entries(td).filter(([k,v]) => typeof v === 'number' && v > 0);
+      if (vals.length) trendsLabel = vals.map(([k,v]) => `${k}:${v}`).join(' ');
+    } catch(e){}
+    let tags = '';
+    try { tags = JSON.parse(n.tags_data||'[]').map(t => `<span class="tag" style="background:#1da1f233;color:#1da1f2">${t.label||t.id}</span>`).join(''); } catch(e){}
+    const sc = n.total_score || 0;
+    const fs = n.final_score || 0;
+    const scColor = sc >= 70 ? '#17bf63' : sc >= 40 ? '#ffad1f' : '#e0245e';
+    const fsColor = fs >= 60 ? '#17bf63' : fs >= 35 ? '#ffad1f' : '#e0245e';
+    const viralBadge = n.viral_level === 'high' ? 'background:#e0245e33;color:#e0245e' : n.viral_level === 'medium' ? 'background:#ffad1f33;color:#ffad1f' : 'background:#38444d;color:#8899a6';
+    const freshBadge = n.freshness_status === 'fresh' ? 'color:#17bf63' : n.freshness_status === 'aging' ? 'color:#ffad1f' : 'color:#e0245e';
+    const sentIcon = n.sentiment_label === 'positive' ? '&#128994;' : n.sentiment_label === 'negative' ? '&#128308;' : '&#9898;';
+    const hrs = n.freshness_hours >= 0 ? Math.round(n.freshness_hours) + 'ч' : '-';
+    return `<tr>
+      <td><input type="checkbox" class="fin-check" data-id="${n.id}" onchange="finUpdateCount()"></td>
+      <td style="font-size:0.8em">${n.source}</td>
+      <td><a href="${n.url}" target="_blank" style="color:#e1e8ed" title="${esc(n.h1||'')}">${esc((n.title||'').slice(0,80))}</a></td>
+      <td style="text-align:center;font-weight:700;color:${scColor}">${sc}</td>
+      <td style="text-align:center"><span style="padding:2px 6px;border-radius:8px;font-size:0.8em;${viralBadge}">${n.viral_score||0}</span></td>
+      <td style="text-align:center;${freshBadge};font-size:0.85em">${hrs}</td>
+      <td style="text-align:center;font-size:0.9em">${sentIcon}</td>
+      <td style="font-size:0.78em">${tags||'-'}</td>
+      <td style="font-size:0.78em;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(bigrams)}">${bigrams.slice(0,40)||'-'}</td>
+      <td style="text-align:center;font-size:0.85em">${keysoFreq}</td>
+      <td style="text-align:center;font-size:0.85em">${keysoSimilar||'-'}</td>
+      <td style="font-size:0.78em">${trendsLabel}</td>
+      <td style="text-align:center;font-weight:700;font-size:1.05em;color:${fsColor}">${fs}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm" style="background:#9b59b6;color:#fff;padding:3px 7px" onclick="finToContent('${n.id}')" title="В контент">&#9998;</button>
+        <button class="btn btn-sm btn-secondary" style="padding:3px 7px" onclick="exportOne('${n.id}')" title="В Sheets">&#9776;</button>
+      </td>
+    </tr>`;
+  }).join('');
+  document.getElementById('fin-count').textContent = sorted.length + ' из ' + _finTotal;
+}
+
+function sortFinal(field) {
+  if (_finSortField === field) {
+    _finSortDir = _finSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _finSortField = field;
+    _finSortDir = field === 'freshness_hours' ? 'asc' : 'desc';
+  }
+  document.querySelectorAll('#panel-final .sortable').forEach(th => {
+    const col = th.getAttribute('onclick')?.match(/'(\w+)'/)?.[1];
+    const arrow = th.querySelector('.sort-arrow');
+    if (col === field) {
+      th.classList.add('sort-active');
+      if (arrow) arrow.innerHTML = _finSortDir === 'asc' ? '&#9650;' : '&#9660;';
+    } else {
+      th.classList.remove('sort-active');
+      if (arrow) arrow.innerHTML = '&#9650;';
+    }
+  });
+  renderFinalTable();
+}
+
+function finToggleAll(el) {
+  document.querySelectorAll('.fin-check').forEach(c => c.checked = el.checked);
+  finUpdateCount();
+}
+function finUpdateCount() {
+  const cnt = [...document.querySelectorAll('.fin-check:checked')].length;
+  document.getElementById('fin-selected-count').textContent = cnt ? cnt + ' выбрано' : '';
+}
+function finGetSelectedIds() {
+  return [...document.querySelectorAll('.fin-check:checked')].map(c => c.dataset.id);
+}
+async function finToContent(newsId) {
+  const r = await api('/api/queue/add', {news_id: newsId, style: 'news', task_type: 'rewrite'});
+  if (r.status === 'ok') toast('Отправлено в контент');
+  else toast(r.message || 'Ошибка', true);
+}
+async function finSendSelected() {
+  const ids = finGetSelectedIds();
+  if (!ids.length) { toast('Выберите новости', true); return; }
+  let ok = 0;
+  for (const id of ids) {
+    const r = await api('/api/queue/add', {news_id: id, style: 'news', task_type: 'rewrite'});
+    if (r.status === 'ok') ok++;
+  }
+  toast(`Отправлено в контент: ${ok} из ${ids.length}`);
 }
 
 // === EDITORIAL TAB ===
