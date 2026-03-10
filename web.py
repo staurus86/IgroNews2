@@ -603,7 +603,7 @@ async function login() {
             FROM news n
             LEFT JOIN news_analysis a ON n.id = a.news_id
             {where}
-            ORDER BY COALESCE(a.total_score, 0) DESC, n.parsed_at DESC
+            ORDER BY n.parsed_at DESC
             LIMIT {ph} OFFSET {ph}
         """
         params.append(limit)
@@ -1573,7 +1573,7 @@ async function login() {
                 FROM news n
                 LEFT JOIN news_analysis na ON na.news_id = n.id
                 WHERE {where}
-                ORDER BY na.total_score DESC NULLS LAST, n.parsed_at DESC
+                ORDER BY n.parsed_at DESC
                 LIMIT {ph} OFFSET {ph}
             """, (*params, limit, offset))
 
@@ -6569,7 +6569,7 @@ setInterval(loadQueue, 15000);
 
 // === EDITORIAL TAB ===
 let _edData = [];
-let _edSortField = 'total_score';
+let _edSortField = 'parsed_at';
 let _edSortDir = 'desc';
 let _edPage = 0;
 let _edTotalAll = 0;
@@ -7402,7 +7402,7 @@ async function modApproveSelected() {
 }
 
 // Moderation sorting
-let _modSortField = 'total_score';
+let _modSortField = 'parsed_at';
 let _modSortDir = 'desc';
 
 function sortModTable(field) {
