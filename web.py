@@ -97,6 +97,9 @@ class AdminHandler(BaseHTTPRequestHandler):
         if path == "/logout":
             self._do_logout()
             return
+        if path == "/api/diag":
+            self._serve_diag()
+            return
         if not self._require_auth():
             return
 
@@ -277,6 +280,66 @@ class AdminHandler(BaseHTTPRequestHandler):
             return
         USERS.pop(username, None)
         self._json({"status": "ok", "users": [{"username": u} for u in USERS.keys()]})
+
+    def _serve_diag(self):
+        """Публичный диагностический endpoint — проверка БД и парсинга."""
+        import json as _json
+        import config
+        diag = {}
+        try:
+            # DB connection
+            db_url = config.DATABASE_URL
+            diag["db_type"] = "PostgreSQL" if db_url.startswith("postgres") else "SQLite"
+            diag["db_url_set"] = bool(db_url and db_url != "sqlite:///news.db")
+
+            conn = get_connection()
+            cur = conn.cursor()
+            diag["db_connected"] = True
+
+            # Counts
+            cur.execute("SELECT COUNT(*) FROM news")
+            diag["total_news"] = cur.fetchone()[0]
+
+            cur.execute("SELECT status, COUNT(*) FROM news GROUP BY status")
+            status_counts = {}
+            for row in cur.fetchall():
+                if _is_postgres():
+                    status_counts[row[0]] = row[1]
+                else:
+                    status_counts[row[0]] = row[1]
+            diag["by_status"] = status_counts
+
+            cur.execute("SELECT COUNT(*) FROM news_analysis")
+            diag["total_analyzed"] = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM news_analysis WHERE reviewed_at IS NOT NULL AND reviewed_at != ''")
+            diag["total_reviewed"] = cur.fetchone()[0]
+
+            # Last parsed
+            cur.execute("SELECT MAX(parsed_at) FROM news")
+            row = cur.fetchone()
+            diag["last_parsed"] = str(row[0]) if row and row[0] else "never"
+
+            # Sources parsed
+            cur.execute("SELECT source, COUNT(*) FROM news GROUP BY source ORDER BY COUNT(*) DESC")
+            src_counts = {}
+            for row in cur.fetchall():
+                if _is_postgres():
+                    src_counts[row[0]] = row[1]
+                else:
+                    src_counts[row[0]] = row[1]
+            diag["sources"] = src_counts
+
+            diag["configured_sources"] = len(config.SOURCES)
+
+        except Exception as e:
+            diag["db_connected"] = False
+            diag["error"] = str(e)
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(_json.dumps(diag, indent=2, ensure_ascii=False).encode())
 
     def _serve_login(self):
         html = """<!DOCTYPE html>
