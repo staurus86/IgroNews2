@@ -3,25 +3,20 @@ import time
 from datetime import datetime, timezone, timedelta
 
 import feedparser
-import requests
 from bs4 import BeautifulSoup
 
 from storage.database import insert_news, news_exists
+from parsers.proxy import fetch_with_retry, _get_random_ua
 
 MAX_AGE_DAYS = 30
 
 logger = logging.getLogger(__name__)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-}
-
 
 def fetch_full_text(url: str) -> tuple[str, str, str, str]:
     """Загружает страницу и извлекает h1, description, plain_text, published_at."""
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
+        resp = fetch_with_retry(url)
         soup = BeautifulSoup(resp.text, "lxml")
 
         h1 = ""
@@ -59,7 +54,7 @@ def parse_rss_source(source: dict) -> int:
     count = 0
 
     try:
-        feed = feedparser.parse(url, request_headers={"User-Agent": HEADERS["User-Agent"]})
+        feed = feedparser.parse(url, request_headers={"User-Agent": _get_random_ua()})
         if feed.bozo and not feed.entries:
             logger.warning("Feed error for %s: %s", name, feed.bozo_exception)
             return 0

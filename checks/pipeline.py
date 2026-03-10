@@ -10,6 +10,7 @@ from checks.momentum import get_momentum, invalidate_cache
 from checks.ner import extract_entities
 from checks.headline_score import headline_score
 from checks.source_weight import get_source_weight
+from checks.feedback import get_feedback_adjustments
 from nlp.game_entities import find_entities
 from storage.database import get_connection, _is_postgres, update_news_status, save_check_results
 
@@ -45,6 +46,7 @@ def _check_single(news: dict) -> dict:
         result["game_entities"] = []
         result["overall_pass"] = False
         result["total_score"] = max(0, q_score // 5)  # scale 0-100 quality to ~0-20 total
+        result["feedback_adjustment"] = 0.0
         result["status"] = news.get("status", "new")
         result["early_exit"] = True
         return result
@@ -84,6 +86,33 @@ def _check_single(news: dict) -> dict:
     # Headline bonus
     headline_bonus = max(0, (result["headline"]["score"] - 50)) // 10
     total_score = min(100, total_score + headline_bonus)
+
+    # Feedback adjustment — apply learned weights from editor decisions
+    feedback_adj = 0.0
+    try:
+        fb = get_feedback_adjustments()
+        source = news.get("source", "")
+        # Source-based adjustment: adjustment is in -0.2..+0.2 range, scale to points
+        if source in fb["sources"]:
+            feedback_adj += fb["sources"][source]["adjustment"] * 50  # -10..+10
+
+        # Tag-based adjustment: average adjustment across matching tags
+        detected_tags = [t.get("tag", t) if isinstance(t, dict) else t for t in result.get("tags", [])]
+        tag_adjs = []
+        for tag in detected_tags:
+            if tag in fb["tags"]:
+                tag_adjs.append(fb["tags"][tag]["adjustment"] * 50)
+        if tag_adjs:
+            feedback_adj += sum(tag_adjs) / len(tag_adjs)
+
+        # Cap to ±10 points
+        feedback_adj = max(-10.0, min(10.0, feedback_adj))
+    except Exception as e:
+        logger.debug("Feedback adjustment error: %s", e)
+        feedback_adj = 0.0
+
+    total_score = max(0, min(100, int(total_score + feedback_adj)))
+    result["feedback_adjustment"] = round(feedback_adj, 2)
 
     result["overall_pass"] = all_pass
     result["total_score"] = total_score

@@ -26,6 +26,10 @@ AUTO_APPROVE_THRESHOLD = int(os.getenv("AUTO_APPROVE_THRESHOLD", "0"))  # 0 = di
 AUTO_REWRITE_ON_PUBLISH_NOW = os.getenv("AUTO_REWRITE_ON_PUBLISH_NOW", "true").lower() == "true"
 AUTO_REWRITE_STYLE = os.getenv("AUTO_REWRITE_STYLE", "news")
 
+# Proxy & User-Agent rotation
+PROXY_LIST = os.getenv("PROXY_LIST", "")
+USER_AGENT_ROTATE = os.getenv("USER_AGENT_ROTATE", "true").lower() == "true"
+
 # Keys.so
 KEYSO_REGION = os.getenv("KEYSO_REGION", "ru")
 KEYSO_BASE_URL = "https://api.keys.so/api/v2"

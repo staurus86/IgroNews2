@@ -5,17 +5,13 @@ import time
 from datetime import datetime, timedelta, timezone
 from xml.etree import ElementTree
 
-import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
 from storage.database import insert_news, news_exists
+from parsers.proxy import fetch_with_retry
 
 logger = logging.getLogger(__name__)
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
 
 
 def parse_html_source(source: dict) -> int:
@@ -31,8 +27,7 @@ def parse_html_source(source: dict) -> int:
     count = 0
 
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
+        resp = fetch_with_retry(url)
         soup = BeautifulSoup(resp.text, "lxml")
 
         items = soup.select(selector)
@@ -112,8 +107,7 @@ def _parse_dtf(source: dict) -> int:
     count = 0
 
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
+        resp = fetch_with_retry(url)
 
         # Ищем JSON в __INITIAL_STATE__
         match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.+?})\s*;?\s*</script>', resp.text, re.DOTALL)
@@ -211,8 +205,7 @@ def parse_sitemap_source(source: dict) -> int:
     cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
 
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
+        resp = fetch_with_retry(url)
 
         root = ElementTree.fromstring(resp.content)
         ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
@@ -239,8 +232,7 @@ def parse_sitemap_source(source: dict) -> int:
 def _parse_single_sitemap(name: str, sm_url: str, url_filter: str, cutoff: datetime) -> int:
     """Загружает один sitemap и парсит его."""
     try:
-        resp = requests.get(sm_url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
+        resp = fetch_with_retry(sm_url)
         root = ElementTree.fromstring(resp.content)
         ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
         return _parse_single_sitemap_from_root(name, root, ns, url_filter, cutoff)
@@ -346,8 +338,7 @@ def _extract_publish_date(soup) -> str:
 def _fetch_article(url: str) -> tuple[str, str, str, str]:
     """Загружает статью и извлекает h1, description, plain_text, published_at."""
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
+        resp = fetch_with_retry(url)
         soup = BeautifulSoup(resp.text, "lxml")
 
         h1 = ""

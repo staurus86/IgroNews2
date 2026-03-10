@@ -150,6 +150,16 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._json({"error": "ids required"}, 400)
             return
 
+        # Event chain (temporal clusters)
+        if path == "/api/event_chain":
+            qs = parse_qs(urlparse(self.path).query)
+            news_id = qs.get("news_id", [""])[0]
+            if news_id:
+                self._json(self._get_event_chain_by_id(news_id))
+            else:
+                self._json({"error": "news_id required"}, 400)
+            return
+
         handler = routes.get(path)
         if handler:
             handler()
@@ -611,6 +621,30 @@ async function login() {
             "offset": offset,
             "stats": status_counts,
         }
+
+    def _get_event_chain_by_id(self, news_id):
+        """Возвращает цепочку событий для указанной новости (GET endpoint)."""
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            ph = "%s" if _is_postgres() else "?"
+            try:
+                cur.execute(f"SELECT id, source, title, published_at, status FROM news WHERE id = {ph}", (news_id,))
+                row = cur.fetchone()
+                if not row:
+                    return {"error": "news not found"}
+                if _is_postgres():
+                    columns = [desc[0] for desc in cur.description]
+                    news = dict(zip(columns, row))
+                else:
+                    news = dict(row)
+            finally:
+                cur.close()
+            from checks.temporal_clusters import get_event_chain
+            return get_event_chain(news)
+        except Exception as e:
+            logger.error(f"Event chain error: {e}")
+            return {"chain": [], "chain_length": 0, "days_span": 0, "phase": "single", "error": str(e)}
 
     def _get_sources(self):
         import config
@@ -7375,6 +7409,7 @@ function _edRenderDetail(n, ents, tags) {
         <div style="margin-bottom:8px"><b style="color:#1da1f2">Сущности:</b> ${entHtml}</div>
         <div style="margin-bottom:8px"><b style="color:#1da1f2">Вирал. тригеры:</b> ${trigHtml || '<span style="color:#657786">нет</span>'}</div>
         <div><b style="color:#1da1f2">Биграммы:</b> <span style="color:#8899a6">${bigramsHtml}</span></div>
+        <div id="chain-${n.id}" style="margin-top:8px"><span style="color:#657786;font-size:0.8em">Цепочка: загрузка...</span></div>
       </div>
       <div>
         <div style="margin-bottom:8px"><b style="color:#1da1f2">Keys.so:</b> <span style="color:#8899a6">${keysoHtml}</span></div>
@@ -7398,7 +7433,38 @@ function _edRenderDetail(n, ents, tags) {
 
 function edToggleDetail(id) {
   const el = document.getElementById('ed-detail-' + id);
-  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+  if (!el) return;
+  const wasHidden = el.style.display === 'none';
+  el.style.display = wasHidden ? '' : 'none';
+  if (wasHidden) {
+    const chainEl = document.getElementById('chain-' + id);
+    if (chainEl && !chainEl.dataset.loaded) {
+      chainEl.dataset.loaded = '1';
+      fetch('/api/event_chain?news_id=' + encodeURIComponent(id))
+        .then(r => r.json())
+        .then(data => {
+          if (!data || data.phase === 'single' || !data.chain || data.chain.length === 0) {
+            chainEl.innerHTML = '<b style="color:#1da1f2">Цепочка:</b> <span style="color:#657786;font-size:0.85em">нет связанных</span>';
+            return;
+          }
+          const phaseColors = {emerging:'#ffad1f',developing:'#1da1f2',trending:'#e0245e'};
+          const phaseLabels = {emerging:'Зарождение',developing:'Развитие',trending:'Тренд'};
+          const pc = phaseColors[data.phase] || '#8899a6';
+          const pl = phaseLabels[data.phase] || data.phase;
+          const badge = '<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:0.75em;font-weight:600;background:' + pc + '22;color:' + pc + ';border:1px solid ' + pc + '44">' + pl + ' (' + data.chain_length + ')</span>';
+          const items = data.chain.slice(0, 10).map(c => {
+            const d = c.published_at ? c.published_at.substring(0, 10) : '';
+            return '<div style="font-size:0.8em;padding:2px 0;color:#d9d9d9"><span style="color:#657786">' + d + '</span> <span style="color:#8899a6">[' + (c.source||'') + ']</span> ' + (c.title||'') + '</div>';
+          }).join('');
+          const srcInfo = data.unique_sources > 1 ? ' &middot; ' + data.unique_sources + ' источн.' : '';
+          const spanInfo = data.days_span > 0 ? ' &middot; ' + data.days_span + ' дн.' : '';
+          chainEl.innerHTML = '<b style="color:#1da1f2">Цепочка:</b> ' + badge + srcInfo + spanInfo + '<div style="margin-top:4px;padding-left:8px;border-left:2px solid ' + pc + '44">' + items + '</div>';
+        })
+        .catch(() => {
+          chainEl.innerHTML = '<b style="color:#1da1f2">Цепочка:</b> <span style="color:#657786">ошибка загрузки</span>';
+        });
+    }
+  }
 }
 
 function edSort(field) {
