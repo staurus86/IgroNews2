@@ -217,6 +217,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/ai_recommend": lambda: self._ai_recommend(body),
             "/api/cache/clear": lambda: self._clear_cache(body),
             "/api/export_all_processed": lambda: self._export_all_processed(body),
+            "/api/export_ready_all": lambda: self._export_ready_all(body),
             "/api/pipeline/full_auto": lambda: self._pipeline_full_auto(body),
             "/api/pipeline/no_llm": lambda: self._pipeline_no_llm(body),
             "/api/moderation": lambda: self._get_moderation(body),
@@ -1211,6 +1212,86 @@ async function login() {
         threading.Thread(target=_bg_export, args=(list(news_ids), list(task_ids)), daemon=True).start()
         self._json({"status": "ok", "queued": len(news_ids), "task_ids": task_ids})
 
+    def _export_ready_all(self, body):
+        """Экспортирует ВСЕ переписанные статьи (articles) в Sheets/Ready."""
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            # Get all articles with their news data
+            cur.execute("""
+                SELECT a.id, a.news_id, a.title, a.text, a.seo_title, a.seo_description,
+                       a.tags, a.style, a.original_title, a.source_url, a.created_at,
+                       n.source, n.parsed_at, n.url, n.title as news_title
+                FROM articles a
+                LEFT JOIN news n ON n.id = a.news_id
+                ORDER BY a.created_at DESC
+            """)
+            if _is_postgres():
+                columns = [d[0] for d in cur.description]
+                articles = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                articles = [dict(r) for r in cur.fetchall()]
+        finally:
+            cur.close()
+
+        if not articles:
+            self._json({"status": "error", "message": "Нет переписанных статей"})
+            return
+
+        import threading
+        import time as _time
+
+        def _bg_export_ready(arts):
+            from storage.sheets import write_ready_row
+            from scheduler import _fetch_analysis_by_id
+            import json as _json
+            ok = 0
+            skip = 0
+            err = 0
+            for art in arts:
+                try:
+                    news_id = art.get("news_id", "")
+                    analysis = _fetch_analysis_by_id(news_id) if news_id else None
+
+                    # Build news dict
+                    news = {
+                        "parsed_at": art.get("parsed_at", art.get("created_at", "")),
+                        "source": art.get("source", ""),
+                        "title": art.get("original_title") or art.get("news_title", ""),
+                        "url": art.get("source_url") or art.get("url", ""),
+                    }
+
+                    # Build rewrite dict
+                    tags_raw = art.get("tags", "[]")
+                    try:
+                        tags_list = _json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw if isinstance(tags_raw, list) else [])
+                    except Exception:
+                        tags_list = []
+
+                    rewrite = {
+                        "title": art.get("title", ""),
+                        "text": art.get("text", ""),
+                        "seo_title": art.get("seo_title", ""),
+                        "seo_description": art.get("seo_description", ""),
+                        "tags": tags_list,
+                    }
+
+                    row = write_ready_row(news, analysis, rewrite)
+                    if row and row > 0:
+                        ok += 1
+                    elif row == -1:
+                        skip += 1
+                    else:
+                        err += 1
+                except Exception as e:
+                    logger.error("Ready export error for article %s: %s", art.get("id"), e)
+                    err += 1
+                _time.sleep(1.5)  # Rate limit
+            logger.info("Ready export done: %d ok, %d skipped, %d errors out of %d", ok, skip, err, len(arts))
+
+        threading.Thread(target=_bg_export_ready, args=(list(articles),), daemon=True).start()
+        self._json({"status": "ok", "queued": len(articles), "message": f"Экспорт {len(articles)} статей в Ready запущен"})
+
     # ─── Pipeline endpoints ───
 
     def _pipeline_full_auto(self, body):
@@ -1344,7 +1425,7 @@ async function login() {
                        na.total_score, na.quality_score, na.relevance_score,
                        na.freshness_hours, na.viral_score, na.viral_data,
                        na.sentiment_label,
-                       na.tags, na.entities, na.headline_score, na.momentum_score
+                       na.tags_data as tags, na.entity_names as entities, na.headline_score, na.momentum_score
                 FROM news n
                 LEFT JOIN news_analysis na ON na.news_id = n.id
                 WHERE {where}
@@ -4213,7 +4294,8 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
             <button class="btn btn-primary" onclick="runProcess()">&#9654; Обогатить одобренные</button>
             <button class="btn btn-warning" onclick="reparseAll()">Парсить все источники</button>
             <button class="btn btn-secondary" onclick="setupHeaders()">Создать заголовки Sheets</button>
-            <button class="btn btn-secondary" onclick="exportAllProcessed()">&#128196; Экспорт обработанных в Sheets</button>
+            <button class="btn btn-secondary" onclick="exportAllProcessed()">&#128196; Экспорт обработанных в Лист1</button>
+            <button class="btn btn-primary" onclick="exportReadyAll()">&#128196; Экспорт переписанных в Ready</button>
           </div>
         </div>
       </div>
@@ -5578,19 +5660,33 @@ async function exportAllProcessed() {
   const r = await api('/api/export_all_processed', {});
   if (r.status === 'ok') {
     toast(r.queued + ' задач в очереди экспорта');
-    // Switch to queue tab
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(p => { p.classList.remove('active'); p.style.display = ''; });
-    document.querySelector('[data-tab="settings"]')?.classList.add('active');
-    document.getElementById('panel-settings')?.classList.add('active');
-    document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.settings-section').forEach(s => s.classList.remove('active'));
-    document.querySelector('[data-stab="queue"]')?.classList.add('active');
-    document.getElementById('stab-queue')?.classList.add('active');
-    loadQueue();
+    _switchToQueueTab();
   } else {
     toast(r.message || 'Ошибка', true);
   }
+}
+
+async function exportReadyAll() {
+  if (!confirm('Экспортировать ВСЕ переписанные статьи в Sheets (Ready)? Дубликаты будут пропущены.')) return;
+  toast('Запуск экспорта в Ready...');
+  const r = await api('/api/export_ready_all', {});
+  if (r.status === 'ok') {
+    toast(r.message || (r.queued + ' статей в очереди'));
+  } else {
+    toast(r.message || 'Ошибка', true);
+  }
+}
+
+function _switchToQueueTab() {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => { p.classList.remove('active'); p.style.display = ''; });
+  document.querySelector('[data-tab="settings"]')?.classList.add('active');
+  document.getElementById('panel-settings')?.classList.add('active');
+  document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.settings-section').forEach(s => s.classList.remove('active'));
+  document.querySelector('[data-stab="queue"]')?.classList.add('active');
+  document.getElementById('stab-queue')?.classList.add('active');
+  loadQueue();
 }
 
 // Editor
