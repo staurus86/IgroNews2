@@ -2,6 +2,7 @@ import hashlib
 import re
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from nlp.game_entities import find_entities
 
 
 def normalize(text: str) -> str:
@@ -15,41 +16,44 @@ def exact_duplicate(title1: str, title2: str) -> bool:
            hashlib.md5(normalize(title2).encode()).hexdigest()
 
 
-def tfidf_similarity(titles: list[str]) -> list[tuple]:
+def entity_overlap(text1: str, text2: str) -> float:
+    """Пересечение игровых сущностей между двумя текстами (через единую базу)."""
+    ents1 = set(e["name"] for e in find_entities(text1))
+    ents2 = set(e["name"] for e in find_entities(text2))
+    if not ents1 and not ents2:
+        return 0
+    return len(ents1 & ents2) / max(len(ents1 | ents2), 1)
+
+
+def tfidf_similarity(titles: list[str], texts: list[str] | None = None) -> list[tuple]:
+    """Комбинированная похожесть: TF-IDF (0.6) + entity overlap (0.4).
+
+    Args:
+        titles: список заголовков
+        texts: опционально полные тексты для entity overlap (если нет — берём titles)
+    """
     if len(titles) < 2:
         return []
+
+    # TF-IDF cosine similarity по заголовкам
     vectorizer = TfidfVectorizer(ngram_range=(1, 2))
     matrix = vectorizer.fit_transform([normalize(t) for t in titles])
     sim = cosine_similarity(matrix)
 
+    compare_texts = texts if texts else titles
+
     pairs = []
     for i in range(len(titles)):
         for j in range(i + 1, len(titles)):
-            score = sim[i][j]
-            if score > 0.40:
-                pairs.append((i, j, round(float(score), 2)))
+            tfidf_score = sim[i][j]
+            ent_score = entity_overlap(compare_texts[i], compare_texts[j])
+
+            # Комбинированный скор: TF-IDF + entity overlap
+            combined = 0.6 * tfidf_score + 0.4 * ent_score
+
+            if combined > 0.35:
+                pairs.append((i, j, round(float(combined), 2)))
     return pairs
-
-
-GAMING_ENTITIES = [
-    "gta", "gta 6", "elder scrolls", "call of duty", "cod", "cyberpunk",
-    "starfield", "diablo", "zelda", "mario", "pokemon", "final fantasy",
-    "resident evil", "assassin's creed", "god of war", "spider-man",
-    "hollow knight", "elden ring", "baldur's gate", "mass effect",
-    "dragon age", "witcher", "minecraft", "fortnite", "valorant",
-    "overwatch", "destiny", "halo", "doom", "red dead", "horizon",
-    "steam", "xbox", "playstation", "nintendo", "epic games",
-    "blizzard", "ea", "ubisoft", "bethesda", "rockstar", "valve",
-    "cd projekt", "riot", "capcom", "square enix", "sony", "microsoft",
-]
-
-
-def entity_overlap(text1: str, text2: str) -> float:
-    found1 = set(e for e in GAMING_ENTITIES if e in text1.lower())
-    found2 = set(e for e in GAMING_ENTITIES if e in text2.lower())
-    if not found1 and not found2:
-        return 0
-    return len(found1 & found2) / max(len(found1 | found2), 1)
 
 
 DUPLICATE_STATUSES = {

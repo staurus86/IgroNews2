@@ -64,9 +64,11 @@ def run_review_pipeline(news_list: list[dict]) -> dict:
 
         results.append(result)
 
-    # Dedup across batch
+    # Dedup across batch (TF-IDF + entity overlap)
     titles = [r["title"] for r in results]
-    pairs = tfidf_similarity(titles)
+    texts = [r["title"] + " " + (news_list[i].get("plain_text", "") if i < len(news_list) else "")
+             for i, r in enumerate(results)]
+    pairs = tfidf_similarity(titles, texts)
     groups = build_groups(results, pairs)
 
     # Mark duplicates

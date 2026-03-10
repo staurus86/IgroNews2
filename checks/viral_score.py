@@ -579,23 +579,7 @@ VIRAL_TRIGGERS = {
     },
 }
 
-BIG_TITLES = [
-    "gta 6", "grand theft auto", "elder scrolls 6", "half-life 3",
-    "call of duty", "zelda", "pokemon", "mario", "batman",
-    "spider-man", "god of war", "horizon", "red dead",
-    "escape from tarkov", "tarkov", "cyberpunk", "elden ring",
-    "baldur's gate", "starfield", "diablo", "world of warcraft",
-    "final fantasy", "resident evil", "fortnite", "minecraft",
-    "the witcher", "mass effect", "dragon age", "halo",
-    "xbox", "playstation", "nintendo", "steam deck",
-    "overwatch", "valorant", "league of legends", "dota",
-    "counter-strike", "cs2", "apex legends", "genshin impact",
-    "palworld", "helldivers", "death stranding", "metal gear",
-    "silent hill", "persona", "kingdom hearts", "dark souls",
-    "bloodborne", "sekiro", "armored core", "alan wake",
-    "bioshock", "fable", "perfect dark", "avowed",
-    "indiana jones", "wolverine", "uncharted",
-]
+from nlp.game_entities import get_entity_boost, TIER_BOOST
 
 GAMING_EVENTS_CALENDAR = [
     (1, 15, 25, "Xbox Developer Direct", 20),
@@ -637,12 +621,17 @@ def viral_score(news: dict) -> dict:
                 "weight": trigger["weight"],
             })
 
-    # Big title bonus
-    has_big_title = any(t in text for t in BIG_TITLES)
-    if has_big_title:
-        score += 15
-        matched = [t for t in BIG_TITLES if t in text]
-        triggered.append({"id": "big_title", "label": f"Big title: {matched[0] if matched else '?'}", "weight": 15})
+    # Entity-based boost (из единой базы с тирами)
+    entity_boost, entities = get_entity_boost(text)
+    has_big_title = entity_boost >= TIER_BOOST["A"]  # A-tier и выше
+    if entity_boost > 0:
+        score += entity_boost
+        best = entities[0] if entities else {}
+        triggered.append({
+            "id": "entity_boost",
+            "label": f"{best.get('tier', '?')}-tier: {best.get('name', '?')} (freq={best.get('freq', 0)})",
+            "weight": entity_boost,
+        })
 
     # Big title + leak combo
     has_leak = any(kw in text for kw in ["leak", "leaked", "утечка", "слив", "инсайдер"])
@@ -656,10 +645,9 @@ def viral_score(news: dict) -> dict:
         score += 30
         triggered.append({"id": "closure_big_title", "label": "Big studio closure", "weight": 30})
 
-    # Lawsuit + Big company combo
+    # Lawsuit + Big company combo (из entity базы — студии)
     has_lawsuit = any(kw in text for kw in ["lawsuit", "судебный иск", "court", "sued"])
-    big_companies = ["ea", "ubisoft", "activision", "blizzard", "epic", "valve", "microsoft", "sony", "nintendo", "tencent"]
-    has_big_company = any(c in text for c in big_companies)
+    has_big_company = any(e.get("type") == "studio" and e.get("tier") in ("S", "A", "B") for e in entities)
     if has_lawsuit and has_big_company:
         score += 20
         triggered.append({"id": "lawsuit_big_company", "label": "Big company lawsuit", "weight": 20})
