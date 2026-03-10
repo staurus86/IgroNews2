@@ -2737,8 +2737,8 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div class="dash-filters" style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <select id="ed-status" onchange="loadEditorial()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
         <option value="">Активные</option>
+        <option value="in_review" selected>На проверке</option>
         <option value="new">Новые</option>
-        <option value="in_review">На проверке</option>
         <option value="approved">Одобренные</option>
         <option value="processed">Обработанные</option>
         <option value="duplicate">Дубли</option>
@@ -3812,8 +3812,13 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   // Refresh data when switching to key tabs
   if (t.dataset.tab === 'editorial') { loadEditorial(); }
   if (t.dataset.tab === 'dashboard') { loadStats(); loadNews(); }
+  if (t.dataset.tab === 'review') { loadReviewTab(); }
   if (t.dataset.tab === 'news') { loadNewsPage(0); }
+  if (t.dataset.tab === 'editor') { loadArticles(); }
+  if (t.dataset.tab === 'articles') { loadArticles(); }
   if (t.dataset.tab === 'viral') { loadViral(); }
+  if (t.dataset.tab === 'analytics') { loadAnalytics(); }
+  if (t.dataset.tab === 'health') { loadHealth(); }
   if (t.dataset.tab === 'settings') { loadSettings(); loadLogs(); loadQueue(); }
 }));
 
