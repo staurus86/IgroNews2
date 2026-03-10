@@ -46,6 +46,18 @@ def _get_client():
     return _client
 
 
+def _safe_json_loads(val, default):
+    """Безопасный json.loads: обрабатывает None, пустые строки, уже-распарсенные объекты."""
+    if val is None or val == "":
+        return default
+    if isinstance(val, (dict, list)):
+        return val
+    try:
+        return json.loads(val)
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
 def write_news_row(news: dict, analysis: dict) -> int | None:
     """Записывает строку новости в Google Sheets. Возвращает номер строки."""
     client = _get_client()
@@ -63,30 +75,31 @@ def write_news_row(news: dict, analysis: dict) -> int | None:
                 logger.info("Skipped duplicate in Sheets: %s", news_url[:80])
                 return -1  # уже есть, пропускаем
 
+        bigrams = _safe_json_loads(analysis.get("bigrams"), [])
         bigrams_str = ", ".join(
-            b[0] if isinstance(b, list) else b
-            for b in json.loads(analysis.get("bigrams", "[]"))
+            b[0] if isinstance(b, list) else str(b)
+            for b in bigrams
         )
 
-        keyso_data = json.loads(analysis.get("keyso_data", "{}"))
-        trends_data = json.loads(analysis.get("trends_data", "{}"))
+        keyso_data = _safe_json_loads(analysis.get("keyso_data"), {})
+        trends_data = _safe_json_loads(analysis.get("trends_data"), {})
 
         row = [
-            news.get("parsed_at", ""),                          # A: Дата парсинга
-            news.get("url", ""),                                # B: Источник URL
-            news.get("title", ""),                              # C: Title
-            news.get("h1", ""),                                 # D: H1
-            news.get("description", ""),                        # E: Description
+            news.get("parsed_at", "") or "",                    # A: Дата парсинга
+            news.get("url", "") or "",                          # B: Источник URL
+            news.get("title", "") or "",                        # C: Title
+            news.get("h1", "") or "",                           # D: H1
+            news.get("description", "") or "",                  # E: Description
             bigrams_str,                                        # F: Топ биграммы
             str(keyso_data.get("freq", "")),                    # G: Частота Keys.so
             str(trends_data.get("RU", "")),                     # H: Trends RU
             str(trends_data.get("US", "")),                     # I: Trends US
-            analysis.get("llm_recommendation", ""),             # J: Рекомендация LLM
-            analysis.get("llm_trend_forecast", ""),             # K: Прогноз трендовости
+            analysis.get("llm_recommendation") or "",           # J: Рекомендация LLM
+            analysis.get("llm_trend_forecast") or "",           # K: Прогноз трендовости
             ", ".join(keyso_data.get("similar", [])) if isinstance(keyso_data.get("similar"), list) else str(keyso_data.get("similar", "")),  # L: Похожие запросы
-            analysis.get("llm_merged_with", ""),                # M: Объединить с
-            news.get("status", "new"),                          # N: Статус
-            news.get("plain_text", "")[:1000],                  # O: Plain Text
+            analysis.get("llm_merged_with") or "",              # M: Объединить с
+            news.get("status", "new") or "new",                 # N: Статус
+            (news.get("plain_text") or "")[:1000],              # O: Plain Text
         ]
 
         sheet.append_row(row, value_input_option="USER_ENTERED", table_range="A1")
@@ -205,47 +218,37 @@ def write_ready_row(news: dict, analysis: dict, rewrite: dict) -> int | None:
                 logger.info("Skipped duplicate in Ready: %s", news_url[:80])
                 return -1
 
-        keyso_data = {}
-        trends_data = {}
-        if analysis:
-            try:
-                keyso_data = json.loads(analysis.get("keyso_data", "{}"))
-            except Exception:
-                pass
-            try:
-                trends_data = json.loads(analysis.get("trends_data", "{}"))
-            except Exception:
-                pass
+        keyso_data = _safe_json_loads(analysis.get("keyso_data") if analysis else None, {})
+        trends_data = _safe_json_loads(analysis.get("trends_data") if analysis else None, {})
 
         tags = ""
         try:
-            # Prefer tags from rewrite (LLM), fallback to analysis
             rewrite_tags = rewrite.get("tags", [])
             if rewrite_tags and isinstance(rewrite_tags, list):
                 tags = ", ".join(rewrite_tags)
             elif analysis:
-                tags_list = json.loads(analysis.get("tags", "[]"))
+                tags_list = _safe_json_loads(analysis.get("tags"), [])
                 tags = ", ".join(tags_list) if isinstance(tags_list, list) else str(tags_list)
         except Exception:
             pass
 
         row = [
-            news.get("parsed_at", ""),                               # A: Дата
-            news.get("source", ""),                                  # B: Источник
-            news.get("title", ""),                                   # C: Оригинал заголовок
-            rewrite.get("title", ""),                                # D: Рерайт заголовок
-            rewrite.get("text", "")[:5000],                          # E: Рерайт текст
-            rewrite.get("seo_title", rewrite.get("meta_title", "")),   # F: Meta Title
-            rewrite.get("seo_description", rewrite.get("meta_description", "")),  # G: Meta Description
+            news.get("parsed_at", "") or "",                         # A: Дата
+            news.get("source", "") or "",                            # B: Источник
+            news.get("title", "") or "",                             # C: Оригинал заголовок
+            rewrite.get("title", "") or "",                          # D: Рерайт заголовок
+            (rewrite.get("text", "") or "")[:5000],                  # E: Рерайт текст
+            rewrite.get("seo_title", rewrite.get("meta_title", "")) or "",  # F: Meta Title
+            rewrite.get("seo_description", rewrite.get("meta_description", "")) or "",  # G: Meta Description
             tags,                                                    # H: Теги
             str(analysis.get("total_score", "") if analysis else ""),  # I: Скор
             str(analysis.get("viral_score", "") if analysis else ""),  # J: Вирал
             _format_viral_triggers(analysis),                        # K: Вирал триггеры
             str(keyso_data.get("freq", "")),                         # L: Keys.so частота
             str(trends_data.get("RU", "")),                          # M: Тренды RU
-            analysis.get("llm_recommendation", "") if analysis else "",  # N: LLM рекомендация
-            analysis.get("llm_trend_forecast", "") if analysis else "",  # O: Прогноз
-            news.get("url", ""),                                     # P: URL оригинала
+            (analysis.get("llm_recommendation") or "") if analysis else "",  # N: LLM рекомендация
+            (analysis.get("llm_trend_forecast") or "") if analysis else "",  # O: Прогноз
+            news.get("url", "") or "",                               # P: URL оригинала
         ]
 
         ws.append_row(row, value_input_option="USER_ENTERED", table_range="A1")

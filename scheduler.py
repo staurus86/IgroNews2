@@ -496,25 +496,46 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
 def _build_check_result_from_analysis(analysis: dict) -> dict:
     """Собирает check_result из сохранённого news_analysis (для уже проскоренных)."""
     import json as _json
-    checks = {}
-    for name in ("quality", "relevance", "freshness", "viral"):
-        score_key = f"{name}_score"
-        checks[name] = {"score": analysis.get(score_key, 0), "pass": True}
 
-    tags = []
-    try:
-        tags = _json.loads(analysis.get("tags", "[]"))
-    except Exception:
-        pass
+    def _safe_loads(val, default):
+        if val is None or val == "":
+            return default
+        if isinstance(val, (dict, list)):
+            return val
+        try:
+            return _json.loads(val)
+        except (ValueError, TypeError):
+            return default
 
-    sentiment = {"label": analysis.get("sentiment_label", "neutral"), "score": 0}
-    momentum = {"score": analysis.get("momentum_score", 0), "level": "none"}
-    headline = {"score": analysis.get("headline_score", 0)}
-    game_entities = []
-    try:
-        game_entities = _json.loads(analysis.get("entities", "[]"))
-    except Exception:
-        pass
+    # Viral triggers from viral_data
+    viral_triggers = _safe_loads(analysis.get("viral_data"), [])
+
+    checks = {
+        "quality": {"score": analysis.get("quality_score", 0), "pass": True},
+        "relevance": {"score": analysis.get("relevance_score", 0), "pass": True},
+        "freshness": {
+            "score": analysis.get("freshness_score", 0) if analysis.get("freshness_score") else 0,
+            "pass": True,
+            "age_hours": analysis.get("freshness_hours", -1),
+            "status": analysis.get("freshness_status", ""),
+        },
+        "viral": {
+            "score": analysis.get("viral_score", 0),
+            "pass": True,
+            "level": analysis.get("viral_level", ""),
+            "triggers": viral_triggers if isinstance(viral_triggers, list) else [],
+        },
+    }
+
+    # tags_data (not "tags") is the DB column name
+    tags = _safe_loads(analysis.get("tags_data") or analysis.get("tags"), [])
+
+    sentiment = {"label": analysis.get("sentiment_label", "neutral") or "neutral", "score": 0}
+    momentum = {"score": analysis.get("momentum_score", 0) or 0, "level": "none"}
+    headline = {"score": analysis.get("headline_score", 0) or 0}
+
+    # entity_names (not "entities") is the DB column name
+    game_entities = _safe_loads(analysis.get("entity_names") or analysis.get("entities"), [])
 
     return {
         "checks": checks,
@@ -523,7 +544,7 @@ def _build_check_result_from_analysis(analysis: dict) -> dict:
         "momentum": momentum,
         "headline": headline,
         "game_entities": game_entities,
-        "total_score": analysis.get("total_score", 0),
+        "total_score": analysis.get("total_score", 0) or 0,
     }
 
 
@@ -578,16 +599,24 @@ def run_no_llm_pipeline(news_ids: list[str], task_ids: list[str]):
             _update_task(task_id, "running", {"stage": "exporting", "score": total_score})
             sheet_row = write_not_ready_row(news, check_result)
 
-            # Set status to moderation
-            update_news_status(news_id, "moderation")
+            if sheet_row is None:
+                _update_task(task_id, "error", {"stage": "exporting", "error": "Sheets write failed", "score": total_score})
+            elif sheet_row == -1:
+                _update_task(task_id, "skipped", {"stage": "exporting", "reason": "duplicate in Sheets", "score": total_score})
+            else:
+                _update_task(task_id, "done", {
+                    "stage": "complete",
+                    "score": total_score,
+                    "sheet_row": sheet_row,
+                    "destination": "NotReady",
+                })
 
-            _update_task(task_id, "done", {
-                "stage": "complete",
-                "score": total_score,
-                "sheet_row": sheet_row,
-                "destination": "NotReady",
-            })
+            # Set status to moderation regardless of Sheets result
+            update_news_status(news_id, "moderation")
             logger.info("No-LLM complete: %s → NotReady row %s, status=moderation", news.get("title", "")[:50], sheet_row)
+
+            # Rate limit for Sheets API (60 req/min)
+            time.sleep(1.5)
 
         except Exception as e:
             logger.error("No-LLM pipeline error for %s: %s", news_id, e)

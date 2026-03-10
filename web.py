@@ -1173,28 +1173,40 @@ async function login() {
             task_ids.append(tid)
         cur2.close()
 
-        # Process in background
+        # Process in background with rate limiting
         import threading
+        import time as _time
         def _bg_export(ids, tids):
             from storage.sheets import write_news_row
             from scheduler import _update_task, _fetch_news_by_id, _fetch_analysis_by_id
-            for nid, tid in zip(ids, tids):
+            ok_count = 0
+            skip_count = 0
+            err_count = 0
+            for i, (nid, tid) in enumerate(zip(ids, tids)):
                 try:
-                    _update_task(tid, "running", {"stage": "exporting"})
+                    _update_task(tid, "running", {"stage": "exporting", "progress": f"{i+1}/{len(ids)}"})
                     news = _fetch_news_by_id(nid)
                     analysis = _fetch_analysis_by_id(nid)
                     if not news:
                         _update_task(tid, "error", {"error": "News not found"})
+                        err_count += 1
                         continue
                     sheet_row = write_news_row(news, analysis or {})
                     if sheet_row and sheet_row > 0:
                         _update_task(tid, "done", {"sheet_row": sheet_row})
+                        ok_count += 1
                     elif sheet_row == -1:
                         _update_task(tid, "skipped", {"reason": "duplicate in Sheets"})
+                        skip_count += 1
                     else:
-                        _update_task(tid, "error", {"error": "Sheets write failed"})
+                        _update_task(tid, "error", {"error": "Sheets write returned None"})
+                        err_count += 1
                 except Exception as e:
                     _update_task(tid, "error", {"error": str(e)[:500]})
+                    err_count += 1
+                # Rate limit: ~1.5 sec between writes to stay under Google Sheets 60 req/min
+                _time.sleep(1.5)
+            logger.info("Mass export done: %d ok, %d skipped, %d errors out of %d", ok_count, skip_count, err_count, len(ids))
 
         threading.Thread(target=_bg_export, args=(list(news_ids), list(task_ids)), daemon=True).start()
         self._json({"status": "ok", "queued": len(news_ids), "task_ids": task_ids})
@@ -3241,8 +3253,10 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <option value="" selected>Активные</option>
         <option value="new">Новые</option>
         <option value="in_review">На проверке</option>
+        <option value="moderation">Модерация</option>
         <option value="approved">Одобренные</option>
         <option value="processed">Обработанные</option>
+        <option value="ready">Готовые</option>
         <option value="duplicate">Дубли</option>
         <option value="rejected">Отклонённые</option>
       </select>
@@ -6883,8 +6897,8 @@ async function loadEditorial(page) {
 
   // Render stats
   const statsEl = document.getElementById('ed-stats');
-  const sColors = {new:'#ffad1f',in_review:'#1da1f2',approved:'#17bf63',processed:'#794bc4',duplicate:'#657786',rejected:'#e0245e'};
-  const sLabels = {new:'Новые',in_review:'Проверка',approved:'Одобрены',processed:'Обработаны',duplicate:'Дубли',rejected:'Отклонены'};
+  const sColors = {new:'#ffad1f',in_review:'#1da1f2',moderation:'#f5a623',approved:'#17bf63',processed:'#794bc4',duplicate:'#657786',rejected:'#e0245e',ready:'#17bf63'};
+  const sLabels = {new:'Новые',in_review:'Проверка',moderation:'Модерация',approved:'Одобрены',processed:'Обработаны',duplicate:'Дубли',rejected:'Отклонены',ready:'Готовы'};
   const totalAll = Object.values(stats).reduce((a,b) => a + (b||0), 0);
   _edTotalAll = totalAll;
   let statsHtml = `<div class="stat ${!status?'active-filter':''}" onclick="document.getElementById('ed-status').value='';loadEditorial(0)">
@@ -6937,8 +6951,8 @@ function renderEdTable() {
   tbody.innerHTML = data.map(n => {
     const sc = n.total_score || 0;
     const scColor = sc >= 70 ? '#17bf63' : sc >= 40 ? '#ffad1f' : '#e0245e';
-    const stColor = {new:'#ffad1f',in_review:'#1da1f2',approved:'#17bf63',processed:'#794bc4',duplicate:'#657786',rejected:'#e0245e'}[n.status] || '#8899a6';
-    const stLabel = {new:'Новая',in_review:'Проверка',approved:'Одобрена',processed:'Обработана',duplicate:'Дубль',rejected:'Отклонена'}[n.status] || n.status;
+    const stColor = {new:'#ffad1f',in_review:'#1da1f2',moderation:'#f5a623',approved:'#17bf63',processed:'#794bc4',duplicate:'#657786',rejected:'#e0245e',ready:'#17bf63'}[n.status] || '#8899a6';
+    const stLabel = {new:'Новая',in_review:'Проверка',moderation:'Модерация',approved:'Одобрена',processed:'Обработана',duplicate:'Дубль',rejected:'Отклонена',ready:'Готова'}[n.status] || n.status;
 
     // Viral
     const vl = n.viral_level || '';
