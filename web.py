@@ -616,13 +616,16 @@ async function login() {
         import config
         return {
             "llm_model": config.LLM_MODEL,
-            "keyso_region": config.KEYSO_REGION,
+            "keyso_region": getattr(config, "KEYSO_REGION", "ru"),
             "regions": config.REGIONS,
             "sheets_id": config.GOOGLE_SHEETS_ID,
             "sheets_tab": config.SHEETS_TAB,
             "openai_key_set": bool(config.OPENAI_API_KEY),
             "keyso_key_set": bool(config.KEYSO_API_KEY),
             "google_sa_set": bool(config.GOOGLE_SERVICE_ACCOUNT_JSON),
+            "auto_approve_threshold": getattr(config, "AUTO_APPROVE_THRESHOLD", 70),
+            "auto_rewrite_on_publish_now": getattr(config, "AUTO_REWRITE_ON_PUBLISH_NOW", True),
+            "auto_rewrite_style": getattr(config, "AUTO_REWRITE_STYLE", "news"),
         }
 
     # --- Actions ---
@@ -730,6 +733,15 @@ async function login() {
             config.KEYSO_REGION = body["keyso_region"]
         if "sheets_tab" in body:
             config.SHEETS_TAB = body["sheets_tab"]
+        if "auto_approve_threshold" in body:
+            try:
+                config.AUTO_APPROVE_THRESHOLD = int(body["auto_approve_threshold"])
+            except (ValueError, TypeError):
+                pass
+        if "auto_rewrite_on_publish_now" in body:
+            config.AUTO_REWRITE_ON_PUBLISH_NOW = bool(body["auto_rewrite_on_publish_now"])
+        if "auto_rewrite_style" in body:
+            config.AUTO_REWRITE_STYLE = body["auto_rewrite_style"]
         self._json({"status": "ok"})
 
     def _test_llm(self, body):
@@ -3759,6 +3771,19 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           <div class="form-group"><label>Регион Keys.so</label><input id="set-keyso-region"></div>
           <div class="form-group"><label>Название вкладки Sheets</label><input id="set-sheets-tab"></div>
           <button class="btn btn-primary" onclick="saveSettings()">Сохранить</button>
+          <hr style="border-color:#38444d;margin:15px 0">
+          <h3 style="margin-bottom:10px">Автоматизация</h3>
+          <div class="form-group"><label>Порог авто-одобрения (0 = выкл)</label><input type="number" id="set-auto-approve" min="0" max="100" value="70"></div>
+          <div class="form-group"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="set-auto-rewrite" checked> Авто-рерайт при LLM "publish_now"</label></div>
+          <div class="form-group"><label>Стиль авто-рерайта</label>
+            <select id="set-auto-rewrite-style">
+              <option value="news">news</option>
+              <option value="review">review</option>
+              <option value="guide">guide</option>
+              <option value="editorial">editorial</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" onclick="saveSettings()">Сохранить</button>
         </div>
         <div class="card">
           <h2>Статус API</h2>
@@ -4793,6 +4818,9 @@ async function loadSettings() {
   document.getElementById('set-model').value = s.llm_model || '';
   document.getElementById('set-keyso-region').value = s.keyso_region || '';
   document.getElementById('set-sheets-tab').value = s.sheets_tab || '';
+  document.getElementById('set-auto-approve').value = s.auto_approve_threshold ?? 70;
+  document.getElementById('set-auto-rewrite').checked = s.auto_rewrite_on_publish_now !== false;
+  document.getElementById('set-auto-rewrite-style').value = s.auto_rewrite_style || 'news';
   document.getElementById('api-status').innerHTML =
     `<p style="margin:8px 0">OpenAI API: ${s.openai_key_set ? '<span style="color:#17bf63">Connected</span>' : '<span style="color:#e0245e">Not set</span>'}</p>` +
     `<p style="margin:8px 0">Keys.so API: ${s.keyso_key_set ? '<span style="color:#17bf63">Connected</span>' : '<span style="color:#e0245e">Not set</span>'}</p>` +
@@ -4805,6 +4833,9 @@ async function saveSettings() {
     llm_model: document.getElementById('set-model').value,
     keyso_region: document.getElementById('set-keyso-region').value,
     sheets_tab: document.getElementById('set-sheets-tab').value,
+    auto_approve_threshold: parseInt(document.getElementById('set-auto-approve').value) || 0,
+    auto_rewrite_on_publish_now: document.getElementById('set-auto-rewrite').checked,
+    auto_rewrite_style: document.getElementById('set-auto-rewrite-style').value,
   });
   toast('Настройки сохранены');
 }

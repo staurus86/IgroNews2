@@ -19,6 +19,15 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///news.db")
 # LLM
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
 
+# Automation thresholds
+AUTO_APPROVE_THRESHOLD = int(os.getenv("AUTO_APPROVE_THRESHOLD", "70"))
+AUTO_REWRITE_ON_PUBLISH_NOW = os.getenv("AUTO_REWRITE_ON_PUBLISH_NOW", "true").lower() == "true"
+AUTO_REWRITE_STYLE = os.getenv("AUTO_REWRITE_STYLE", "news")
+
+# Keys.so
+KEYSO_REGION = os.getenv("KEYSO_REGION", "ru")
+KEYSO_BASE_URL = "https://api.keys.so/api/v2"
+
 # Google Trends regions
 REGIONS = ["RU", "US", "GB", "DE"]
 
@@ -42,7 +51,3 @@ SOURCES = [
     {"name": "iXBT.games",       "type": "html", "url": "https://ixbt.games/news",                    "interval": 30, "selector": "a[href*='/news/']", "title_selector": "h3", "url_pattern": r"/news/\d{4}/\d{2}/\d{2}/"},
     {"name": "VGTimes",          "type": "html", "url": "https://vgtimes.ru/news/",                    "interval": 30, "selector": "a[href*='.html']", "title_selector": "", "url_pattern": r"/\d+-.*\.html"},
 ]
-
-# Keys.so
-KEYSO_BASE_URL = "https://api.keys.so"
-KEYSO_REGION = "msk"

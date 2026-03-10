@@ -36,7 +36,11 @@ def parse_sources(interval_min: int):
 
 
 def _auto_review_new():
-    """Автоматическая проверка новых новостей (бесплатно, всё локальное)."""
+    """Автоматическая проверка новых новостей (бесплатно, всё локальное).
+
+    После ревью автоматически одобряет новости со скором >= порога
+    и запускает обогащение в фоне.
+    """
     try:
         from storage.database import get_connection, _is_postgres
         conn = get_connection()
@@ -60,8 +64,160 @@ def _auto_review_new():
         reviewed = len(result.get("results", []))
         dupes = sum(1 for r in result.get("results", []) if r.get("is_duplicate"))
         logger.info("Auto-review: %d checked, %d duplicates", reviewed, dupes)
+
+        # Auto-approve high-score news
+        _auto_approve_high_score(result.get("results", []))
+
     except Exception as e:
         logger.error("Auto-review error: %s", e)
+
+
+def _auto_approve_high_score(results: list):
+    """Автоматически одобряет новости с высоким скором и запускает обогащение."""
+    import config
+    threshold = getattr(config, "AUTO_APPROVE_THRESHOLD", 70)
+    if threshold <= 0:
+        return  # Auto-approve disabled
+
+    auto_ids = []
+    for r in results:
+        score = r.get("total_score", 0)
+        is_dup = r.get("is_duplicate", False)
+        is_rejected = r.get("auto_rejected", False)
+        if score >= threshold and not is_dup and not is_rejected:
+            auto_ids.append(r["id"])
+
+    if not auto_ids:
+        return
+
+    from checks.pipeline import approve_for_enrichment
+    from checks.feedback import record_decision
+    approve_for_enrichment(auto_ids)
+    for nid in auto_ids:
+        try:
+            record_decision(nid, "auto_approved")
+        except Exception:
+            pass
+    logger.info("Auto-approved %d news (threshold=%d)", len(auto_ids), threshold)
+
+    # Background enrichment
+    import threading
+    def _bg_enrich(ids):
+        for nid in ids:
+            try:
+                result = _process_single_news(nid)
+                # Auto-rewrite if LLM recommends "publish_now"
+                _auto_rewrite_if_recommended(nid, result)
+            except Exception as e:
+                logger.warning("Auto-enrich failed for %s: %s", nid, e)
+    threading.Thread(target=_bg_enrich, args=(list(auto_ids),), daemon=True).start()
+
+
+def _auto_rewrite_if_recommended(news_id: str, enrich_result: dict):
+    """Если LLM рекомендовал publish_now — автоматически ставит в очередь на рерайт."""
+    import config
+    if not getattr(config, "AUTO_REWRITE_ON_PUBLISH_NOW", True):
+        return
+
+    recommendation = enrich_result.get("recommendation", "")
+    if recommendation != "publish_now":
+        return
+
+    style = getattr(config, "AUTO_REWRITE_STYLE", "news")
+
+    import uuid
+    from datetime import datetime, timezone
+    from storage.database import get_connection, _is_postgres
+
+    conn = get_connection()
+    cur = conn.cursor()
+    ph = "%s" if _is_postgres() else "?"
+    now = datetime.now(timezone.utc).isoformat()
+
+    try:
+        cur.execute(f"SELECT title FROM news WHERE id = {ph}", (news_id,))
+        row = cur.fetchone()
+        if not row:
+            return
+        title = row[0] if _is_postgres() else row["title"]
+        tid = str(uuid.uuid4())[:12]
+        cur.execute(f"""INSERT INTO task_queue (id, task_type, news_id, news_title, style, status, created_at, updated_at)
+            VALUES ({','.join([ph]*8)})""",
+            (tid, "rewrite", news_id, title[:200], style, "pending", now, now))
+        if not _is_postgres():
+            conn.commit()
+        logger.info("Auto-queued rewrite for %s (publish_now)", news_id)
+    except Exception as e:
+        logger.warning("Auto-rewrite queue failed for %s: %s", news_id, e)
+    finally:
+        cur.close()
+
+    # Process the rewrite in background
+    try:
+        _process_auto_rewrite(tid)
+    except Exception as e:
+        logger.warning("Auto-rewrite processing failed for %s: %s", tid, e)
+
+
+def _process_auto_rewrite(task_id: str):
+    """Обрабатывает одну задачу рерайта из очереди."""
+    import json as _json
+    from apis.llm import rewrite_news
+    from storage.database import get_connection, _is_postgres
+
+    conn = get_connection()
+    cur = conn.cursor()
+    ph = "%s" if _is_postgres() else "?"
+
+    try:
+        cur.execute(f"SELECT * FROM task_queue WHERE id = {ph}", (task_id,))
+        if _is_postgres():
+            cols = [d[0] for d in cur.description]
+            task = dict(zip(cols, cur.fetchone()))
+        else:
+            task = dict(cur.fetchone())
+
+        nid = task["news_id"]
+        style = task.get("style", "news")
+
+        # Get news content
+        cur.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
+        if _is_postgres():
+            cols2 = [d[0] for d in cur.description]
+            news = dict(zip(cols2, cur.fetchone()))
+        else:
+            news = dict(cur.fetchone())
+
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        cur.execute(f"UPDATE task_queue SET status = 'running', updated_at = {ph} WHERE id = {ph}", (now, task_id))
+        if not _is_postgres():
+            conn.commit()
+
+        result = rewrite_news(
+            title=news.get("title", ""),
+            text=news.get("plain_text", ""),
+            style=style,
+            language="русский",
+        )
+
+        now = datetime.now(timezone.utc).isoformat()
+        result_json = _json.dumps(result, ensure_ascii=False) if result else "{}"
+        cur.execute(f"UPDATE task_queue SET status = 'done', result = {ph}, updated_at = {ph} WHERE id = {ph}",
+                    (result_json, now, task_id))
+        if not _is_postgres():
+            conn.commit()
+        logger.info("Auto-rewrite done for task %s", task_id)
+    except Exception as e:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        cur.execute(f"UPDATE task_queue SET status = 'error', result = {ph}, updated_at = {ph} WHERE id = {ph}",
+                    (str(e)[:500], now, task_id))
+        if not _is_postgres():
+            conn.commit()
+        raise
+    finally:
+        cur.close()
 
 
 def _process_single_news(news_id: str) -> dict:
