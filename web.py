@@ -1417,10 +1417,31 @@ async function login() {
         self._json({"status": "ok", "queued": len(news_ids), "task_ids": task_ids})
 
     def _pipeline_stop(self, body):
-        """Остановка текущего пайплайна."""
+        """Остановка текущего пайплайна + отмена pending задач в БД."""
         from scheduler import pipeline_stop
         pipeline_stop()
-        self._json({"status": "ok", "message": "Пайплайн остановлен"})
+        # Cancel all pending/running pipeline tasks in DB
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat()
+            if _is_postgres():
+                cur.execute(
+                    "UPDATE task_queue SET status = 'cancelled', result = %s, updated_at = %s "
+                    "WHERE status IN ('pending', 'running') AND task_type IN ('full_auto', 'no_llm')",
+                    ('{"reason":"Остановлено пользователем"}', now))
+                cancelled = cur.rowcount
+            else:
+                cur.execute(
+                    "UPDATE task_queue SET status = 'cancelled', result = ?, updated_at = ? "
+                    "WHERE status IN ('pending', 'running') AND task_type IN ('full_auto', 'no_llm')",
+                    ('{"reason":"Остановлено пользователем"}', now))
+                cancelled = cur.rowcount
+                conn.commit()
+        finally:
+            cur.close()
+        self._json({"status": "ok", "message": f"Остановлено, отменено задач: {cancelled}"})
 
     def _get_pipeline_status(self):
         """Возвращает текущий статус пайплайна (running tasks)."""

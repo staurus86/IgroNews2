@@ -265,51 +265,65 @@ def write_not_ready_row(news: dict, check_results: dict) -> int | None:
     tab_name = getattr(config, "SHEETS_TAB_NOT_READY", "NotReady")
     ws = _get_or_create_worksheet(tab_name, HEADERS_NOT_READY)
     if not ws:
+        logger.error("NotReady: worksheet not available")
         return None
 
     try:
         # Dedup by URL
-        news_url = news.get("url", "")
+        news_url = news.get("url") or ""
         if news_url:
-            existing = ws.col_values(15)  # column O = URL (shifted by viral triggers col)
+            existing = ws.col_values(15)  # column O = URL
             if news_url in existing:
                 logger.info("Skipped duplicate in NotReady: %s", news_url[:80])
                 return -1
 
-        checks = check_results.get("checks", {})
-        tags = check_results.get("tags", [])
-        tags_str = ", ".join(tags) if isinstance(tags, list) else str(tags)
+        checks = check_results.get("checks") or {}
 
-        entities = check_results.get("game_entities", [])
+        # Tags: может быть list[str], list[dict], или JSON-строка
+        tags_raw = check_results.get("tags") or []
+        if isinstance(tags_raw, str):
+            tags_raw = _safe_json_loads(tags_raw, [])
+        tags_parts = []
+        for t in (tags_raw if isinstance(tags_raw, list) else []):
+            if isinstance(t, dict):
+                tags_parts.append(t.get("label") or t.get("id") or "")
+            elif isinstance(t, str):
+                tags_parts.append(t)
+        tags_str = ", ".join(filter(None, tags_parts))
+
+        # Entities: может быть list[dict], list[str], или JSON-строка
+        entities_raw = check_results.get("game_entities") or []
+        if isinstance(entities_raw, str):
+            entities_raw = _safe_json_loads(entities_raw, [])
         ent_names = []
-        for e in (entities or []):
+        for e in (entities_raw if isinstance(entities_raw, list) else []):
             if isinstance(e, dict):
-                ent_names.append(e.get("name", ""))
+                ent_names.append(e.get("name") or "")
             elif isinstance(e, str):
                 ent_names.append(e)
-        entities_str = ", ".join(ent_names[:10])
+        entities_str = ", ".join(filter(None, ent_names[:10]))
 
-        freshness = checks.get("freshness", {})
+        freshness = checks.get("freshness") or {}
         age_h = freshness.get("age_hours", -1)
         age_str = f"{age_h:.1f}" if isinstance(age_h, (int, float)) and age_h >= 0 else "?"
 
         row = [
-            news.get("parsed_at", ""),                                 # A: Дата
-            news.get("source", ""),                                    # B: Источник
-            news.get("title", ""),                                     # C: Заголовок
-            str(check_results.get("total_score", 0)),                  # D: Скор
-            str(checks.get("quality", {}).get("score", 0)),            # E: Качество
-            str(checks.get("relevance", {}).get("score", 0)),          # F: Релевантность
+            news.get("parsed_at") or "",                               # A: Дата
+            news.get("source") or "",                                  # B: Источник
+            news.get("title") or "",                                   # C: Заголовок
+            str(check_results.get("total_score") or 0),                # D: Скор
+            str((checks.get("quality") or {}).get("score", 0)),        # E: Качество
+            str((checks.get("relevance") or {}).get("score", 0)),      # F: Релевантность
             age_str,                                                   # G: Свежесть (ч)
-            str(checks.get("viral", {}).get("score", 0)),              # H: Вирал
+            str((checks.get("viral") or {}).get("score", 0)),          # H: Вирал
             _format_viral_triggers_from_checks(checks),                # I: Вирал триггеры
-            check_results.get("sentiment", {}).get("label", "neutral"),  # J: Тон
+            (check_results.get("sentiment") or {}).get("label", "neutral"),  # J: Тон
             tags_str,                                                  # K: Теги
             entities_str,                                              # L: Entities
-            str(check_results.get("headline", {}).get("score", 0)),    # M: Headline скор
-            str(check_results.get("momentum", {}).get("score", 0)),    # N: Momentum
-            news.get("url", ""),                                       # O: URL
-            (news.get("description", "") or "")[:500],                 # P: Описание
+            str((check_results.get("headline") or {}).get("score", 0)),  # M: Headline скор
+            str((check_results.get("momentum") or {}).get("score", 0)),  # N: Momentum
+            news_url,                                                  # O: URL
+            (news.get("description") or "")[:500],                     # P: Описание
         ]
 
         ws.append_row(row, value_input_option="USER_ENTERED", table_range="A1")
@@ -317,5 +331,5 @@ def write_not_ready_row(news: dict, check_results: dict) -> int | None:
         logger.info("Written to NotReady row %d: %s", row_num, news.get("title", "")[:50])
         return row_num
     except Exception as e:
-        logger.error("NotReady sheet write error: %s", e)
+        logger.error("NotReady sheet write error for '%s': %s", news.get("title", "")[:50], e, exc_info=True)
         return None
