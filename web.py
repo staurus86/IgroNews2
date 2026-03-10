@@ -2563,7 +2563,7 @@ async function login() {
             now = datetime.now(timezone.utc).isoformat()
             count = 0
             for tid in task_ids:
-                cur.execute(f"UPDATE task_queue SET status = 'pending', result = '', updated_at = {ph} WHERE id = {ph} AND status IN ('error', 'cancelled')", (now, tid))
+                cur.execute(f"UPDATE task_queue SET status = 'pending', result = '', updated_at = {ph} WHERE id = {ph} AND status IN ('error', 'cancelled', 'skipped', 'done')", (now, tid))
                 count += cur.rowcount if hasattr(cur, 'rowcount') else 1
             if not _is_postgres():
                 conn.commit()
@@ -4777,7 +4777,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <div style="margin-top:8px;display:flex;gap:8px">
         <span id="queue-selected-count" style="color:#8899a6;font-size:0.85em;line-height:28px"></span>
         <button class="btn btn-sm btn-danger" onclick="cancelSelectedQueue()">Отменить выбранные</button>
-        <button class="btn btn-sm btn-primary" onclick="retrySelectedQueue()">Повторить ошибки</button>
+        <button class="btn btn-sm btn-primary" onclick="retrySelectedQueue()">&#128260; Повторить выбранные</button>
       </div>
     </div>
 
@@ -6357,7 +6357,7 @@ function renderQueueTable() {
 
   document.getElementById('queue-table').innerHTML = tasks.map(t => {
     const canCancel = t.status === 'pending';
-    const canRetry = t.status === 'error' || t.status === 'cancelled';
+    const canRetry = ['error', 'cancelled', 'skipped', 'done'].includes(t.status);
     const canCheck = canCancel || canRetry;
     const timeAgo = t.created_at ? new Date(t.created_at).toLocaleString('ru') : '';
     let resultText = '';
@@ -6431,8 +6431,8 @@ async function retryQueueTask(id) {
 }
 
 async function retrySelectedQueue() {
-  const checks = [...document.querySelectorAll('.queue-check:checked')].filter(c => c.dataset.status === 'error' || c.dataset.status === 'cancelled');
-  if (!checks.length) { toast('Выберите задачи с ошибками', true); return; }
+  const checks = [...document.querySelectorAll('.queue-check:checked')];
+  if (!checks.length) { toast('Выберите задачи', true); return; }
   const ids = checks.map(c => c.value);
   const r = await api('/api/queue/retry', {task_ids: ids});
   if (r.status === 'ok') { toast(`Перезапущено: ${r.retried}`); loadQueue(); }
