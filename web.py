@@ -2427,6 +2427,14 @@ header { background:linear-gradient(135deg,#192734 0%,#1a3a4a 100%); padding:10p
 .panel.active { display:block; }
 @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
 
+/* Settings sub-tabs */
+.settings-nav { display:flex; gap:0; background:#192734; border-radius:8px; margin-bottom:15px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,0.2); flex-wrap:wrap; }
+.settings-tab { padding:8px 16px; cursor:pointer; color:#8899a6; font-size:0.85em; transition:all .2s; }
+.settings-tab:hover { color:#e1e8ed; background:#22303c; }
+.settings-tab.active { color:#ffad1f; background:#22303c; border-bottom:2px solid #ffad1f; }
+.settings-section { display:none; animation:fadeIn .3s; }
+.settings-section.active { display:block; }
+
 /* Stats */
 .stats { display:flex; gap:12px; margin-bottom:20px; flex-wrap:wrap; }
 .stat { background:#192734; border-radius:10px; padding:15px 20px; min-width:120px; cursor:pointer; transition:all .2s; border:1px solid transparent; }
@@ -2590,18 +2598,12 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div class="tab active" data-tab="dashboard">Дашборд</div>
     <div class="tab" data-tab="review">Проверка <span id="review-badge" class="badge badge-new" style="display:none">0</span></div>
     <div class="tab" data-tab="news">Новости</div>
-    <div class="tab" data-tab="sources">Источники</div>
-    <div class="tab" data-tab="prompts">Промпты</div>
-    <div class="tab" data-tab="tools">Инструменты</div>
     <div class="tab" data-tab="editor">Редактор</div>
     <div class="tab" data-tab="articles">Статьи <span id="articles-badge" class="badge badge-new" style="display:none">0</span></div>
-    <div class="tab" data-tab="queue">Очередь <span id="queue-badge" class="badge badge-new" style="display:none">0</span></div>
     <div class="tab" data-tab="viral">Виральность</div>
     <div class="tab" data-tab="analytics">Аналитика</div>
     <div class="tab" data-tab="health">Здоровье</div>
-    <div class="tab" data-tab="logs">Логи</div>
-    <div class="tab" data-tab="settings">Настройки</div>
-    <div class="tab" data-tab="users">Пользователи</div>
+    <div class="tab" data-tab="settings">&#9881; Настройки</div>
     <div style="margin-left:auto"><a href="/logout" class="btn btn-secondary btn-sm">Выйти</a></div>
   </div>
 
@@ -3105,42 +3107,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   </div>
 
   <!-- QUEUE -->
-  <div class="panel" id="panel-queue">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-      <h2>Очередь задач</h2>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <select id="queue-filter-type" onchange="renderQueueTable()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
-          <option value="">Все типы</option>
-          <option value="rewrite">Переписка</option>
-          <option value="sheets">Sheets</option>
-        </select>
-        <select id="queue-filter-status" onchange="renderQueueTable()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
-          <option value="">Все статусы</option>
-          <option value="pending">Ожидает</option>
-          <option value="processing">Обработка</option>
-          <option value="done">Готово</option>
-          <option value="error">Ошибка</option>
-          <option value="cancelled">Отменено</option>
-          <option value="skipped">Пропущено</option>
-        </select>
-        <button class="btn btn-sm btn-secondary" onclick="loadQueue()">Обновить</button>
-        <button class="btn btn-sm btn-danger" onclick="cancelAllQueue('')">Отменить все ожидающие</button>
-        <button class="btn btn-sm btn-secondary" onclick="clearDoneQueue()">Очистить завершённые</button>
-      </div>
-    </div>
-    <div style="display:flex;gap:16px;margin-bottom:12px" id="queue-stats"></div>
-    <table>
-      <thead><tr>
-        <th style="width:40px"><input type="checkbox" onchange="toggleAllQueue(this)" style="width:16px;height:16px"></th>
-        <th>Тип</th><th>Новость</th><th>Стиль</th><th>Статус</th><th>Результат</th><th>Создано</th><th>Действия</th>
-      </tr></thead>
-      <tbody id="queue-table"></tbody>
-    </table>
-    <div style="margin-top:8px;display:flex;gap:8px">
-      <span id="queue-selected-count" style="color:#8899a6;font-size:0.85em;line-height:28px"></span>
-      <button class="btn btn-sm btn-danger" onclick="cancelSelectedQueue()">Отменить выбранные</button>
-    </div>
-  </div>
+  <!-- queue panel moved to settings sub-tab -->
 
   <!-- ANALYTICS -->
   <!-- VIRAL -->
@@ -3406,162 +3373,216 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   </div>
 
   <!-- LOGS -->
-  <div class="panel" id="panel-logs">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-      <h2>Логи системы</h2>
-      <div style="display:flex;gap:8px;align-items:center">
-        <select id="log-level" onchange="loadLogs()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
-          <option value="">Все уровни</option>
-          <option value="ERROR">Ошибки</option>
-          <option value="WARNING">Предупреждения</option>
-          <option value="INFO">Информация</option>
-        </select>
-        <button class="btn btn-sm btn-secondary" onclick="loadLogs()">Обновить</button>
-      </div>
-    </div>
-    <div style="display:flex;gap:16px;margin-bottom:12px" id="api-stats"></div>
-    <div style="background:#192734;border-radius:10px;overflow:hidden;max-height:600px;overflow-y:auto">
-      <table>
-        <thead><tr><th style="width:160px">Время</th><th style="width:70px">Уровень</th><th style="width:140px">Модуль</th><th>Сообщение</th></tr></thead>
-        <tbody id="logs-table"></tbody>
-      </table>
-    </div>
-  </div>
+  <!-- logs, sources, prompts, tools, users panels moved to settings sub-tabs -->
 
-  <!-- SOURCES -->
-  <div class="panel" id="panel-sources">
-    <div class="grid-2">
-      <div class="card">
-        <h2>Активные источники</h2>
-        <table>
-          <thead><tr><th style="width:30px"></th><th>Имя</th><th>Тип</th><th>Статей</th><th>Последний</th><th>URL</th><th>Интервал</th><th>Действия</th></tr></thead>
-          <tbody id="sources-table"></tbody>
-        </table>
-      </div>
-      <div class="card">
-        <h2>Добавить источник</h2>
-        <div class="form-group"><label>Имя</label><input id="src-name" autocomplete="off"></div>
-        <div class="form-group"><label>Тип</label>
-          <select id="src-type" onchange="toggleSrcFields()">
-            <option value="rss">RSS</option><option value="html">HTML</option><option value="dtf">DTF (SPA)</option><option value="sitemap">Sitemap XML</option>
-          </select>
-        </div>
-        <div class="form-group"><label>URL</label><input id="src-url" autocomplete="off"></div>
-        <div class="form-group"><label>Интервал (мин)</label><input type="number" id="src-interval" value="15" autocomplete="off"></div>
-        <div class="form-group" id="src-selector-group" style="display:none"><label>CSS Селектор</label><input id="src-selector" placeholder=".news-item" autocomplete="off"></div>
-        <div class="form-group" id="src-title-sel-group" style="display:none"><label>Title Селектор</label><input id="src-title-selector" placeholder="h3 a" autocomplete="off"></div>
-        <div class="form-group" id="src-url-filter-group" style="display:none"><label>Фильтр URL</label><input id="src-url-filter" placeholder="/news/" autocomplete="off"></div>
-        <button class="btn btn-primary" onclick="addSource()">Добавить</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- PROMPTS -->
-  <div class="panel" id="panel-prompts">
-    <div class="card" style="margin-bottom:15px">
-      <h2>Промпт прогноза трендов</h2>
-      <textarea id="prompt-trend" rows="10"></textarea>
-    </div>
-    <div class="card" style="margin-bottom:15px">
-      <h2>Промпт анализа объединений</h2>
-      <textarea id="prompt-merge" rows="8"></textarea>
-    </div>
-    <div class="card" style="margin-bottom:15px">
-      <h2>Промпт запросов Keys.so</h2>
-      <textarea id="prompt-keyso" rows="8"></textarea>
-    </div>
-    <button class="btn btn-primary" onclick="savePrompts()">Сохранить промпты</button>
-  </div>
-
-  <!-- TOOLS -->
-  <div class="panel" id="panel-tools">
-    <div class="grid-2">
-      <div class="card">
-        <h2>Тест LLM</h2>
-        <div class="form-group"><label>Промпт</label><textarea id="test-llm-prompt" rows="4">Ты аналитик. Ответь JSON: {"test": "ok", "model": "your_model"}</textarea></div>
-        <button class="btn btn-primary" onclick="testLLM()">&#9654; Отправить</button>
-        <pre id="test-llm-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
-      </div>
-      <div class="card">
-        <h2>Тест Keys.so</h2>
-        <div class="form-group"><label>Ключевое слово</label><input id="test-keyso-kw" value="gta 6"></div>
-        <button class="btn btn-primary" onclick="testKeyso()">&#9654; Проверить</button>
-        <pre id="test-keyso-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
-      </div>
-    </div>
-    <div class="card" style="margin-top:15px">
-      <h2>Тест Google Sheets</h2>
-      <button class="btn btn-primary" onclick="testSheets()">Проверить соединение</button>
-      <pre id="test-sheets-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
-    </div>
-    <div class="card" style="margin-top:15px">
-      <h2>Тест парсинга URL</h2>
-      <div class="form-group"><label>URL статьи</label><input id="test-parse-url" placeholder="https://example.com/article" autocomplete="off"></div>
-      <button class="btn btn-primary" onclick="testParse()">Парсить</button>
-      <pre id="test-parse-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
-    </div>
-  </div>
-
-  <!-- USERS -->
-  <div class="panel" id="panel-users">
-    <div class="grid-2">
-      <div class="card">
-        <h2>Пользователи</h2>
-        <table>
-          <thead><tr><th>Логин</th><th>Действия</th></tr></thead>
-          <tbody id="users-table"></tbody>
-        </table>
-      </div>
-      <div class="card">
-        <h2>Добавить пользователя</h2>
-        <div class="form-group"><label>Логин</label><input id="new-username" autocomplete="off"></div>
-        <div class="form-group"><label>Пароль</label><input id="new-password" type="password" autocomplete="new-password"></div>
-        <button class="btn btn-primary" onclick="addUser()">Добавить</button>
-        <hr style="border-color:#38444d;margin:15px 0">
-        <h2>Сменить пароль</h2>
-        <div class="form-group"><label>Пользователь</label>
-          <select id="chpass-user"></select>
-        </div>
-        <div class="form-group"><label>Новый пароль</label><input id="chpass-password" type="password" autocomplete="new-password"></div>
-        <button class="btn btn-warning" onclick="changePassword()">Сменить</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- SETTINGS -->
+  <!-- SETTINGS (unified with sub-tabs) -->
   <div class="panel" id="panel-settings">
-    <div class="grid-2">
-      <div class="card">
-        <h2>Общие</h2>
-        <div class="form-group"><label>Модель LLM</label>
-          <select id="set-model">
-            <option value="anthropic/claude-sonnet-4">Claude Sonnet 4 (anthropic)</option>
-            <option value="openai/gpt-4o-mini">GPT-4o Mini (openai)</option>
-            <option value="openai/gpt-4o">GPT-4o (openai)</option>
-            <option value="google/gemini-2.0-flash-001">Gemini 2.0 Flash (google)</option>
-            <option value="meta-llama/llama-3.1-70b-instruct">Llama 3.1 70B (meta)</option>
-          </select>
+    <div class="settings-nav">
+      <div class="settings-tab active" data-stab="general">Общие</div>
+      <div class="settings-tab" data-stab="sources">Источники</div>
+      <div class="settings-tab" data-stab="prompts">Промпты</div>
+      <div class="settings-tab" data-stab="tools">Инструменты</div>
+      <div class="settings-tab" data-stab="queue">Очередь <span id="queue-badge" class="badge badge-new" style="display:none">0</span></div>
+      <div class="settings-tab" data-stab="logs">Логи</div>
+      <div class="settings-tab" data-stab="users">Пользователи</div>
+    </div>
+
+    <!-- General -->
+    <div class="settings-section active" id="stab-general">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Общие</h2>
+          <div class="form-group"><label>Модель LLM</label>
+            <select id="set-model">
+              <option value="anthropic/claude-sonnet-4">Claude Sonnet 4 (anthropic)</option>
+              <option value="openai/gpt-4o-mini">GPT-4o Mini (openai)</option>
+              <option value="openai/gpt-4o">GPT-4o (openai)</option>
+              <option value="google/gemini-2.0-flash-001">Gemini 2.0 Flash (google)</option>
+              <option value="meta-llama/llama-3.1-70b-instruct">Llama 3.1 70B (meta)</option>
+            </select>
+          </div>
+          <div class="form-group"><label>Регион Keys.so</label><input id="set-keyso-region"></div>
+          <div class="form-group"><label>Название вкладки Sheets</label><input id="set-sheets-tab"></div>
+          <button class="btn btn-primary" onclick="saveSettings()">Сохранить</button>
         </div>
-        <div class="form-group"><label>Регион Keys.so</label><input id="set-keyso-region"></div>
-        <div class="form-group"><label>Название вкладки Sheets</label><input id="set-sheets-tab"></div>
-        <button class="btn btn-primary" onclick="saveSettings()">Сохранить</button>
+        <div class="card">
+          <h2>Статус API</h2>
+          <div id="api-status"></div>
+        </div>
       </div>
-      <div class="card">
-        <h2>Статус API</h2>
-        <div id="api-status"></div>
+      <div class="grid-2" style="margin-top:15px">
+        <div class="card">
+          <h2>База данных</h2>
+          <div id="db-info" style="color:#8899a6;font-size:0.9em">Загрузка...</div>
+        </div>
+        <div class="card">
+          <h2>Быстрые действия</h2>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <button class="btn btn-primary" onclick="runProcess()">&#9654; Обогатить одобренные</button>
+            <button class="btn btn-warning" onclick="reparseAll()">Парсить все источники</button>
+            <button class="btn btn-secondary" onclick="setupHeaders()">Создать заголовки Sheets</button>
+          </div>
+        </div>
       </div>
     </div>
-    <div class="grid-2" style="margin-top:15px">
-      <div class="card">
-        <h2>База данных</h2>
-        <div id="db-info" style="color:#8899a6;font-size:0.9em">Загрузка...</div>
+
+    <!-- Sources (moved from separate tab) -->
+    <div class="settings-section" id="stab-sources">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Активные источники</h2>
+          <table>
+            <thead><tr><th style="width:30px"></th><th>Имя</th><th>Тип</th><th>Статей</th><th>Последний</th><th>URL</th><th>Интервал</th><th>Действия</th></tr></thead>
+            <tbody id="sources-table"></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h2>Добавить источник</h2>
+          <div class="form-group"><label>Имя</label><input id="src-name" autocomplete="off"></div>
+          <div class="form-group"><label>Тип</label>
+            <select id="src-type" onchange="toggleSrcFields()">
+              <option value="rss">RSS</option><option value="html">HTML</option><option value="dtf">DTF (SPA)</option><option value="sitemap">Sitemap XML</option>
+            </select>
+          </div>
+          <div class="form-group"><label>URL</label><input id="src-url" autocomplete="off"></div>
+          <div class="form-group"><label>Интервал (мин)</label><input type="number" id="src-interval" value="15" autocomplete="off"></div>
+          <div class="form-group" id="src-selector-group" style="display:none"><label>CSS Селектор</label><input id="src-selector" placeholder=".news-item" autocomplete="off"></div>
+          <div class="form-group" id="src-title-sel-group" style="display:none"><label>Title Селектор</label><input id="src-title-selector" placeholder="h3 a" autocomplete="off"></div>
+          <div class="form-group" id="src-url-filter-group" style="display:none"><label>Фильтр URL</label><input id="src-url-filter" placeholder="/news/" autocomplete="off"></div>
+          <button class="btn btn-primary" onclick="addSource()">Добавить</button>
+        </div>
       </div>
-      <div class="card">
-        <h2>Быстрые действия</h2>
-        <div style="display:flex;flex-direction:column;gap:8px">
-          <button class="btn btn-primary" onclick="runProcess()">&#9654; Обогатить одобренные</button>
-          <button class="btn btn-warning" onclick="reparseAll()">Парсить все источники</button>
-          <button class="btn btn-secondary" onclick="setupHeaders()">Создать заголовки Sheets</button>
+    </div>
+
+    <!-- Prompts (moved from separate tab) -->
+    <div class="settings-section" id="stab-prompts">
+      <div class="card" style="margin-bottom:15px">
+        <h2>Промпт прогноза трендов</h2>
+        <textarea id="prompt-trend" rows="10"></textarea>
+      </div>
+      <div class="card" style="margin-bottom:15px">
+        <h2>Промпт анализа объединений</h2>
+        <textarea id="prompt-merge" rows="8"></textarea>
+      </div>
+      <div class="card" style="margin-bottom:15px">
+        <h2>Промпт запросов Keys.so</h2>
+        <textarea id="prompt-keyso" rows="8"></textarea>
+      </div>
+      <button class="btn btn-primary" onclick="savePrompts()">Сохранить промпты</button>
+    </div>
+
+    <!-- Tools (moved from separate tab) -->
+    <div class="settings-section" id="stab-tools">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Тест LLM</h2>
+          <div class="form-group"><label>Промпт</label><textarea id="test-llm-prompt" rows="4">Ты аналитик. Ответь JSON: {"test": "ok", "model": "your_model"}</textarea></div>
+          <button class="btn btn-primary" onclick="testLLM()">&#9654; Отправить</button>
+          <pre id="test-llm-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
+        </div>
+        <div class="card">
+          <h2>Тест Keys.so</h2>
+          <div class="form-group"><label>Ключевое слово</label><input id="test-keyso-kw" value="gta 6"></div>
+          <button class="btn btn-primary" onclick="testKeyso()">&#9654; Проверить</button>
+          <pre id="test-keyso-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
+        </div>
+      </div>
+      <div class="card" style="margin-top:15px">
+        <h2>Тест Google Sheets</h2>
+        <button class="btn btn-primary" onclick="testSheets()">Проверить соединение</button>
+        <pre id="test-sheets-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
+      </div>
+      <div class="card" style="margin-top:15px">
+        <h2>Тест парсинга URL</h2>
+        <div class="form-group"><label>URL статьи</label><input id="test-parse-url" placeholder="https://example.com/article" autocomplete="off"></div>
+        <button class="btn btn-primary" onclick="testParse()">Парсить</button>
+        <pre id="test-parse-result" style="margin-top:10px;color:#8899a6;font-size:0.85em;white-space:pre-wrap"></pre>
+      </div>
+    </div>
+
+    <!-- Queue (moved from separate tab) -->
+    <div class="settings-section" id="stab-queue">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+        <h2>Очередь задач</h2>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="queue-filter-type" onchange="renderQueueTable()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+            <option value="">Все типы</option>
+            <option value="rewrite">Переписка</option>
+            <option value="sheets">Sheets</option>
+          </select>
+          <select id="queue-filter-status" onchange="renderQueueTable()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+            <option value="">Все статусы</option>
+            <option value="pending">Ожидает</option>
+            <option value="processing">Обработка</option>
+            <option value="done">Готово</option>
+            <option value="error">Ошибка</option>
+            <option value="cancelled">Отменено</option>
+            <option value="skipped">Пропущено</option>
+          </select>
+          <button class="btn btn-sm btn-secondary" onclick="loadQueue()">Обновить</button>
+          <button class="btn btn-sm btn-danger" onclick="cancelAllQueue('')">Отменить все ожидающие</button>
+          <button class="btn btn-sm btn-secondary" onclick="clearDoneQueue()">Очистить завершённые</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:16px;margin-bottom:12px" id="queue-stats"></div>
+      <table>
+        <thead><tr>
+          <th style="width:40px"><input type="checkbox" onchange="toggleAllQueue(this)" style="width:16px;height:16px"></th>
+          <th>Тип</th><th>Новость</th><th>Стиль</th><th>Статус</th><th>Результат</th><th>Создано</th><th>Действия</th>
+        </tr></thead>
+        <tbody id="queue-table"></tbody>
+      </table>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <span id="queue-selected-count" style="color:#8899a6;font-size:0.85em;line-height:28px"></span>
+        <button class="btn btn-sm btn-danger" onclick="cancelSelectedQueue()">Отменить выбранные</button>
+      </div>
+    </div>
+
+    <!-- Logs (moved from separate tab) -->
+    <div class="settings-section" id="stab-logs">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+        <h2>Логи системы</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="log-level" onchange="loadLogs()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+            <option value="">Все уровни</option>
+            <option value="ERROR">Ошибки</option>
+            <option value="WARNING">Предупреждения</option>
+            <option value="INFO">Информация</option>
+          </select>
+          <button class="btn btn-sm btn-secondary" onclick="loadLogs()">Обновить</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:16px;margin-bottom:12px" id="api-stats"></div>
+      <div style="background:#192734;border-radius:10px;overflow:hidden;max-height:600px;overflow-y:auto">
+        <table>
+          <thead><tr><th style="width:160px">Время</th><th style="width:70px">Уровень</th><th style="width:140px">Модуль</th><th>Сообщение</th></tr></thead>
+          <tbody id="logs-table"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Users (moved from separate tab) -->
+    <div class="settings-section" id="stab-users">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Пользователи</h2>
+          <table>
+            <thead><tr><th>Логин</th><th>Действия</th></tr></thead>
+            <tbody id="users-table"></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h2>Добавить пользователя</h2>
+          <div class="form-group"><label>Логин</label><input id="new-username" autocomplete="off"></div>
+          <div class="form-group"><label>Пароль</label><input id="new-password" type="password" autocomplete="new-password"></div>
+          <button class="btn btn-primary" onclick="addUser()">Добавить</button>
+          <hr style="border-color:#38444d;margin:15px 0">
+          <h2>Сменить пароль</h2>
+          <div class="form-group"><label>Пользователь</label>
+            <select id="chpass-user"></select>
+          </div>
+          <div class="form-group"><label>Новый пароль</label><input id="chpass-password" type="password" autocomplete="new-password"></div>
+          <button class="btn btn-warning" onclick="changePassword()">Сменить</button>
         </div>
       </div>
     </div>
@@ -3601,6 +3622,22 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   if (t.dataset.tab === 'dashboard') { loadStats(); loadNews(); }
   if (t.dataset.tab === 'news') { loadNewsPage(0); }
   if (t.dataset.tab === 'viral') { loadViral(); }
+  if (t.dataset.tab === 'settings') { loadSettings(); loadLogs(); loadQueue(); }
+}));
+
+// Settings sub-tabs
+document.querySelectorAll('.settings-tab').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.settings-tab').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.settings-section').forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  document.getElementById('stab-' + t.dataset.stab).classList.add('active');
+  // Refresh sub-tab data
+  const s = t.dataset.stab;
+  if (s === 'sources') loadSources();
+  if (s === 'prompts') loadPrompts();
+  if (s === 'logs') loadLogs();
+  if (s === 'queue') loadQueue();
+  if (s === 'users') loadUsers();
 }));
 
 function toast(msg, isError) {
@@ -4057,6 +4094,23 @@ let _revSortField = 'total_score';
 let _revSortDir = 'desc';
 
 function switchToTab(tabName) {
+  // Check if this tab was moved into settings as a sub-tab
+  const settingsSubTabs = ['sources', 'prompts', 'tools', 'queue', 'logs', 'users'];
+  if (settingsSubTabs.includes(tabName)) {
+    // Switch to settings panel first
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
+    document.querySelector('.tab[data-tab="settings"]').classList.add('active');
+    document.getElementById('panel-settings').classList.add('active');
+    // Then switch to the sub-tab
+    document.querySelectorAll('.settings-tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.settings-section').forEach(x => x.classList.remove('active'));
+    const stab = document.querySelector(`.settings-tab[data-stab="${tabName}"]`);
+    if (stab) stab.classList.add('active');
+    const sect = document.getElementById('stab-' + tabName);
+    if (sect) sect.classList.add('active');
+    return;
+  }
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
   document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
   document.querySelector(`.tab[data-tab="${tabName}"]`).classList.add('active');
