@@ -35,8 +35,9 @@ class TestFeatureFlags(unittest.TestCase):
         # Key feature flags enabled by default
         assert is_enabled("dashboard_v2") is True
         assert is_enabled("explainability_v1") is True
+        assert is_enabled("storyline_mode_v1") is True
+        assert is_enabled("source_health_plus_v1") is True
         # Not-yet-ready flags should be disabled
-        assert is_enabled("storyline_mode_v1") is False
         assert is_enabled("seo_extended_v1") is False
 
     def test_unknown_flag_returns_false(self):

@@ -42,7 +42,7 @@ DEFAULT_FLAGS = {
         "phase": 2,
     },
     "storyline_mode_v1": {
-        "enabled": False,
+        "enabled": True,
         "description": "Cluster/storyline grouping of similar news",
         "phase": 3,
     },
@@ -72,7 +72,7 @@ DEFAULT_FLAGS = {
         "phase": 2,
     },
     "source_health_plus_v1": {
-        "enabled": False,
+        "enabled": True,
         "description": "Advanced source health intelligence",
         "phase": 3,
     },
@@ -145,6 +145,7 @@ def init_flags_table():
         "dashboard_v2", "explainability_v1", "newsroom_triage_v1",
         "final_confidence_v1", "content_versions_v1", "analytics_funnel_v1",
         "queue_retry_v1", "admin_safety_v1",
+        "storyline_mode_v1", "source_health_plus_v1",
     ]
     for flag_id in _ENABLE_BY_DEFAULT:
         try:

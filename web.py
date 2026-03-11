@@ -137,6 +137,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             # Phase 3: analytics funnel, source intelligence
             "/api/analytics/funnel": lambda: self._json(self._get_funnel_analytics()),
             "/api/analytics/cost_by_source": lambda: self._json(self._get_cost_by_source()),
+            # Phase 4: storylines, source health plus, threshold simulator
+            "/api/storylines": lambda: self._json(self._get_storylines()),
+            "/api/source_health_plus": lambda: self._json(self._get_source_health_plus()),
         }
 
         # DOCX download (GET with query param)
@@ -258,6 +261,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/articles/versions": lambda: self._get_article_versions(body),
             "/api/articles/multi_output": lambda: self._generate_multi_output(body),
             "/api/articles/regenerate_field": lambda: self._regenerate_field(body),
+            # Phase 4: threshold simulator
+            "/api/simulate_thresholds": lambda: self._simulate_thresholds(body),
         }
         handler = routes.get(path)
         if handler:
@@ -4217,6 +4222,259 @@ async function login() {
         finally:
             cur.close()
 
+    # --- Phase 4: Storylines, Source Health Plus, Threshold Simulator ---
+
+    def _get_storylines(self):
+        """Return clustered news storylines from last 3 days."""
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        try:
+            from datetime import datetime as dt_mod, timezone, timedelta
+            cutoff = (dt_mod.now(timezone.utc) - timedelta(days=3)).isoformat()
+            cur.execute(f"""
+                SELECT n.id, n.source, n.title, n.published_at, n.status,
+                       COALESCE(a.total_score, 0) as total_score,
+                       COALESCE(a.viral_score, 0) as viral_score
+                FROM news n
+                LEFT JOIN news_analysis a ON n.id = a.news_id
+                WHERE n.parsed_at > {ph}
+                ORDER BY n.published_at DESC
+                LIMIT 500
+            """, (cutoff,))
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                news_list = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                news_list = [dict(r) for r in cur.fetchall()]
+
+            if len(news_list) < 2:
+                return {"storylines": [], "total_news": len(news_list)}
+
+            from checks.deduplication import tfidf_similarity, build_groups
+            titles = [n["title"] for n in news_list]
+            pairs = tfidf_similarity(titles)
+            groups = build_groups(news_list, pairs)
+
+            storylines = []
+            for g in groups:
+                members = g["members"]
+                if len(members) < 2:
+                    continue
+                sources = list(set(m.get("source", "") for m in members))
+                avg_score = round(sum(m.get("total_score", 0) for m in members) / len(members)) if members else 0
+                max_viral = max((m.get("viral_score", 0) for m in members), default=0)
+                count = len(members)
+                phase = "trending" if count >= 5 else "developing" if count >= 3 else "emerging"
+
+                storylines.append({
+                    "count": count,
+                    "phase": phase,
+                    "status": g["status"],
+                    "sources": sources,
+                    "avg_score": avg_score,
+                    "max_viral": max_viral,
+                    "members": [{
+                        "id": m.get("id", ""),
+                        "title": m.get("title", ""),
+                        "source": m.get("source", ""),
+                        "published_at": m.get("published_at", ""),
+                        "status": m.get("status", ""),
+                        "total_score": m.get("total_score", 0),
+                    } for m in members[:10]],
+                    "duplicate_indices": g.get("duplicate_indices", []),
+                })
+
+            storylines.sort(key=lambda s: (-s["count"], -s["avg_score"]))
+            return {"storylines": storylines[:50], "total_news": len(news_list)}
+        except Exception as e:
+            logger.error("Storylines error: %s", e)
+            return {"storylines": [], "error": str(e)}
+        finally:
+            cur.close()
+
+    def _get_source_health_plus(self):
+        """Enhanced source health: 7-day trend, score stats, conversion, recommendations."""
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        try:
+            from datetime import datetime as dt_mod, timezone, timedelta
+            from checks.health import get_sources_health
+            base_health = get_sources_health()
+
+            cutoff_7d = (dt_mod.now(timezone.utc) - timedelta(days=7)).isoformat()
+            cur.execute(f"""
+                SELECT source,
+                       CAST(SUBSTR(parsed_at, 1, 10) AS TEXT) as day,
+                       COUNT(*) as cnt
+                FROM news
+                WHERE parsed_at > {ph}
+                GROUP BY source, SUBSTR(parsed_at, 1, 10)
+                ORDER BY source, day
+            """, (cutoff_7d,))
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                trend_rows = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                trend_rows = [dict(r) for r in cur.fetchall()]
+
+            from collections import defaultdict
+            trend_data = defaultdict(dict)
+            for r in trend_rows:
+                trend_data[r["source"]][r["day"]] = r["cnt"]
+
+            days_list = [(dt_mod.now(timezone.utc) - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
+
+            cur.execute(f"""
+                SELECT n.source,
+                       COUNT(*) as total,
+                       COALESCE(AVG(a.total_score), 0) as avg_score,
+                       COALESCE(MAX(a.total_score), 0) as max_score,
+                       SUM(CASE WHEN n.status IN ('ready', 'processed', 'approved') THEN 1 ELSE 0 END) as good_count,
+                       SUM(CASE WHEN n.status IN ('rejected', 'duplicate') THEN 1 ELSE 0 END) as bad_count
+                FROM news n
+                LEFT JOIN news_analysis a ON n.id = a.news_id
+                WHERE n.parsed_at > {ph}
+                GROUP BY n.source
+            """, (cutoff_7d,))
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                score_rows = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                score_rows = [dict(r) for r in cur.fetchall()]
+            score_map = {r["source"]: r for r in score_rows}
+
+            results = []
+            for h in base_health:
+                src = h["source"]
+                trend = [trend_data.get(src, {}).get(d, 0) for d in days_list]
+                stats = score_map.get(src, {})
+                total = stats.get("total", 0)
+                good = stats.get("good_count", 0)
+                bad = stats.get("bad_count", 0)
+                conversion = round(good / total * 100) if total > 0 else 0
+
+                recs = []
+                if h["status"] in ("dead", "down"):
+                    recs.append({"type": "error", "text": "Проверьте RSS/URL — источник не отвечает"})
+                elif h["status"] == "warning":
+                    recs.append({"type": "warning", "text": "Источник нестабилен, возможны проблемы с доступом"})
+                if total > 10 and conversion < 10:
+                    recs.append({"type": "warning", "text": f"Низкая конверсия ({conversion}%) — рассмотрите снижение веса"})
+                avg_score = round(float(stats.get("avg_score", 0)))
+                if total > 10 and avg_score < 20:
+                    recs.append({"type": "info", "text": f"Средний скор {avg_score} — контент низкого качества"})
+                if sum(trend[-3:]) == 0 and h["status"] != "dead":
+                    recs.append({"type": "warning", "text": "Нет статей за последние 3 дня"})
+                trend_direction = "stable"
+                if len(trend) >= 4:
+                    first_half = sum(trend[:3])
+                    second_half = sum(trend[4:])
+                    if second_half > first_half * 1.5:
+                        trend_direction = "up"
+                    elif second_half < first_half * 0.5:
+                        trend_direction = "down"
+
+                results.append({
+                    **h,
+                    "trend_7d": trend,
+                    "trend_days": days_list,
+                    "trend_direction": trend_direction,
+                    "avg_score": avg_score,
+                    "max_score": stats.get("max_score", 0),
+                    "total_7d": total,
+                    "good_count": good,
+                    "bad_count": bad,
+                    "conversion_pct": conversion,
+                    "recommendations": recs,
+                })
+
+            results.sort(key=lambda x: (0 if x["recommendations"] else 1, -x.get("count_24h", 0)))
+            return {"sources": results, "days": days_list}
+        except Exception as e:
+            logger.error("Source health plus error: %s", e)
+            return {"sources": [], "error": str(e)}
+        finally:
+            cur.close()
+
+    def _simulate_thresholds(self, body):
+        """Simulate how many articles would pass at given thresholds."""
+        score_min = int(body.get("score_min", 0))
+        score_max = int(body.get("score_max", 100))
+        final_min = int(body.get("final_min", 0))
+        final_max = int(body.get("final_max", 100))
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        try:
+            from datetime import datetime as dt_mod, timezone, timedelta
+            cutoff = (dt_mod.now(timezone.utc) - timedelta(days=7)).isoformat()
+            cur.execute(f"""
+                SELECT n.source, n.status,
+                       COALESCE(a.total_score, 0) as total_score,
+                       COALESCE(a.viral_score, 0) as viral_score,
+                       COALESCE(a.final_score, 0) as final_score
+                FROM news n
+                LEFT JOIN news_analysis a ON n.id = a.news_id
+                WHERE n.parsed_at > {ph} AND a.total_score > 0
+                ORDER BY a.total_score DESC
+            """, (cutoff,))
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                rows = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                rows = [dict(r) for r in cur.fetchall()]
+
+            total = len(rows)
+            pass_score = sum(1 for r in rows if score_min <= r["total_score"] <= score_max)
+            pass_final = sum(1 for r in rows if final_min <= (r.get("final_score") or 0) <= final_max)
+            pass_both = sum(1 for r in rows if score_min <= r["total_score"] <= score_max and final_min <= (r.get("final_score") or 0) <= final_max)
+
+            buckets = {"0-19": 0, "20-39": 0, "40-59": 0, "60-79": 0, "80-100": 0}
+            for r in rows:
+                s = r["total_score"]
+                if s < 20: buckets["0-19"] += 1
+                elif s < 40: buckets["20-39"] += 1
+                elif s < 60: buckets["40-59"] += 1
+                elif s < 80: buckets["60-79"] += 1
+                else: buckets["80-100"] += 1
+
+            final_buckets = {"0-19": 0, "20-39": 0, "40-59": 0, "60-79": 0, "80-100": 0}
+            for r in rows:
+                s = r.get("final_score") or 0
+                if s < 20: final_buckets["0-19"] += 1
+                elif s < 40: final_buckets["20-39"] += 1
+                elif s < 60: final_buckets["40-59"] += 1
+                elif s < 80: final_buckets["60-79"] += 1
+                else: final_buckets["80-100"] += 1
+
+            from collections import defaultdict
+            by_source = defaultdict(lambda: {"total": 0, "pass_score": 0, "pass_final": 0})
+            for r in rows:
+                src = r["source"]
+                by_source[src]["total"] += 1
+                if score_min <= r["total_score"] <= score_max:
+                    by_source[src]["pass_score"] += 1
+                if final_min <= (r.get("final_score") or 0) <= final_max:
+                    by_source[src]["pass_final"] += 1
+
+            self._json({
+                "total": total,
+                "pass_score": pass_score,
+                "pass_final": pass_final,
+                "pass_both": pass_both,
+                "pct_score": round(pass_score / total * 100) if total > 0 else 0,
+                "pct_final": round(pass_final / total * 100) if total > 0 else 0,
+                "score_distribution": buckets,
+                "final_distribution": final_buckets,
+                "by_source": dict(by_source),
+            })
+        except Exception as e:
+            self._json({"error": str(e), "total": 0})
+        finally:
+            cur.close()
+
     # --- Dashboard HTML ---
     def _serve_dashboard(self):
         html = DASHBOARD_HTML
@@ -4476,6 +4734,40 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 /* Hotkey hints */
 .hotkey-hint { display:inline-block; background:#22303c; border:1px solid #38444d; border-radius:4px; padding:1px 5px; font-size:0.72em; color:#8899a6; margin-left:4px; font-family:monospace; }
 
+/* Storyline cards */
+.storyline-card { background:#192734; border-radius:10px; padding:16px; margin-bottom:12px; border:1px solid #22303c; transition:border-color .2s; }
+.storyline-card:hover { border-color:#1da1f2; }
+.storyline-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+.storyline-phase { display:inline-block; padding:2px 8px; border-radius:10px; font-size:0.75em; font-weight:600; }
+.storyline-phase.emerging { background:#2d4a3e; color:#17bf63; }
+.storyline-phase.developing { background:#3d3a2e; color:#ffad1f; }
+.storyline-phase.trending { background:#3d2e2e; color:#e0245e; }
+.storyline-members { margin-top:8px; }
+.storyline-member { padding:6px 0; border-bottom:1px solid #22303c; font-size:0.85em; display:flex; gap:8px; align-items:center; }
+.storyline-member:last-child { border-bottom:none; }
+.storyline-member .sm-source { color:#8899a6; min-width:80px; font-size:0.8em; }
+.storyline-member .sm-score { color:#1da1f2; font-weight:600; min-width:35px; text-align:right; }
+.storyline-stats { display:flex; gap:12px; font-size:0.82em; color:#8899a6; }
+
+/* Health plus */
+.health-rec { display:inline-block; padding:3px 8px; border-radius:6px; font-size:0.78em; margin:2px; }
+.health-rec.error { background:#3d2e2e; color:#e0245e; }
+.health-rec.warning { background:#3d3a2e; color:#ffad1f; }
+.health-rec.info { background:#1e3a4e; color:#8899a6; }
+.sparkline { display:inline-flex; align-items:flex-end; gap:2px; height:24px; vertical-align:middle; }
+.sparkline-bar { width:8px; border-radius:2px 2px 0 0; background:#1da1f2; min-height:2px; transition:height .3s; }
+.trend-arrow { font-weight:bold; font-size:0.9em; }
+.trend-arrow.up { color:#17bf63; }
+.trend-arrow.down { color:#e0245e; }
+.trend-arrow.stable { color:#8899a6; }
+
+/* Simulator */
+.sim-stat { display:inline-block; background:#192734; border-radius:8px; padding:12px 20px; margin:6px; text-align:center; min-width:120px; }
+.sim-stat .val { font-size:1.4em; font-weight:bold; color:#e1e8ed; }
+.sim-stat .lbl { font-size:0.78em; color:#8899a6; display:block; margin-top:4px; }
+.sim-bar { display:flex; height:28px; border-radius:6px; overflow:hidden; background:#22303c; margin:8px 0; }
+.sim-bar div { display:flex; align-items:center; justify-content:center; font-size:0.72em; color:#fff; font-weight:600; transition:width .3s; }
+
 /* Funnel */
 .funnel-bar { display:flex; align-items:center; gap:10px; }
 .funnel-bar .fb-label { min-width:100px; font-size:0.82em; color:#8899a6; text-align:right; }
@@ -4514,6 +4806,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div class="tab" data-tab="analytics">Аналитика</div>
     <div class="tab" data-tab="queue">Очередь</div>
     <div class="tab" data-tab="health">Здоровье</div>
+    <div class="tab" data-tab="storylines" id="tab-storylines" style="display:none">Сюжеты</div>
     <div class="tab" data-tab="settings">&#9881;</div>
     <div style="margin-left:auto"><a href="/logout" class="btn btn-secondary btn-sm">Выйти</a></div>
   </div>
@@ -5124,16 +5417,30 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   <!-- HEALTH -->
   <div class="panel" id="panel-health">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <h2>Здоровье источников (24ч)</h2>
+      <h2>Здоровье источников</h2>
       <div>
         <span id="health-summary" style="color:#8899a6;font-size:0.85em;margin-right:12px"></span>
-        <button class="btn btn-sm btn-secondary" onclick="loadHealth()">Обновить</button>
+        <button class="btn btn-sm btn-secondary" onclick="loadHealth()">24ч</button>
+        <button class="btn btn-sm btn-primary" onclick="loadHealthPlus()" id="btn-health-plus">7д расширенный</button>
       </div>
     </div>
+    <div id="health-recs" style="display:none;margin-bottom:15px"></div>
     <table>
-      <thead><tr><th>Статус</th><th>Источник</th><th>Статей (24ч)</th><th style="min-width:120px">Активность</th><th>Последний парсинг</th><th>Минут назад</th></tr></thead>
+      <thead id="health-thead"><tr><th>Статус</th><th>Источник</th><th>Статей (24ч)</th><th style="min-width:120px">Активность</th><th>Последний парсинг</th><th>Минут назад</th></tr></thead>
       <tbody id="health-table"></tbody>
     </table>
+  </div>
+
+  <!-- STORYLINES -->
+  <div class="panel" id="panel-storylines" style="display:none">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h2>Сюжетные линии <span style="font-size:0.65em;color:#8899a6;font-weight:normal">кластеры похожих новостей за 3 дня</span></h2>
+      <div>
+        <span id="storylines-count" style="color:#8899a6;font-size:0.85em;margin-right:12px"></span>
+        <button class="btn btn-sm btn-secondary" onclick="loadStorylines()">Обновить</button>
+      </div>
+    </div>
+    <div id="storylines-list"></div>
   </div>
 
   <!-- NEWS -->
@@ -5262,6 +5569,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <div class="settings-tab" data-stab="sources">Источники</div>
       <div class="settings-tab" data-stab="prompts">Промпты</div>
       <div class="settings-tab" data-stab="viral_cfg">Виральность</div>
+      <div class="settings-tab" data-stab="simulator">Симулятор</div>
       <div class="settings-tab" data-stab="tools">Инструменты</div>
       <div class="settings-tab" data-stab="logs">Логи</div>
       <div class="settings-tab" data-stab="users">Пользователи</div>
@@ -5402,6 +5710,26 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         </table>
       </div>
       <div id="vt-stats" style="margin-top:10px;color:#8899a6;font-size:0.85em"></div>
+    </div>
+
+    <!-- Threshold Simulator -->
+    <div class="settings-section" id="stab-simulator">
+      <div class="card">
+        <h2>Симулятор порогов</h2>
+        <p style="color:#8899a6;font-size:0.85em;margin-bottom:12px">Симулируйте влияние порогов на количество прошедших новостей (данные за 7 дней)</p>
+        <div class="grid-2">
+          <div>
+            <div class="form-group"><label>Внутренний скор (мин)</label><input type="range" id="sim-score-min" min="0" max="100" value="70" oninput="updateSimLabel(this,'sim-score-min-val')"><span id="sim-score-min-val" style="color:#1da1f2;margin-left:8px">70</span></div>
+            <div class="form-group"><label>Внутренний скор (макс)</label><input type="range" id="sim-score-max" min="0" max="100" value="100" oninput="updateSimLabel(this,'sim-score-max-val')"><span id="sim-score-max-val" style="color:#1da1f2;margin-left:8px">100</span></div>
+          </div>
+          <div>
+            <div class="form-group"><label>Финальный скор (мин)</label><input type="range" id="sim-final-min" min="0" max="100" value="60" oninput="updateSimLabel(this,'sim-final-min-val')"><span id="sim-final-min-val" style="color:#1da1f2;margin-left:8px">60</span></div>
+            <div class="form-group"><label>Финальный скор (макс)</label><input type="range" id="sim-final-max" min="0" max="100" value="100" oninput="updateSimLabel(this,'sim-final-max-val')"><span id="sim-final-max-val" style="color:#1da1f2;margin-left:8px">100</span></div>
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="runSimulation()">Симулировать</button>
+        <div id="sim-results" style="margin-top:15px"></div>
+      </div>
     </div>
 
     <div class="settings-section" id="stab-tools">
@@ -5584,6 +5912,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   if (t.dataset.tab === 'analytics') { loadAnalytics(); loadSavedDigests(); loadFunnelAnalytics(); }
   if (t.dataset.tab === 'queue') { loadQueueStandalone(); }
   if (t.dataset.tab === 'health') { loadHealth(); }
+  if (t.dataset.tab === 'storylines') { loadStorylines(); }
   if (t.dataset.tab === 'settings') { loadSettings(); loadLogs(); loadQueue(); loadViralTriggers(); }
 }));
 
@@ -9004,6 +9333,184 @@ async function loadFunnelAnalytics() {
 // FEATURE FLAG UI HOOKS
 // ═══════════════════════════════════════════
 
+// ═══════════════════════════════════════════
+// Phase 4: Storylines
+// ═══════════════════════════════════════════
+async function loadStorylines() {
+  const el = document.getElementById('storylines-list');
+  const countEl = document.getElementById('storylines-count');
+  if (!el) return;
+  el.innerHTML = '<div style="color:#8899a6;padding:20px">Загрузка кластеров...</div>';
+  try {
+    const data = await api('/api/storylines');
+    const stories = data.storylines || [];
+    if (countEl) countEl.textContent = stories.length + ' сюжетов из ' + (data.total_news||0) + ' новостей';
+    if (!stories.length) {
+      el.innerHTML = '<div style="color:#8899a6;padding:20px">Нет кластеров (менее 2 похожих новостей за 3 дня)</div>';
+      return;
+    }
+    el.innerHTML = stories.map(s => {
+      const phaseClass = s.phase;
+      const phaseLabel = s.phase === 'trending' ? 'Тренд' : s.phase === 'developing' ? 'Развивается' : 'Новый';
+      const membersHtml = s.members.map(m =>
+        '<div class="storyline-member">' +
+          '<span class="sm-source">' + esc(m.source) + '</span>' +
+          '<span style="flex:1">' + esc(m.title) + '</span>' +
+          '<span class="sm-score">' + (m.total_score||0) + '</span>' +
+          '<span style="color:#8899a6;font-size:0.75em">' + fmtDate(m.published_at) + '</span>' +
+        '</div>'
+      ).join('');
+      return '<div class="storyline-card">' +
+        '<div class="storyline-header">' +
+          '<div><span class="storyline-phase ' + phaseClass + '">' + phaseLabel + '</span> ' +
+            '<strong style="margin-left:8px">' + s.count + ' статей</strong></div>' +
+          '<div class="storyline-stats">' +
+            '<span>Ср.скор: <b>' + s.avg_score + '</b></span>' +
+            '<span>Вирал: <b>' + s.max_viral + '</b></span>' +
+            '<span>' + s.sources.length + ' источников</span>' +
+          '</div>' +
+        '</div>' +
+        '<div style="font-size:0.8em;color:#8899a6;margin-bottom:6px">Источники: ' + s.sources.join(', ') + '</div>' +
+        '<div class="storyline-members">' + membersHtml + '</div>' +
+      '</div>';
+    }).join('');
+  } catch(e) {
+    el.innerHTML = '<div style="color:#e0245e;padding:20px">Ошибка: ' + (e.message||e) + '</div>';
+  }
+}
+
+// ═══════════════════════════════════════════
+// Phase 4: Source Health Plus
+// ═══════════════════════════════════════════
+async function loadHealthPlus() {
+  if (!ffEnabled('source_health_plus_v1')) { showToast('Source Health Plus не активен', 'warning'); return; }
+  const el = document.getElementById('health-table');
+  const thead = document.getElementById('health-thead');
+  const recsEl = document.getElementById('health-recs');
+  if (!el) return;
+  el.innerHTML = '<tr><td colspan="8" style="color:#8899a6;padding:20px">Загрузка расширенных данных...</td></tr>';
+  try {
+    const data = await api('/api/source_health_plus');
+    const sources = data.sources || [];
+
+    // Update header
+    if (thead) thead.innerHTML = '<tr><th>Статус</th><th>Источник</th><th>24ч</th><th>7д тренд</th><th>Ср.скор</th><th>Конверсия</th><th>Направление</th><th>Рекомендации</th></tr>';
+
+    // Collect all recommendations
+    const allRecs = [];
+    sources.forEach(s => (s.recommendations||[]).forEach(r => allRecs.push({source: s.source, ...r})));
+
+    if (recsEl && allRecs.length) {
+      recsEl.style.display = 'block';
+      recsEl.innerHTML = '<div style="background:#192734;border-radius:8px;padding:12px;margin-bottom:8px"><strong>Рекомендации:</strong><div style="margin-top:6px">' +
+        allRecs.map(r => '<span class="health-rec ' + r.type + '">' + esc(r.source) + ': ' + esc(r.text) + '</span>').join('') +
+      '</div></div>';
+    } else if (recsEl) {
+      recsEl.style.display = 'none';
+    }
+
+    el.innerHTML = sources.map(s => {
+      const icon = s.status==='healthy'?'&#9989;':s.status==='low'?'&#128993;':s.status==='warning'?'&#9888;&#65039;':'&#10060;';
+      const maxT = Math.max(...(s.trend_7d||[1]), 1);
+      const sparkHtml = '<span class="sparkline">' +
+        (s.trend_7d||[]).map(v => '<span class="sparkline-bar" style="height:' + Math.max(2, Math.round(v/maxT*24)) + 'px"></span>').join('') +
+      '</span>';
+      const arrClass = s.trend_direction === 'up' ? 'up' : s.trend_direction === 'down' ? 'down' : 'stable';
+      const arrSymbol = s.trend_direction === 'up' ? '&#9650;' : s.trend_direction === 'down' ? '&#9660;' : '&#8212;';
+      const convColor = s.conversion_pct >= 30 ? '#17bf63' : s.conversion_pct >= 15 ? '#ffad1f' : '#e0245e';
+      const recsHtml = (s.recommendations||[]).map(r => '<span class="health-rec ' + r.type + '" title="' + esc(r.text) + '">' + r.type + '</span>').join('');
+      return '<tr>' +
+        '<td>' + icon + ' ' + s.status + '</td>' +
+        '<td>' + esc(s.source) + '</td>' +
+        '<td>' + s.count_24h + '</td>' +
+        '<td>' + sparkHtml + ' <span style="color:#8899a6;font-size:0.8em">' + s.total_7d + '</span></td>' +
+        '<td style="color:#1da1f2;font-weight:600">' + s.avg_score + '</td>' +
+        '<td style="color:' + convColor + ';font-weight:600">' + s.conversion_pct + '%</td>' +
+        '<td><span class="trend-arrow ' + arrClass + '">' + arrSymbol + '</span></td>' +
+        '<td>' + (recsHtml || '<span style="color:#17bf63">OK</span>') + '</td>' +
+      '</tr>';
+    }).join('');
+
+    const sumEl = document.getElementById('health-summary');
+    if (sumEl) {
+      const ok = sources.filter(s => s.status === 'healthy').length;
+      const warn = sources.filter(s => ['low','warning'].includes(s.status)).length;
+      const dead = sources.filter(s => ['dead','down'].includes(s.status)).length;
+      sumEl.textContent = ok + ' ок / ' + warn + ' внимание / ' + dead + ' мертв / ' + allRecs.length + ' рекомендаций';
+    }
+  } catch(e) {
+    el.innerHTML = '<tr><td colspan="8" style="color:#e0245e">Ошибка: ' + (e.message||e) + '</td></tr>';
+  }
+}
+
+// ═══════════════════════════════════════════
+// Phase 4: Threshold Simulator
+// ═══════════════════════════════════════════
+function updateSimLabel(input, labelId) {
+  document.getElementById(labelId).textContent = input.value;
+}
+
+async function runSimulation() {
+  const resEl = document.getElementById('sim-results');
+  if (!resEl) return;
+  resEl.innerHTML = '<div style="color:#8899a6">Симуляция...</div>';
+  try {
+    const data = await api('/api/simulate_thresholds', {
+      score_min: parseInt(document.getElementById('sim-score-min').value),
+      score_max: parseInt(document.getElementById('sim-score-max').value),
+      final_min: parseInt(document.getElementById('sim-final-min').value),
+      final_max: parseInt(document.getElementById('sim-final-max').value),
+    });
+    if (data.error) { resEl.innerHTML = '<div style="color:#e0245e">' + data.error + '</div>'; return; }
+
+    // Stats cards
+    let html = '<div style="display:flex;flex-wrap:wrap;gap:4px">';
+    html += '<div class="sim-stat"><div class="val">' + data.total + '</div><div class="lbl">Всего (7д)</div></div>';
+    html += '<div class="sim-stat"><div class="val" style="color:#1da1f2">' + data.pass_score + '</div><div class="lbl">По скору (' + data.pct_score + '%)</div></div>';
+    html += '<div class="sim-stat"><div class="val" style="color:#17bf63">' + data.pass_final + '</div><div class="lbl">По финалу (' + data.pct_final + '%)</div></div>';
+    html += '<div class="sim-stat"><div class="val" style="color:#ffad1f">' + data.pass_both + '</div><div class="lbl">Оба фильтра</div></div>';
+    html += '</div>';
+
+    // Score distribution bar
+    const dist = data.score_distribution || {};
+    const total = data.total || 1;
+    const colors = {'0-19':'#e0245e','20-39':'#ffad1f','40-59':'#8899a6','60-79':'#1da1f2','80-100':'#17bf63'};
+    html += '<div style="margin-top:12px"><strong style="font-size:0.85em">Распределение скоров:</strong></div>';
+    html += '<div class="sim-bar">';
+    for (const [k,v] of Object.entries(dist)) {
+      const pct = Math.round(v/total*100);
+      if (pct > 0) html += '<div style="width:' + pct + '%;background:' + colors[k] + '">' + k + ' (' + v + ')</div>';
+    }
+    html += '</div>';
+
+    // Final distribution
+    const fdist = data.final_distribution || {};
+    html += '<div style="margin-top:8px"><strong style="font-size:0.85em">Распределение финальных:</strong></div>';
+    html += '<div class="sim-bar">';
+    for (const [k,v] of Object.entries(fdist)) {
+      const pct = Math.round(v/total*100);
+      if (pct > 0) html += '<div style="width:' + pct + '%;background:' + colors[k] + '">' + k + ' (' + v + ')</div>';
+    }
+    html += '</div>';
+
+    // By source table
+    const bySource = data.by_source || {};
+    const srcEntries = Object.entries(bySource).sort((a,b) => b[1].total - a[1].total);
+    if (srcEntries.length) {
+      html += '<div style="margin-top:12px"><strong style="font-size:0.85em">По источникам:</strong></div>';
+      html += '<table style="font-size:0.82em;margin-top:6px"><thead><tr><th>Источник</th><th>Всего</th><th>Прошли скор</th><th>Прошли финал</th></tr></thead><tbody>';
+      srcEntries.forEach(([src, d]) => {
+        html += '<tr><td>' + esc(src) + '</td><td>' + d.total + '</td><td style="color:#1da1f2">' + d.pass_score + '</td><td style="color:#17bf63">' + d.pass_final + '</td></tr>';
+      });
+      html += '</tbody></table>';
+    }
+
+    resEl.innerHTML = html;
+  } catch(e) {
+    resEl.innerHTML = '<div style="color:#e0245e">Ошибка: ' + (e.message||e) + '</div>';
+  }
+}
+
 function applyFeatureFlags() {
   // Ops dashboard
   const opsTab = document.getElementById('tab-ops');
@@ -9018,6 +9525,16 @@ function applyFeatureFlags() {
   // Analytics funnel
   const funnelEl = document.getElementById('analytics-funnel');
   if (funnelEl) funnelEl.style.display = ffEnabled('analytics_funnel_v1') ? '' : 'none';
+
+  // Storylines tab
+  const slTab = document.getElementById('tab-storylines');
+  if (slTab) slTab.style.display = ffEnabled('storyline_mode_v1') ? '' : 'none';
+  const slPanel = document.getElementById('panel-storylines');
+  if (slPanel) slPanel.style.display = ffEnabled('storyline_mode_v1') ? '' : 'none';
+
+  // Health plus button
+  const hpBtn = document.getElementById('btn-health-plus');
+  if (hpBtn) hpBtn.style.display = ffEnabled('source_health_plus_v1') ? '' : 'none';
 }
 
 // ═══════════════════════════════════════════
