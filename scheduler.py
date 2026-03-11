@@ -749,14 +749,67 @@ def run_no_llm_pipeline(news_ids: list[str], task_ids: list[str]):
 
     Для уже проскоренных (in_review) — берёт существующие результаты.
     Для новых — скорит локально.
-    Всех годных → Sheets/NotReady + статус moderation.
+    Всех годных → Sheets/NotReady (batch по 25 строк) + статус moderation.
     """
     pipeline_reset()
     from checks.pipeline import run_review_pipeline
-    from storage.sheets import write_not_ready_row
+    from storage.sheets import write_not_ready_batch
+
+    BATCH_SIZE = 25
+    batch_items = []        # [(news, check_result), ...]
+    batch_task_ids = []     # task_ids for items in current batch
+    batch_news_ids = []     # news_ids for items in current batch
+    total_written = 0
+    total_skipped = 0
+    total_errors = 0
+
+    def _flush_batch():
+        """Write accumulated batch to Sheets and update tasks/statuses."""
+        nonlocal total_written, total_skipped, total_errors
+        if not batch_items:
+            return
+
+        logger.info("No-LLM: flushing batch of %d items to Sheets...", len(batch_items))
+        for tid in batch_task_ids:
+            _update_task(tid, "running", {"stage": "exporting"})
+
+        try:
+            result = write_not_ready_batch(batch_items)
+            written = result.get("written", 0)
+            skipped = result.get("skipped", 0)
+            errors = result.get("errors", 0)
+            total_written += written
+            total_skipped += skipped
+            total_errors += errors
+
+            # Update all tasks in batch as done
+            for tid in batch_task_ids:
+                _update_task(tid, "done", {
+                    "stage": "complete",
+                    "destination": "NotReady",
+                    "batch_written": written,
+                })
+
+            # Update all news statuses to moderation
+            for nid in batch_news_ids:
+                update_news_status(nid, "moderation")
+
+            logger.info("No-LLM batch flush: %d written, %d skipped, %d errors (total: %d/%d)",
+                        written, skipped, errors, total_written, len(news_ids))
+
+        except Exception as e:
+            total_errors += len(batch_items)
+            logger.error("No-LLM batch flush failed: %s", e)
+            for tid in batch_task_ids:
+                _update_task(tid, "error", {"stage": "exporting", "error": str(e)[:300]})
+
+        batch_items.clear()
+        batch_task_ids.clear()
+        batch_news_ids.clear()
 
     for i, (news_id, task_id) in enumerate(zip(news_ids, task_ids)):
         if _pipeline_stop:
+            _flush_batch()  # write what we have so far
             for remaining_tid in task_ids[i:]:
                 _update_task(remaining_tid, "cancelled", {"reason": "Остановлено пользователем"})
             logger.info("No-LLM pipeline stopped by user at %d/%d", i, len(news_ids))
@@ -799,31 +852,24 @@ def run_no_llm_pipeline(news_ids: list[str], task_ids: list[str]):
                 _update_task(task_id, "skipped", {"stage": "scoring", "reason": "auto_rejected", "score": total_score})
                 continue
 
-            _update_task(task_id, "running", {"stage": "exporting", "score": total_score})
-            sheet_row = write_not_ready_row(news, check_result)
+            # Accumulate for batch write
+            batch_items.append((news, check_result))
+            batch_task_ids.append(task_id)
+            batch_news_ids.append(news_id)
 
-            if sheet_row is None:
-                _update_task(task_id, "error", {"stage": "exporting", "error": "Sheets write failed", "score": total_score})
-            elif sheet_row == -1:
-                _update_task(task_id, "skipped", {"stage": "exporting", "reason": "duplicate in Sheets", "score": total_score})
-            else:
-                _update_task(task_id, "done", {
-                    "stage": "complete",
-                    "score": total_score,
-                    "sheet_row": sheet_row,
-                    "destination": "NotReady",
-                })
-
-            # Set status to moderation regardless of Sheets result
-            update_news_status(news_id, "moderation")
-            logger.info("No-LLM complete: %s → NotReady row %s, status=moderation", news.get("title", "")[:50], sheet_row)
-
-            # Rate limit for Sheets API (60 req/min)
-            time.sleep(1.5)
+            # Flush when batch is full
+            if len(batch_items) >= BATCH_SIZE:
+                _flush_batch()
 
         except Exception as e:
             logger.error("No-LLM pipeline error for %s: %s", news_id, e)
             _update_task(task_id, "error", {"stage": "unknown", "error": str(e)[:500]})
+
+    # Flush remaining items
+    _flush_batch()
+
+    logger.info("No-LLM pipeline complete: %d written, %d skipped, %d errors out of %d total",
+                total_written, total_skipped, total_errors, len(news_ids))
 
 
 def generate_auto_digest():

@@ -24,7 +24,7 @@ _WS_CACHE_TTL = 300  # cache worksheets for 5 min
 
 _url_cache = {}  # {tab_name: set(urls)}
 _url_cache_at = {}  # {tab_name: timestamp}
-_URL_CACHE_TTL = 120  # cache URLs for 2 min
+_URL_CACHE_TTL = 600  # cache URLs for 10 min (prevent cache churn during batch writes)
 
 _rate_lock = threading.Lock()
 _last_api_call = 0
@@ -77,7 +77,7 @@ def _get_client():
     return _client
 
 
-def _retry_api(func, max_retries=3):
+def _retry_api(func, max_retries=5):
     """Retry gspread API call with exponential backoff on rate limit / server errors."""
     for attempt in range(max_retries):
         _rate_limit()
@@ -86,18 +86,21 @@ def _retry_api(func, max_retries=3):
         except gspread.exceptions.APIError as e:
             code = e.response.status_code if hasattr(e, 'response') else 0
             if code in (429, 500, 503) and attempt < max_retries - 1:
-                wait = (2 ** attempt) * 2  # 2s, 4s, 8s
+                # Aggressive backoff for 429: 5s, 15s, 45s, 120s
+                if code == 429:
+                    wait = min(5 * (3 ** attempt), 120)
+                else:
+                    wait = (2 ** attempt) * 2  # 2s, 4s, 8s, 16s
                 logger.warning("Sheets API %d, retry in %ds (attempt %d/%d)", code, wait, attempt + 1, max_retries)
                 time.sleep(wait)
-                # On 429, might need fresh client
                 if code == 429 and attempt >= 1:
                     global _client_created_at
-                    _client_created_at = 0  # force re-auth on next call
+                    _client_created_at = 0
                 continue
             raise
         except Exception as e:
             if "timed out" in str(e).lower() and attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
+                time.sleep(3 * (attempt + 1))
                 continue
             raise
 
@@ -160,17 +163,24 @@ def _get_cached_urls(ws, col_index: int, tab_name: str) -> set:
 
 
 def _append_row(ws, row: list, tab_name: str, news_url: str = "") -> int | None:
-    """Append row and update caches. Returns row number."""
+    """Append row and update caches. Returns estimated row number."""
     _retry_api(lambda: ws.append_row(row, value_input_option="USER_ENTERED", table_range="A1"))
     # Update URL cache
     if news_url and tab_name in _url_cache:
         _url_cache[tab_name].add(news_url)
-    # Get row number (one more API call, but needed for logging)
-    try:
-        row_num = _retry_api(lambda: len(ws.col_values(1)))
-    except Exception:
-        row_num = -2  # unknown but written
-    return row_num
+    # Estimate row number from URL cache size (avoid extra API call)
+    return len(_url_cache.get(tab_name, set())) + 1
+
+
+def _append_rows_batch(ws, rows: list[list], tab_name: str, urls: list[str] = None) -> int:
+    """Append multiple rows at once. Returns count of rows written."""
+    if not rows:
+        return 0
+    _retry_api(lambda: ws.append_rows(rows, value_input_option="USER_ENTERED", table_range="A1"))
+    # Update URL cache
+    if urls and tab_name in _url_cache:
+        _url_cache[tab_name].update(u for u in urls if u)
+    return len(rows)
 
 
 # ─── Helper ──────────────────────────────────────────────────────────
@@ -421,3 +431,121 @@ def write_not_ready_row(news: dict, check_results: dict) -> int | None:
     except Exception as e:
         logger.error("NotReady write error for '%s': %s", (news.get("title") or "")[:50], e, exc_info=True)
         return None
+
+
+def _build_not_ready_row(news: dict, check_results: dict) -> tuple[list, str]:
+    """Build a NotReady row without writing. Returns (row_data, news_url)."""
+    checks = check_results.get("checks") or {}
+    news_url = news.get("url") or ""
+
+    tags_raw = check_results.get("tags") or []
+    if isinstance(tags_raw, str):
+        tags_raw = _safe_json_loads(tags_raw, [])
+    tags_parts = []
+    for t in (tags_raw if isinstance(tags_raw, list) else []):
+        if isinstance(t, dict):
+            tags_parts.append(t.get("label") or t.get("id") or "")
+        elif isinstance(t, str):
+            tags_parts.append(t)
+    tags_str = ", ".join(filter(None, tags_parts))
+
+    entities_raw = check_results.get("game_entities") or []
+    if isinstance(entities_raw, str):
+        entities_raw = _safe_json_loads(entities_raw, [])
+    ent_names = []
+    for e in (entities_raw if isinstance(entities_raw, list) else []):
+        if isinstance(e, dict):
+            ent_names.append(e.get("name") or "")
+        elif isinstance(e, str):
+            ent_names.append(e)
+    entities_str = ", ".join(filter(None, ent_names[:10]))
+
+    freshness = checks.get("freshness") or {}
+    age_h = freshness.get("age_hours", -1)
+    age_str = f"{age_h:.1f}" if isinstance(age_h, (int, float)) and age_h >= 0 else "?"
+
+    row = [
+        news.get("parsed_at") or "",
+        news.get("source") or "",
+        news.get("title") or "",
+        str(check_results.get("total_score") or 0),
+        str((checks.get("quality") or {}).get("score", 0)),
+        str((checks.get("relevance") or {}).get("score", 0)),
+        age_str,
+        str((checks.get("viral") or {}).get("score", 0)),
+        _format_viral_triggers_from_checks(checks),
+        (check_results.get("sentiment") or {}).get("label", "neutral"),
+        tags_str,
+        entities_str,
+        str((check_results.get("headline") or {}).get("score", 0)),
+        str((check_results.get("momentum") or {}).get("score", 0)),
+        news_url,
+        (news.get("description") or "")[:500],
+    ]
+    return row, news_url
+
+
+def write_not_ready_batch(items: list[tuple[dict, dict]]) -> dict:
+    """Batch write to NotReady tab. items = [(news, check_results), ...].
+
+    Returns {"written": int, "skipped": int, "errors": int}.
+    """
+    tab_name = getattr(config, "SHEETS_TAB_NOT_READY", "NotReady")
+    ws = _get_worksheet(tab_name, HEADERS_NOT_READY)
+    if not ws:
+        logger.error("NotReady batch: worksheet not available")
+        return {"written": 0, "skipped": 0, "errors": len(items)}
+
+    # Pre-warm URL cache once for entire batch
+    existing_urls = _get_cached_urls(ws, 15, tab_name)
+
+    rows_to_write = []
+    urls_to_write = []
+    skipped = 0
+    errors = 0
+
+    for news, check_results in items:
+        try:
+            row, news_url = _build_not_ready_row(news, check_results)
+            if news_url and news_url in existing_urls:
+                skipped += 1
+                continue
+            rows_to_write.append(row)
+            urls_to_write.append(news_url)
+            existing_urls.add(news_url)  # prevent intra-batch dupes
+        except Exception as e:
+            errors += 1
+            logger.error("NotReady batch row build error: %s", e)
+
+    # Write in sub-batches of 25 rows
+    BATCH_SIZE = 25
+    written = 0
+    for start in range(0, len(rows_to_write), BATCH_SIZE):
+        chunk = rows_to_write[start:start + BATCH_SIZE]
+        chunk_urls = urls_to_write[start:start + BATCH_SIZE]
+        try:
+            cnt = _append_rows_batch(ws, chunk, tab_name, chunk_urls)
+            written += cnt
+            logger.info("NotReady batch: wrote %d rows (%d/%d total)",
+                        cnt, written, len(rows_to_write))
+            # Pause between sub-batches to stay under rate limits
+            if start + BATCH_SIZE < len(rows_to_write):
+                time.sleep(3)
+        except Exception as e:
+            errors += len(chunk)
+            logger.error("NotReady batch write error at rows %d-%d: %s",
+                         start, start + len(chunk), e)
+            # On error, try smaller chunks (one by one)
+            time.sleep(10)
+            for j, (row, url) in enumerate(zip(chunk, chunk_urls)):
+                try:
+                    _append_row(ws, row, tab_name, url)
+                    written += 1
+                    errors -= 1
+                    time.sleep(2)
+                except Exception as e2:
+                    logger.error("NotReady single-row fallback failed: %s", e2)
+
+    logger.info("NotReady batch complete: %d written, %d skipped, %d errors",
+                written, skipped, errors)
+    return {"written": written, "skipped": skipped, "errors": errors}

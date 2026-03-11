@@ -1590,7 +1590,7 @@ async function login() {
             conn = get_connection()
             cur = conn.cursor()
             try:
-                cur.execute("SELECT id FROM news WHERE status IN ('new', 'in_review') ORDER BY parsed_at DESC LIMIT 50")
+                cur.execute("SELECT id FROM news WHERE status IN ('new', 'in_review') ORDER BY parsed_at DESC LIMIT 5000")
                 if _is_postgres():
                     news_ids = [r[0] for r in cur.fetchall()]
                 else:
@@ -1640,7 +1640,7 @@ async function login() {
             conn = get_connection()
             cur = conn.cursor()
             try:
-                cur.execute("SELECT id FROM news WHERE status IN ('new', 'in_review') ORDER BY parsed_at DESC LIMIT 50")
+                cur.execute("SELECT id FROM news WHERE status IN ('new', 'in_review') ORDER BY parsed_at DESC LIMIT 5000")
                 if _is_postgres():
                     news_ids = [r[0] for r in cur.fetchall()]
                 else:
