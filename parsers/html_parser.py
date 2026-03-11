@@ -282,7 +282,14 @@ def _parse_gamesradar(source: dict) -> int:
 
 
 def _parse_dtf(source: dict) -> int:
-    """Парсит DTF через __INITIAL_STATE__ JSON (SPA)."""
+    """Парсит DTF через __INITIAL_STATE__ JSON (SPA).
+
+    Структура JSON (2025+):
+    data["feed@subsite"]["items"] = [
+        {"type": "entry", "data": {"id", "title", "url", "blocks": [...], "ogDescription", "date"}}
+    ]
+    blocks[i] = {"type": "text", "data": {"text": "<p>HTML</p>"}}
+    """
     name = source["name"]
     url = source["url"]
     count = 0
@@ -293,51 +300,39 @@ def _parse_dtf(source: dict) -> int:
         # Ищем JSON в __INITIAL_STATE__
         match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.+?})\s*;?\s*</script>', resp.text, re.DOTALL)
         if not match:
-            # Fallback: попробуем как обычный HTML
             logger.warning("DTF: __INITIAL_STATE__ not found, trying HTML fallback")
-            soup = BeautifulSoup(resp.text, "lxml")
-            items = soup.select("a[href*='/games/']")
-            for item in items[:20]:
-                href = item.get("href", "")
-                if not href or not re.search(r'/games/\d+', href):
-                    continue
-                link = urljoin("https://dtf.ru", href)
-                h_tag = item.find(["h2", "h3", "h4"])
-                title = h_tag.get_text(strip=True) if h_tag else item.get_text(strip=True)
-                if not title or len(title) < 10:
-                    continue
-                if news_exists(link):
-                    continue
-                time.sleep(1)
-                h1, description, plain_text, published_at = _fetch_article(link)
-                nid = insert_news(source=name, url=link, title=title, h1=h1,
-                                  description=description, plain_text=plain_text,
-                                  published_at=published_at)
-                if nid:
-                    count += 1
-            logger.info("Parsed %s (DTF HTML fallback): %d new articles", name, count)
-            return count
+            return _parse_dtf_html_fallback(source, resp.text)
 
         data = json.loads(match.group(1))
 
-        # Навигация по структуре JSON DTF
+        # Новая структура: feed@subsite.items
         entries = []
-        if "entries" in data:
-            entries = list(data["entries"].values()) if isinstance(data["entries"], dict) else data["entries"]
-        elif "feed" in data and "items" in data["feed"]:
-            entries = data["feed"]["items"]
+        for key in data:
+            if key.startswith("feed@") and isinstance(data[key], dict):
+                items = data[key].get("items", [])
+                if items:
+                    entries = items
+                    logger.info("DTF: found %d items in %s", len(entries), key)
+                    break
+
+        # Fallback: старая структура entries / feed.items
+        if not entries:
+            if "entries" in data:
+                raw = data["entries"]
+                entries = [{"data": v} for v in (raw.values() if isinstance(raw, dict) else raw)]
+            elif "feed" in data and "items" in data["feed"]:
+                entries = data["feed"]["items"]
 
         if not entries:
-            # Пробуем найти вложенные посты
-            for key in data:
-                val = data[key]
-                if isinstance(val, dict):
-                    for subkey in val:
-                        subval = val[subkey]
-                        if isinstance(subval, dict) and "title" in subval and "url" in subval:
-                            entries.append(subval)
+            logger.warning("DTF: no entries found in JSON (%d keys: %s), trying HTML fallback",
+                           len(data), ", ".join(list(data.keys())[:10]))
+            return _parse_dtf_html_fallback(source, resp.text)
 
-        for entry in entries[:20]:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+
+        for item in entries[:30]:
+            entry = item.get("data", item) if isinstance(item, dict) else item
+
             title = entry.get("title", "")
             if not title or len(title) < 10:
                 continue
@@ -345,26 +340,58 @@ def _parse_dtf(source: dict) -> int:
             entry_url = entry.get("url", "")
             if not entry_url:
                 entry_id = entry.get("id", "")
-                slug = entry.get("slug", "")
                 if entry_id:
-                    entry_url = f"https://dtf.ru/games/{entry_id}-{slug}" if slug else f"https://dtf.ru/games/{entry_id}"
-            if not entry_url.startswith("http"):
+                    entry_url = f"https://dtf.ru/games/{entry_id}"
+            if entry_url and not entry_url.startswith("http"):
                 entry_url = urljoin("https://dtf.ru", entry_url)
+            if not entry_url:
+                continue
 
             if news_exists(entry_url):
                 continue
 
-            description = entry.get("intro", "") or entry.get("description", "")
-            plain_text = entry.get("text", "") or description
-            if plain_text:
-                plain_text = BeautifulSoup(plain_text, "lxml").get_text(separator=" ", strip=True)[:5000]
+            # Дата: unix timestamp → ISO string
+            published_at = ""
+            date_val = entry.get("date", "")
+            if isinstance(date_val, (int, float)) and date_val > 1000000000:
+                pub_dt = datetime.fromtimestamp(date_val, tz=timezone.utc)
+                if pub_dt < cutoff:
+                    continue
+                published_at = pub_dt.isoformat()
+            elif date_val:
+                published_at = str(date_val)
 
-            published = entry.get("date", "") or entry.get("dateRFC", "")
+            # Description
+            description = entry.get("ogDescription", "") or entry.get("intro", "") or entry.get("description", "")
+
+            # Plain text: собираем из blocks[].type=="text"
+            plain_text = ""
+            blocks = entry.get("blocks", [])
+            if blocks and isinstance(blocks, list):
+                text_parts = []
+                for block in blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "text":
+                        html_content = ""
+                        block_data = block.get("data", {})
+                        if isinstance(block_data, dict):
+                            html_content = block_data.get("text", "")
+                        elif isinstance(block_data, str):
+                            html_content = block_data
+                        if html_content:
+                            text_parts.append(BeautifulSoup(html_content, "lxml").get_text(separator=" ", strip=True))
+                if text_parts:
+                    plain_text = " ".join(text_parts)[:5000]
+
+            # Fallback: description как plain_text
+            if not plain_text and description:
+                plain_text = description
 
             nid = insert_news(
                 source=name, url=entry_url, title=title,
-                h1=title, description=description[:500],
-                plain_text=plain_text, published_at=str(published),
+                h1=title, description=description[:500] if description else "",
+                plain_text=plain_text, published_at=published_at,
             )
             if nid:
                 count += 1
@@ -373,6 +400,37 @@ def _parse_dtf(source: dict) -> int:
         logger.error("Error parsing DTF: %s", e)
 
     logger.info("Parsed %s (DTF JSON): %d new articles", name, count)
+    return count
+
+
+def _parse_dtf_html_fallback(source: dict, html: str) -> int:
+    """Fallback парсинг DTF через HTML если JSON не найден."""
+    name = source["name"]
+    url = source["url"]
+    count = 0
+    soup = BeautifulSoup(html, "lxml")
+    items = soup.select("a[href*='/games/']")
+    seen = set()
+    for item in items[:30]:
+        href = item.get("href", "")
+        if not href or not re.search(r'/games/\d+', href):
+            continue
+        link = urljoin("https://dtf.ru", href)
+        if link in seen or news_exists(link):
+            continue
+        seen.add(link)
+        h_tag = item.find(["h2", "h3", "h4"])
+        title = h_tag.get_text(strip=True) if h_tag else item.get_text(strip=True)
+        if not title or len(title) < 10:
+            continue
+        time.sleep(1)
+        h1, description, plain_text, published_at = _fetch_article(link)
+        nid = insert_news(source=name, url=link, title=h1 or title, h1=h1,
+                          description=description, plain_text=plain_text,
+                          published_at=published_at)
+        if nid:
+            count += 1
+    logger.info("Parsed %s (DTF HTML fallback): %d new articles", name, count)
     return count
 
 
