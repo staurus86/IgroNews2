@@ -282,6 +282,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             # Phase 4: threshold simulator, rescore
             "/api/simulate_thresholds": lambda: self._simulate_thresholds(body),
             "/api/rescore": lambda: self._rescore_news(body),
+            "/api/health/heal": lambda: self._heal_source(body),
         }
         handler = routes.get(path)
         if handler:
@@ -1953,6 +1954,173 @@ async function login() {
             self._json({"status": "ok", "new_articles": count})
         except Exception as e:
             self._json({"status": "error", "message": str(e)})
+
+    def _heal_source(self, body):
+        """Диагностика и автоматическое лечение проблемного источника."""
+        name = body.get("name")
+        if not name:
+            self._json({"status": "error", "message": "name required"})
+            return
+        import config
+        source = next((s for s in config.SOURCES if s["name"] == name), None)
+        if not source:
+            self._json({"status": "error", "message": "Source not found"})
+            return
+
+        steps = []
+        healed = False
+        new_articles = 0
+
+        # Step 1: Reset circuit breaker for this domain
+        from parsers.proxy import _circuit_breaker, _get_domain
+        domain = _get_domain(source["url"])
+        if domain in _circuit_breaker:
+            del _circuit_breaker[domain]
+            steps.append({"action": "circuit_breaker_reset", "status": "ok", "detail": f"Сброшен circuit breaker для {domain}"})
+        else:
+            steps.append({"action": "circuit_breaker_check", "status": "skip", "detail": "Circuit breaker не активен"})
+
+        # Step 2: Test URL accessibility with fresh UA
+        from parsers.proxy import _get_random_ua
+        import requests
+        test_ok = False
+        test_status = 0
+        test_error = ""
+        try:
+            headers = {"User-Agent": _get_random_ua()}
+            resp = requests.get(source["url"], headers=headers, timeout=15, allow_redirects=True)
+            test_status = resp.status_code
+            test_ok = resp.status_code == 200
+            content_len = len(resp.text)
+            steps.append({"action": "url_test", "status": "ok" if test_ok else "fail",
+                          "detail": f"HTTP {test_status}, {content_len} байт" + (", Cloudflare?" if resp.status_code == 403 else "")})
+        except Exception as e:
+            test_error = str(e)
+            steps.append({"action": "url_test", "status": "fail", "detail": f"Ошибка: {test_error[:200]}"})
+
+        # Step 3: Try alternative strategies based on source type
+        if test_ok:
+            # Step 3a: Try reparse with current config
+            try:
+                if source["type"] == "rss":
+                    from parsers.rss_parser import parse_rss_source
+                    new_articles = parse_rss_source(source)
+                elif source["type"] == "sitemap":
+                    from parsers.html_parser import parse_sitemap_source
+                    new_articles = parse_sitemap_source(source)
+                else:
+                    from parsers.html_parser import parse_html_source
+                    new_articles = parse_html_source(source)
+                steps.append({"action": "reparse", "status": "ok", "detail": f"Получено {new_articles} новых статей"})
+                if new_articles > 0:
+                    healed = True
+            except Exception as e:
+                steps.append({"action": "reparse", "status": "fail", "detail": str(e)[:200]})
+
+            # Step 3b: If HTML source failed — try alternative selectors
+            if not healed and source["type"] in ("html", "dtf"):
+                alt_selectors = ["article", "div.article", ".news-item", ".post", "a[href*='news']", "a[href*='article']",
+                                 ".card", ".feed-item", "h2 a", "h3 a"]
+                original_sel = source.get("selector", "article")
+                for alt_sel in alt_selectors:
+                    if alt_sel == original_sel:
+                        continue
+                    try:
+                        from bs4 import BeautifulSoup
+                        soup = BeautifulSoup(resp.text, "lxml")
+                        found = soup.select(alt_sel)
+                        links_found = sum(1 for el in found if el.find("a", href=True) or el.name == "a")
+                        if links_found >= 3:
+                            steps.append({"action": "alt_selector", "status": "found",
+                                          "detail": f"Селектор '{alt_sel}' нашёл {links_found} элементов (текущий: '{original_sel}')",
+                                          "selector": alt_sel, "links_count": links_found})
+                            break
+                    except Exception:
+                        pass
+                else:
+                    steps.append({"action": "alt_selector", "status": "skip", "detail": "Альтернативные селекторы не помогли"})
+
+            # Step 3c: If RSS source got 0 articles — check feed validity
+            if not healed and source["type"] == "rss":
+                try:
+                    import feedparser
+                    feed = feedparser.parse(resp.content)
+                    n_entries = len(feed.entries)
+                    is_bozo = feed.bozo
+                    if n_entries > 0:
+                        steps.append({"action": "feed_check", "status": "ok",
+                                      "detail": f"RSS валидный: {n_entries} записей" + (" (bozo)" if is_bozo else "")})
+                        # All entries might be existing (already parsed)
+                        if new_articles == 0:
+                            steps.append({"action": "feed_check", "status": "info",
+                                          "detail": "Все записи уже в БД — источник работает, новых нет"})
+                            healed = True
+                    else:
+                        steps.append({"action": "feed_check", "status": "fail",
+                                      "detail": f"RSS пустой или невалидный" + (f": {feed.bozo_exception}" if is_bozo else "")})
+                        # Try common alternative RSS URLs
+                        alt_urls = []
+                        base = source["url"].rstrip("/")
+                        if "/feed/" not in base:
+                            alt_urls.append(base + "/feed/")
+                        if "/rss" not in base:
+                            alt_urls.append(base.rsplit("/", 1)[0] + "/rss/")
+                            alt_urls.append(base.rsplit("/", 1)[0] + "/feed.xml")
+                        for alt_url in alt_urls:
+                            try:
+                                alt_resp = requests.get(alt_url, headers=headers, timeout=10)
+                                if alt_resp.status_code == 200:
+                                    alt_feed = feedparser.parse(alt_resp.content)
+                                    if len(alt_feed.entries) > 0:
+                                        steps.append({"action": "alt_rss_url", "status": "found",
+                                                      "detail": f"Найден рабочий RSS: {alt_url} ({len(alt_feed.entries)} записей)",
+                                                      "url": alt_url, "entries": len(alt_feed.entries)})
+                                        break
+                            except Exception:
+                                pass
+                except Exception as e:
+                    steps.append({"action": "feed_check", "status": "fail", "detail": str(e)[:200]})
+        else:
+            # URL not accessible — suggest solutions
+            if test_status == 403:
+                steps.append({"action": "diagnosis", "status": "info", "detail": "403 Forbidden — вероятно Cloudflare/WAF. Рекомендация: прокси или рендер-сервис"})
+            elif test_status == 404:
+                steps.append({"action": "diagnosis", "status": "info", "detail": "404 Not Found — URL изменился. Проверьте актуальный адрес RSS/страницы"})
+            elif test_status == 429:
+                steps.append({"action": "diagnosis", "status": "info", "detail": "429 Too Many Requests — увеличьте интервал парсинга"})
+            elif test_status >= 500:
+                steps.append({"action": "diagnosis", "status": "info", "detail": f"Сервер {test_status} — временная проблема, повторите позже"})
+            elif test_error:
+                if "timeout" in test_error.lower():
+                    steps.append({"action": "diagnosis", "status": "info", "detail": "Таймаут — сервер не отвечает. Попробуйте прокси"})
+                elif "ssl" in test_error.lower():
+                    steps.append({"action": "diagnosis", "status": "info", "detail": "Ошибка SSL — проблема с сертификатом"})
+                else:
+                    steps.append({"action": "diagnosis", "status": "info", "detail": f"Сетевая ошибка: {test_error[:150]}"})
+
+        # Step 4: Recommendation
+        recommendations = []
+        for step in steps:
+            if step["status"] == "found" and step["action"] == "alt_selector":
+                recommendations.append(f"Сменить селектор на '{step['selector']}' ({step['links_count']} элементов)")
+            if step["status"] == "found" and step["action"] == "alt_rss_url":
+                recommendations.append(f"Сменить URL на {step['url']}")
+        if test_status == 403:
+            recommendations.append("Включить прокси-ротацию (PROXY_LIST)")
+            recommendations.append("Увеличить интервал парсинга")
+        if test_status == 429:
+            recommendations.append("Увеличить интервал парсинга до 30+ мин")
+        if not healed and not recommendations:
+            recommendations.append("Попробуйте парсинг вручную позже")
+
+        self._json({
+            "status": "ok",
+            "healed": healed,
+            "new_articles": new_articles,
+            "steps": steps,
+            "recommendations": recommendations,
+            "source": name,
+        })
 
     def _change_password(self, body):
         username = body.get("username", "")
@@ -5658,13 +5826,14 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <h2>Здоровье источников</h2>
       <div>
         <span id="health-summary" style="color:#8899a6;font-size:0.85em;margin-right:12px"></span>
+        <button class="btn btn-sm btn-warning" onclick="healAllSick()" id="btn-heal-all" style="display:none" title="Диагностика и лечение всех проблемных источников">&#128138; Вылечить все</button>
         <button class="btn btn-sm btn-secondary" onclick="loadHealth()">24ч</button>
         <button class="btn btn-sm btn-primary" onclick="loadHealthPlus()" id="btn-health-plus">7д расширенный</button>
       </div>
     </div>
     <div id="health-recs" style="display:none;margin-bottom:15px"></div>
     <table>
-      <thead id="health-thead"><tr><th>Статус</th><th>Источник</th><th>Статей (24ч)</th><th style="min-width:120px">Активность</th><th>Последний парсинг</th><th>Минут назад</th></tr></thead>
+      <thead id="health-thead"><tr><th>Статус</th><th>Источник</th><th>Статей (24ч)</th><th style="min-width:120px">Активность</th><th>Последний парсинг</th><th>Минут назад</th><th>Лечение</th></tr></thead>
       <tbody id="health-table"></tbody>
     </table>
   </div>
@@ -6553,26 +6722,123 @@ async function testParse() {
 }
 
 // Health
+let _healthData = [];
 async function loadHealth() {
   const data = await api('/api/health');
+  _healthData = data;
   const maxCount = Math.max(...data.map(h => h.count_24h), 1);
-  let healthy=0, warn=0, dead=0;
+  let healthy=0, low=0, warn=0, down=0, dead=0;
   document.getElementById('health-table').innerHTML = data.map(h => {
-    const icon = h.status==='healthy'?'&#9989;':h.status==='low'?'&#128993;':h.status==='warning'?'&#9888;&#65039;':'&#10060;';
-    if (h.status==='healthy') healthy++; else if (h.status==='dead') dead++; else warn++;
+    const icons = {healthy:'&#9989;',low:'&#128993;',warning:'&#9888;&#65039;',down:'&#128308;',dead:'&#10060;'};
+    const labels = {healthy:'healthy',low:'low',warning:'warning',down:'down',dead:'dead'};
+    const icon = icons[h.status] || '&#10067;';
+    if (h.status==='healthy') healthy++;
+    else if (h.status==='low') low++;
+    else if (h.status==='warning') warn++;
+    else if (h.status==='down') down++;
+    else dead++;
     const pct = Math.round((h.count_24h / maxCount) * 100);
-    const barColor = h.status==='healthy'?'#17bf63':h.status==='low'?'#ffad1f':'#e0245e';
+    const barColor = h.status==='healthy'?'#17bf63':h.status==='low'?'#ffad1f':h.status==='warning'?'#f5a623':'#e0245e';
+    const isSick = ['warning','down','dead','low'].includes(h.status);
+    const healBtn = isSick ? `<button class="btn btn-sm btn-warning" onclick="healSource('${h.source.replace(/'/g,"\\'")}')" style="padding:2px 8px;font-size:0.75em" title="Диагностика и лечение">&#128138;</button>` : '';
     return `<tr>
-      <td>${icon} ${h.status}</td>
+      <td>${icon} <span style="color:${barColor}">${labels[h.status] || h.status}</span></td>
       <td>${h.source}</td>
       <td>${h.count_24h}</td>
       <td><div style="background:#22303c;border-radius:4px;overflow:hidden;height:18px"><div style="background:${barColor};width:${pct}%;height:100%;border-radius:4px;transition:width .5s"></div></div></td>
       <td>${fmtDate(h.last_parsed)}</td>
       <td>${h.minutes_ago >= 0 ? h.minutes_ago + ' мин' : '?'}</td>
+      <td>${healBtn}</td>
     </tr>`;
   }).join('');
+  // Summary with detailed counts
+  const parts = [];
+  if (healthy) parts.push(`<span style="color:#17bf63">${healthy} ок</span>`);
+  if (low) parts.push(`<span style="color:#ffad1f">${low} low</span>`);
+  if (warn) parts.push(`<span style="color:#f5a623">${warn} warning</span>`);
+  if (down) parts.push(`<span style="color:#e0245e">${down} down</span>`);
+  if (dead) parts.push(`<span style="color:#e0245e">${dead} dead</span>`);
   const el = document.getElementById('health-summary');
-  if (el) el.textContent = `${healthy} ок / ${warn} внимание / ${dead} мертв`;
+  if (el) el.innerHTML = parts.join(' / ');
+  // Show heal-all button if any sick
+  const btnHeal = document.getElementById('btn-heal-all');
+  if (btnHeal) btnHeal.style.display = (warn + down + dead + low) > 0 ? '' : 'none';
+}
+
+async function healSource(name) {
+  toast('Диагностика ' + name + '...');
+  try {
+    const r = await api('/api/health/heal', {name});
+    if (r.status !== 'ok') { toast(r.message || 'Ошибка', true); return; }
+    // Build result dialog
+    let html = `<div style="background:#15202b;border:1px solid #38444d;border-radius:10px;padding:16px;max-width:600px;margin:10px auto">
+      <h3 style="margin:0 0 12px">${r.healed ? '&#9989;' : '&#9888;&#65039;'} ${name} — ${r.healed ? 'Вылечен!' : 'Требует внимания'}</h3>
+      ${r.new_articles > 0 ? '<div style="color:#17bf63;margin-bottom:8px">Получено новых статей: '+r.new_articles+'</div>' : ''}
+      <div style="margin-bottom:10px"><b>Шаги диагностики:</b></div>`;
+    for (const s of r.steps) {
+      const color = s.status==='ok'?'#17bf63':s.status==='fail'?'#e0245e':s.status==='found'?'#1da1f2':s.status==='skip'?'#657786':'#ffad1f';
+      html += `<div style="padding:4px 0;border-bottom:1px solid #22303c">
+        <span style="color:${color};font-weight:bold">[${s.status}]</span> ${s.action}: ${s.detail}</div>`;
+    }
+    if (r.recommendations && r.recommendations.length) {
+      html += '<div style="margin-top:10px"><b>Рекомендации:</b></div>';
+      for (const rec of r.recommendations) {
+        html += `<div style="padding:3px 0;color:#ffad1f">&#8226; ${rec}</div>`;
+      }
+    }
+    html += '</div>';
+    // Show in a modal-like overlay
+    let overlay = document.getElementById('heal-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'heal-overlay';
+      overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:10000;overflow:auto;display:flex;align-items:center;justify-content:center';
+      overlay.onclick = e => { if (e.target === overlay) overlay.style.display = 'none'; };
+      document.body.appendChild(overlay);
+    }
+    overlay.innerHTML = html + '<div style="text-align:center;margin-top:10px"><button class="btn btn-secondary" onclick="document.getElementById(\'heal-overlay\').style.display=\'none\'">Закрыть</button></div>';
+    overlay.style.display = 'flex';
+    loadHealth();
+  } catch(e) { toast('Ошибка: ' + e.message, true); }
+}
+
+async function healAllSick() {
+  const sick = _healthData.filter(h => ['warning','down','dead','low'].includes(h.status));
+  if (!sick.length) { toast('Все источники здоровы!'); return; }
+  toast('Лечение ' + sick.length + ' источников...');
+  const btn = document.getElementById('btn-heal-all');
+  if (btn) { btn.disabled = true; btn.innerHTML = '&#9203; Лечение...'; }
+  let healed = 0, failed = 0;
+  const results = [];
+  for (const h of sick) {
+    try {
+      const r = await api('/api/health/heal', {name: h.source});
+      if (r.healed) healed++; else failed++;
+      results.push(r);
+    } catch(e) { failed++; }
+  }
+  if (btn) { btn.disabled = false; btn.innerHTML = '&#128138; Вылечить все'; }
+  toast(`Лечение завершено: ${healed} вылечено, ${failed} требуют внимания`);
+  // Show summary
+  let html = `<div style="background:#15202b;border:1px solid #38444d;border-radius:10px;padding:16px;max-width:700px;margin:10px auto">
+    <h3 style="margin:0 0 12px">&#128138; Результаты лечения: ${healed} ок / ${failed} проблемы</h3>`;
+  for (const r of results) {
+    const icon = r.healed ? '&#9989;' : '&#9888;&#65039;';
+    const recs = (r.recommendations || []).join('; ');
+    html += `<div style="padding:6px 0;border-bottom:1px solid #22303c">${icon} <b>${r.source}</b>: ${r.healed ? 'Вылечен ('+r.new_articles+' статей)' : recs || 'Требует внимания'}</div>`;
+  }
+  html += '</div>';
+  let overlay = document.getElementById('heal-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'heal-overlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:10000;overflow:auto;display:flex;align-items:center;justify-content:center';
+    overlay.onclick = e => { if (e.target === overlay) overlay.style.display = 'none'; };
+    document.body.appendChild(overlay);
+  }
+  overlay.innerHTML = html + '<div style="text-align:center;margin-top:10px"><button class="btn btn-secondary" onclick="document.getElementById(\'heal-overlay\').style.display=\'none\'">Закрыть</button></div>';
+  overlay.style.display = 'flex';
+  loadHealth();
 }
 
 // Generic sort for news/viral arrays
