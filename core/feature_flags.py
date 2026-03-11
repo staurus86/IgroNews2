@@ -27,17 +27,17 @@ _CACHE_TTL = 30  # seconds
 # Default flags — all new features start disabled
 DEFAULT_FLAGS = {
     "dashboard_v2": {
-        "enabled": False,
+        "enabled": True,
         "description": "Action-first dashboard tab",
         "phase": 1,
     },
     "explainability_v1": {
-        "enabled": False,
+        "enabled": True,
         "description": "Score breakdown and decision trace for each news",
         "phase": 1,
     },
     "newsroom_triage_v1": {
-        "enabled": False,
+        "enabled": True,
         "description": "3-mode triage UX for editorial tab",
         "phase": 2,
     },
@@ -47,12 +47,12 @@ DEFAULT_FLAGS = {
         "phase": 3,
     },
     "final_confidence_v1": {
-        "enabled": False,
+        "enabled": True,
         "description": "Confidence score and decision aids in Final tab",
         "phase": 2,
     },
     "content_versions_v1": {
-        "enabled": False,
+        "enabled": True,
         "description": "Article version history and diff",
         "phase": 3,
     },
@@ -62,12 +62,12 @@ DEFAULT_FLAGS = {
         "phase": 3,
     },
     "analytics_funnel_v1": {
-        "enabled": False,
+        "enabled": True,
         "description": "Full funnel analytics and cost visibility",
         "phase": 4,
     },
     "queue_retry_v1": {
-        "enabled": False,
+        "enabled": True,
         "description": "Enhanced queue observability and retry controls",
         "phase": 2,
     },
@@ -77,7 +77,7 @@ DEFAULT_FLAGS = {
         "phase": 3,
     },
     "admin_safety_v1": {
-        "enabled": False,
+        "enabled": True,
         "description": "Admin safety features: audit trail, config rollback",
         "phase": 4,
     },
@@ -139,6 +139,27 @@ def init_flags_table():
 
     if not is_pg:
         conn.commit()
+
+    # Migrate: enable flags that should be on by default but were seeded as disabled
+    _ENABLE_BY_DEFAULT = [
+        "dashboard_v2", "explainability_v1", "newsroom_triage_v1",
+        "final_confidence_v1", "content_versions_v1", "analytics_funnel_v1",
+        "queue_retry_v1", "admin_safety_v1",
+    ]
+    for flag_id in _ENABLE_BY_DEFAULT:
+        try:
+            cur2 = conn.cursor()
+            # Only enable if still set by 'system' (not manually toggled by admin)
+            cur2.execute(
+                f"UPDATE feature_flags SET enabled = 1 WHERE flag_id = {ph} AND enabled = 0 AND updated_by = {ph}",
+                (flag_id, "system")
+            )
+            if not is_pg:
+                conn.commit()
+            cur2.close()
+        except Exception:
+            pass
+
     cur.close()
     logger.info("Feature flags table initialized (%d flags)", len(DEFAULT_FLAGS))
 
