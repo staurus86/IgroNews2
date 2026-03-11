@@ -424,6 +424,38 @@ class AdminHandler(BaseHTTPRequestHandler):
 
                 diag["configured_sources"] = len(config.SOURCES)
 
+                # Scoring diagnostics: check recent news for missing data
+                ph = "%s" if _is_postgres() else "?"
+                cur.execute(f"""
+                    SELECT n.id, n.title, n.source, n.status,
+                           LENGTH(n.plain_text) as text_len,
+                           COALESCE(a.total_score, -1) as score
+                    FROM news n
+                    LEFT JOIN news_analysis a ON n.id = a.news_id
+                    ORDER BY n.parsed_at DESC
+                    LIMIT 10
+                """)
+                if _is_postgres():
+                    cols = [d[0] for d in cur.description]
+                    recent = [dict(zip(cols, r)) for r in cur.fetchall()]
+                else:
+                    recent = [dict(r) for r in cur.fetchall()]
+                diag["recent_news"] = [{
+                    "title": r["title"][:60],
+                    "source": r["source"],
+                    "status": r["status"],
+                    "text_len": r["text_len"] or 0,
+                    "score": r["score"],
+                } for r in recent]
+
+                # Count news with no analysis at all
+                cur.execute("SELECT COUNT(*) FROM news n LEFT JOIN news_analysis a ON n.id = a.news_id WHERE a.news_id IS NULL")
+                diag["no_analysis"] = cur.fetchone()[0]
+
+                # Count with score = 0
+                cur.execute("SELECT COUNT(*) FROM news_analysis WHERE total_score = 0")
+                diag["score_zero"] = cur.fetchone()[0]
+
             finally:
                 cur.close()
         except Exception as e:
