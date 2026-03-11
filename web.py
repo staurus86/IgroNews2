@@ -154,6 +154,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             # Phase 3: analytics funnel, source intelligence
             "/api/analytics/funnel": lambda: self._json(self._get_funnel_analytics()),
             "/api/analytics/cost_by_source": lambda: self._json(self._get_cost_by_source()),
+            "/api/analytics/prompt_insights": lambda: self._json(self._get_prompt_insights()),
             # Phase 4: storylines, source health plus, threshold simulator
             "/api/storylines": lambda: self._json(self._get_storylines()),
             "/api/source_health_plus": lambda: self._json(self._get_source_health_plus()),
@@ -3940,6 +3941,80 @@ async function login() {
         finally:
             cur.close()
 
+    def _get_prompt_insights(self):
+        """Prompt version performance: avg cost, latency, usage count per version."""
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            # Get all prompt versions
+            cur.execute("SELECT id, prompt_name, version, is_active, created_at, notes FROM prompt_versions ORDER BY prompt_name, version DESC")
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                versions = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                versions = [dict(r) for r in cur.fetchall()]
+
+            # Get LLM API call stats
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute("""
+                SELECT model,
+                       COUNT(*) as call_count,
+                       COALESCE(SUM(cost_usd), 0) as total_cost,
+                       COALESCE(AVG(cost_usd), 0) as avg_cost,
+                       COALESCE(AVG(latency_ms), 0) as avg_latency,
+                       COALESCE(SUM(tokens_in), 0) as total_tokens_in,
+                       COALESCE(SUM(tokens_out), 0) as total_tokens_out
+                FROM api_cost_log
+                WHERE api_type = 'llm'
+                GROUP BY model
+                ORDER BY call_count DESC
+            """)
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                model_stats = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                model_stats = [dict(r) for r in cur.fetchall()]
+
+            # Get daily LLM cost trend (last 14 days)
+            from datetime import datetime as dt_mod, timezone, timedelta
+            cutoff = (dt_mod.now(timezone.utc) - timedelta(days=14)).isoformat()
+            day_expr = "CAST(created_at AS TEXT)" if _is_postgres() else "created_at"
+            cur.execute(f"""
+                SELECT SUBSTRING({day_expr}, 1, 10) as day,
+                       COUNT(*) as calls,
+                       COALESCE(SUM(cost_usd), 0) as cost
+                FROM api_cost_log
+                WHERE api_type = 'llm' AND created_at > {ph}
+                GROUP BY SUBSTRING({day_expr}, 1, 10)
+                ORDER BY day
+            """, (cutoff,))
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                daily_trend = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                daily_trend = [dict(r) for r in cur.fetchall()]
+
+            # Prompt usage summary by name
+            by_name = {}
+            for v in versions:
+                name = v["prompt_name"]
+                if name not in by_name:
+                    by_name[name] = {"versions": 0, "active_version": None}
+                by_name[name]["versions"] += 1
+                if v.get("is_active"):
+                    by_name[name]["active_version"] = v["version"]
+
+            return {
+                "versions": versions,
+                "model_stats": model_stats,
+                "daily_trend": daily_trend,
+                "by_name": by_name,
+            }
+        except Exception as e:
+            return {"error": str(e), "versions": [], "model_stats": []}
+        finally:
+            cur.close()
+
     # --- Phase 2: Content Versioning & Multi-Output ---
 
     def _get_article_versions(self, body):
@@ -5334,6 +5409,19 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       </div>
     </div>
 
+    <!-- Prompt Insights (Phase 4) -->
+    <div id="analytics-prompts" style="margin-bottom:16px">
+      <div class="card" style="padding:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="font-size:0.95em">LLM & Промпты</h3>
+          <button class="btn btn-sm btn-secondary" onclick="loadPromptInsights()">Обновить</button>
+        </div>
+        <div id="prompt-model-stats"></div>
+        <div id="prompt-cost-trend" style="margin-top:12px"></div>
+        <div id="prompt-versions-summary" style="margin-top:12px"></div>
+      </div>
+    </div>
+
     <!-- Summary cards -->
     <div class="grid-2" style="gap:12px;margin-bottom:16px" id="analytics-summary"></div>
 
@@ -5966,7 +6054,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   if (t.dataset.tab === 'final') { loadFinal(); }
   if (t.dataset.tab === 'editor') { loadArticles(); }
   if (t.dataset.tab === 'viral') { loadViral(); }
-  if (t.dataset.tab === 'analytics') { loadAnalytics(); loadSavedDigests(); loadFunnelAnalytics(); }
+  if (t.dataset.tab === 'analytics') { loadAnalytics(); loadSavedDigests(); loadFunnelAnalytics(); loadPromptInsights(); }
   if (t.dataset.tab === 'queue') { loadQueueStandalone(); }
   if (t.dataset.tab === 'health') { loadHealth(); }
   if (t.dataset.tab === 'storylines') { loadStorylines(); }
@@ -9400,6 +9488,60 @@ async function loadFunnelAnalytics() {
 // ═══════════════════════════════════════════
 // FEATURE FLAG UI HOOKS
 // ═══════════════════════════════════════════
+
+// ═══════════════════════════════════════════
+// Phase 4: Prompt Insights
+// ═══════════════════════════════════════════
+async function loadPromptInsights() {
+  try {
+    const data = await api('/api/analytics/prompt_insights');
+    if (data.error) return;
+
+    // Model stats
+    const msEl = document.getElementById('prompt-model-stats');
+    if (msEl && data.model_stats && data.model_stats.length) {
+      msEl.innerHTML = '<div style="font-size:0.85em;font-weight:600;margin-bottom:6px">Модели LLM:</div>' +
+        '<table style="width:100%;font-size:0.82em"><thead><tr><th style="text-align:left">Модель</th><th>Вызовов</th><th>Стоимость ($)</th><th>Ср. задержка</th><th>Токены (in/out)</th></tr></thead><tbody>' +
+        data.model_stats.map(m => {
+          return '<tr><td>' + esc(m.model||'unknown') + '</td><td style="text-align:center">' + m.call_count +
+            '</td><td style="text-align:center;color:#ffad1f">$' + Number(m.total_cost).toFixed(4) +
+            '</td><td style="text-align:center">' + Math.round(Number(m.avg_latency)) + 'ms' +
+            '</td><td style="text-align:center;color:#8899a6">' + m.total_tokens_in + ' / ' + m.total_tokens_out + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    } else if (msEl) {
+      msEl.innerHTML = '<div style="color:#8899a6;font-size:0.85em">Нет данных о вызовах LLM</div>';
+    }
+
+    // Cost trend mini-chart
+    const ctEl = document.getElementById('prompt-cost-trend');
+    if (ctEl && data.daily_trend && data.daily_trend.length) {
+      const maxCalls = Math.max(...data.daily_trend.map(d => d.calls), 1);
+      ctEl.innerHTML = '<div style="font-size:0.85em;font-weight:600;margin-bottom:6px">Стоимость LLM (14 дней):</div>' +
+        '<div style="display:flex;align-items:flex-end;gap:3px;height:50px">' +
+        data.daily_trend.map(d => {
+          const h = Math.max(3, Math.round(d.calls / maxCalls * 48));
+          return '<div title="' + d.day + ': ' + d.calls + ' вызовов, $' + Number(d.cost).toFixed(4) + '" style="width:16px;height:' + h + 'px;background:#1da1f2;border-radius:2px 2px 0 0;cursor:help"></div>';
+        }).join('') + '</div>';
+    }
+
+    // Prompt versions summary
+    const pvEl = document.getElementById('prompt-versions-summary');
+    if (pvEl && data.by_name) {
+      const names = Object.entries(data.by_name);
+      if (names.length) {
+        pvEl.innerHTML = '<div style="font-size:0.85em;font-weight:600;margin-bottom:6px">Промпты:</div>' +
+          '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
+          names.map(([name, info]) => {
+            const active = info.active_version ? 'v' + info.active_version : 'нет';
+            return '<div style="background:#192734;border-radius:8px;padding:8px 12px;font-size:0.82em">' +
+              '<div style="font-weight:600">' + esc(name) + '</div>' +
+              '<div style="color:#8899a6">' + info.versions + ' версий, активная: <span style="color:#17bf63">' + active + '</span></div>' +
+            '</div>';
+          }).join('') + '</div>';
+      }
+    }
+  } catch(e) {}
+}
 
 // ═══════════════════════════════════════════
 // Phase 4: Storylines
