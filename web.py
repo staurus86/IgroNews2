@@ -251,6 +251,10 @@ class AdminHandler(BaseHTTPRequestHandler):
             # Phase 0: feature flags, decision trace
             "/api/feature_flags/toggle": lambda: self._toggle_feature_flag(body),
             "/api/decision_trace": lambda: self._get_decision_trace(body),
+            # Phase 2: content versioning, multi-output
+            "/api/articles/versions": lambda: self._get_article_versions(body),
+            "/api/articles/multi_output": lambda: self._generate_multi_output(body),
+            "/api/articles/regenerate_field": lambda: self._regenerate_field(body),
         }
         handler = routes.get(path)
         if handler:
@@ -3229,6 +3233,14 @@ async function login() {
         if not aid:
             self._json({"status": "error", "message": "id required"})
             return
+
+        # Save version snapshot before update (Phase 2)
+        try:
+            self._save_article_version(aid, body, change_type="manual",
+                                        changed_by=self._get_session_user() or "admin")
+        except Exception:
+            pass
+
         now = datetime.now(timezone.utc).isoformat()
         conn = get_connection()
         cur = conn.cursor()
@@ -3775,6 +3787,148 @@ async function login() {
 
         finally:
             cur.close()
+    # --- Phase 2: Content Versioning & Multi-Output ---
+
+    def _get_article_versions(self, body):
+        """Get version history for an article."""
+        article_id = body.get("article_id", "")
+        if not article_id:
+            self._json({"error": "article_id required"}, 400)
+            return
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        try:
+            cur.execute(f"""
+                SELECT * FROM article_versions
+                WHERE article_id = {ph}
+                ORDER BY version DESC
+            """, (article_id,))
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                rows = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                rows = [dict(r) for r in cur.fetchall()]
+            self._json({"versions": rows})
+        except Exception as e:
+            self._json({"versions": [], "error": str(e)})
+        finally:
+            cur.close()
+
+    def _save_article_version(self, article_id, article_data, change_type="manual", changed_by="system"):
+        """Save a version snapshot before modification (internal helper)."""
+        try:
+            from core.feature_flags import is_enabled
+            if not is_enabled("content_versions_v1"):
+                return
+        except Exception:
+            return
+
+        import uuid
+        from datetime import datetime, timezone
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        try:
+            # Get current max version
+            cur.execute(f"SELECT COALESCE(MAX(version), 0) FROM article_versions WHERE article_id = {ph}", (article_id,))
+            max_ver = cur.fetchone()[0]
+            now = datetime.now(timezone.utc).isoformat()
+            ver_id = uuid.uuid4().hex[:12]
+
+            import json
+            cur.execute(f"""
+                INSERT INTO article_versions (id, article_id, version, title, text, seo_title, seo_description, tags, change_type, changed_by, created_at)
+                VALUES ({','.join([ph]*11)})
+            """, (ver_id, article_id, max_ver + 1,
+                  article_data.get("title", "")[:500],
+                  article_data.get("text", "")[:5000],
+                  article_data.get("seo_title", "")[:500],
+                  article_data.get("seo_description", "")[:1000],
+                  json.dumps(article_data.get("tags", []), ensure_ascii=False),
+                  change_type, changed_by, now))
+            if not _is_postgres():
+                conn.commit()
+        except Exception as e:
+            logger.debug("Failed to save article version: %s", e)
+        finally:
+            cur.close()
+
+    def _generate_multi_output(self, body):
+        """Generate multiple output formats from one article."""
+        article_id = body.get("article_id", "")
+        formats = body.get("formats", ["social", "short"])
+        if not article_id:
+            self._json({"error": "article_id required"}, 400)
+            return
+
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        try:
+            cur.execute(f"SELECT title, text FROM articles WHERE id = {ph}", (article_id,))
+            row = cur.fetchone()
+            if not row:
+                self._json({"error": "article not found"}, 404)
+                return
+            if _is_postgres():
+                title, text = row[0], row[1]
+            else:
+                title, text = row["title"], row["text"]
+
+            from apis.llm import rewrite_news
+            results = {}
+            for fmt in formats[:3]:  # Max 3 formats at once
+                result = rewrite_news(title=title, text=text, style=fmt, language="русский")
+                if result:
+                    results[fmt] = result
+
+            self._json({"article_id": article_id, "outputs": results})
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
+        finally:
+            cur.close()
+
+    def _regenerate_field(self, body):
+        """Regenerate a single field (title, seo_title, seo_description, tags) via LLM."""
+        article_id = body.get("article_id", "")
+        field = body.get("field", "")
+        if not article_id or field not in ("title", "seo_title", "seo_description", "tags"):
+            self._json({"error": "article_id and valid field required"}, 400)
+            return
+
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        try:
+            cur.execute(f"SELECT title, text FROM articles WHERE id = {ph}", (article_id,))
+            row = cur.fetchone()
+            if not row:
+                self._json({"error": "article not found"}, 404)
+                return
+            if _is_postgres():
+                title, text = row[0], row[1]
+            else:
+                title, text = row["title"], row["text"]
+
+            from apis.llm import _call_llm
+            prompts = {
+                "title": f"Придумай новый заголовок для игровой новости. Текст:\n{text[:1500]}\n\nОтветь JSON: {{\"title\": \"новый заголовок\"}}",
+                "seo_title": f"Придумай SEO-заголовок до 60 символов для:\n{title}\n\nОтветь JSON: {{\"seo_title\": \"SEO заголовок\"}}",
+                "seo_description": f"Придумай meta description до 155 символов для:\n{title}\n{text[:500]}\n\nОтветь JSON: {{\"seo_description\": \"описание\"}}",
+                "tags": f"Предложи 5 тегов для игровой новости:\n{title}\n\nОтветь JSON: {{\"tags\": [\"тег1\", \"тег2\", \"тег3\", \"тег4\", \"тег5\"]}}",
+            }
+
+            result = _call_llm(prompts[field])
+            if result and field in result:
+                self._json({"field": field, "value": result[field]})
+            else:
+                self._json({"error": "LLM returned no result"}, 500)
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
+        finally:
+            cur.close()
+
     # --- Phase 0: Feature Flags & Observability API ---
 
     def _get_feature_flags(self):
@@ -4540,6 +4694,11 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
               <button class="art-improve-btn" onclick="rewriteArticleInStyle('clickbait')">&#128293; Кликбейт</button>
               <button class="art-improve-btn" onclick="rewriteArticleInStyle('social')">&#128242; Соцсети</button>
               <button class="art-improve-btn" onclick="rewriteArticleInStyle('short')">&#9889; Кратко</button>
+              <span style="margin-left:8px;font-size:0.8em;color:#657786">|</span>
+              <button class="art-improve-btn" onclick="generateMultiOutput(['social','short','news'])" title="Telegram + Short + Новость">&#128172; Multi-output</button>
+              <button class="art-improve-btn" onclick="regenerateField('title')" title="Перегенерировать заголовок">&#127922; Заголовок</button>
+              <button class="art-improve-btn" onclick="regenerateField('seo_title')">&#128269; SEO Title</button>
+              <button class="art-improve-btn" onclick="regenerateField('tags')">&#127991; Теги</button>
             </div>
             <div id="art-ai-loading" style="display:none;margin-top:8px;font-size:0.85em;color:#8899a6">
               <span class="spinner" style="width:14px;height:14px;border:2px solid #38444d;border-top-color:#1da1f2;border-radius:50%;animation:spin .8s linear infinite;display:inline-block;vertical-align:middle"></span>
@@ -4547,6 +4706,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
             </div>
             <div id="art-ai-changes" style="display:none;margin-top:8px;padding:8px 12px;background:#17bf6315;border-radius:6px;font-size:0.83em;color:#17bf63"></div>
           </div>
+
+          <!-- Article Versions (Phase 2, behind content_versions_v1) -->
+          <div id="art-versions-container" style="margin-top:8px"></div>
 
           <!-- SEO Analysis -->
           <div style="margin-top:8px;padding:12px;background:#22303c;border-radius:8px">
@@ -6256,6 +6418,9 @@ async function selectArticle(id) {
     origBlock.style.display = 'none';
   }
 
+  // Load article versions (Phase 2)
+  loadArticleVersions(id);
+
   // Char counts
   artCharCount('art-edit-title', 100);
   artCharCount('art-edit-seo-title', 60);
@@ -6475,6 +6640,83 @@ function downloadSelectedDocx() {
   const ids = [..._artSelectedIds].join(',');
   window.open('/api/articles/docx_bulk?ids=' + encodeURIComponent(ids), '_blank');
   toast('Скачивание ZIP...');
+}
+
+// Phase 2: Multi-output generation
+async function generateMultiOutput(formats) {
+  if (!_currentArticleId) { showToast('Выберите статью', 'warning'); return; }
+  if (!ffEnabled('content_versions_v1')) { showToast('Включите флаг content_versions_v1', 'warning'); return; }
+  showToast('Генерация форматов...', 'info');
+  const r = await api('/api/articles/multi_output', {article_id: _currentArticleId, formats: formats || ['social', 'short']});
+  if (r && r.outputs) {
+    let msg = 'Сгенерировано: ';
+    const parts = [];
+    for (const [fmt, data] of Object.entries(r.outputs)) {
+      parts.push(fmt);
+    }
+    msg += parts.join(', ');
+    showToast(msg, 'success');
+    // Show in a simple modal
+    let html = '<div style="max-height:500px;overflow-y:auto">';
+    for (const [fmt, data] of Object.entries(r.outputs)) {
+      html += `<div style="background:#22303c;border-radius:8px;padding:12px;margin-bottom:12px">
+        <h3 style="color:#1da1f2;margin-bottom:8px">${esc(fmt)}</h3>
+        <div style="font-weight:600;margin-bottom:6px">${esc(data.title || '')}</div>
+        <div style="font-size:0.9em;white-space:pre-wrap">${esc(data.text || '')}</div>
+        <button class="btn btn-sm btn-secondary" style="margin-top:8px" onclick="navigator.clipboard.writeText(${JSON.stringify(data.text||'').replace(/'/g,"\\'")});showToast('Скопировано')">Копировать</button>
+      </div>`;
+    }
+    html += '</div>';
+    // Reuse explain drawer as generic side panel
+    const drawer = document.getElementById('explain-drawer');
+    if (drawer) {
+      document.getElementById('explain-title').textContent = 'Multi-output';
+      document.getElementById('explain-scores').innerHTML = html;
+      document.getElementById('explain-trace').innerHTML = '';
+      document.getElementById('explain-reason').innerHTML = '';
+      drawer.classList.add('open');
+    }
+  } else {
+    showToast(r?.error || 'Ошибка', 'error');
+  }
+}
+
+// Phase 2: Regenerate single field
+async function regenerateField(field) {
+  if (!_currentArticleId) return;
+  showToast('Генерация ' + field + '...', 'info');
+  const r = await api('/api/articles/regenerate_field', {article_id: _currentArticleId, field});
+  if (r && r.value !== undefined) {
+    const fieldMap = {title: 'art-edit-title', seo_title: 'art-edit-seo-title', seo_description: 'art-edit-seo-desc'};
+    const el = document.getElementById(fieldMap[field]);
+    if (el) {
+      el.value = typeof r.value === 'string' ? r.value : JSON.stringify(r.value);
+      showToast(field + ' обновлён', 'success');
+    } else if (field === 'tags' && Array.isArray(r.value)) {
+      document.getElementById('art-edit-tags').value = r.value.join(', ');
+      showToast('Теги обновлены', 'success');
+    }
+  } else {
+    showToast(r?.error || 'Ошибка генерации', 'error');
+  }
+}
+
+// Phase 2: Get article versions
+async function loadArticleVersions(articleId) {
+  if (!ffEnabled('content_versions_v1')) return;
+  const r = await api('/api/articles/versions', {article_id: articleId});
+  if (r && r.versions && r.versions.length > 0) {
+    let html = '<div style="margin-top:12px"><h3 style="color:#1da1f2;margin-bottom:8px">История версий (' + r.versions.length + ')</h3>';
+    html += r.versions.slice(0, 10).map(v => `
+      <div style="background:#22303c;border-radius:6px;padding:8px;margin-bottom:4px;font-size:0.85em;display:flex;justify-content:space-between">
+        <span>v${v.version} — ${v.change_type} (${v.changed_by})</span>
+        <span style="color:#8899a6">${v.created_at ? new Date(v.created_at).toLocaleString('ru') : ''}</span>
+      </div>
+    `).join('');
+    html += '</div>';
+    const container = document.getElementById('art-versions-container');
+    if (container) container.innerHTML = html;
+  }
 }
 
 // Bulk delete articles

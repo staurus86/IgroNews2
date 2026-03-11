@@ -209,6 +209,25 @@ def init_db():
     if not _is_postgres():
         conn.commit()
 
+    # Phase 2: article_versions table for content versioning
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS article_versions (
+            id TEXT PRIMARY KEY,
+            article_id TEXT NOT NULL,
+            version INTEGER DEFAULT 1,
+            title TEXT DEFAULT '',
+            text TEXT DEFAULT '',
+            seo_title TEXT DEFAULT '',
+            seo_description TEXT DEFAULT '',
+            tags TEXT DEFAULT '[]',
+            change_type TEXT DEFAULT 'manual',
+            changed_by TEXT DEFAULT 'system',
+            created_at TEXT NOT NULL
+        )
+    """)
+    if not _is_postgres():
+        conn.commit()
+
     # Initialize feature flags and observability tables
     try:
         from core.feature_flags import init_flags_table
