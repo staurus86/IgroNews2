@@ -1,0 +1,849 @@
+{
+  "fetched_at": "2026-03-11 (Steam API + estimated)",
+  "method": "Steam ISteamChartsService peaks 2026 + estimated non-Steam, log-normalized",
+  "raw_results": {
+    "gta 6": {
+      "name": "gta 6",
+      "ws": 1500000,
+      "category": "mixed"
+    },
+    "minecraft": {
+      "name": "minecraft",
+      "ws": 900000,
+      "category": "mixed"
+    },
+    "fortnite": {
+      "name": "fortnite",
+      "ws": 800000,
+      "category": "mixed"
+    },
+    "gta": {
+      "name": "gta",
+      "ws": 350000,
+      "category": "mixed"
+    },
+    "zelda": {
+      "name": "zelda",
+      "ws": 400000,
+      "category": "mixed"
+    },
+    "call of duty": {
+      "name": "call of duty",
+      "ws": 500000,
+      "category": "mixed"
+    },
+    "counter-strike": {
+      "name": "counter-strike",
+      "ws": 1420000,
+      "category": "mixed"
+    },
+    "elder scrolls 6": {
+      "name": "elder scrolls 6",
+      "ws": 200000,
+      "category": "mixed"
+    },
+    "half-life 3": {
+      "name": "half-life 3",
+      "ws": 300000,
+      "category": "mixed"
+    },
+    "elden ring": {
+      "name": "elden ring",
+      "ws": 200000,
+      "category": "mixed"
+    },
+    "cyberpunk 2077": {
+      "name": "cyberpunk 2077",
+      "ws": 100000,
+      "category": "mixed"
+    },
+    "baldur's gate 3": {
+      "name": "baldur's gate 3",
+      "ws": 120000,
+      "category": "mixed"
+    },
+    "the witcher": {
+      "name": "the witcher",
+      "ws": 120000,
+      "category": "mixed"
+    },
+    "god of war": {
+      "name": "god of war",
+      "ws": 90000,
+      "category": "mixed"
+    },
+    "spider-man": {
+      "name": "spider-man",
+      "ws": 80000,
+      "category": "mixed"
+    },
+    "resident evil": {
+      "name": "resident evil",
+      "ws": 150000,
+      "category": "mixed"
+    },
+    "final fantasy": {
+      "name": "final fantasy",
+      "ws": 100000,
+      "category": "mixed"
+    },
+    "red dead redemption": {
+      "name": "red dead redemption",
+      "ws": 60000,
+      "category": "mixed"
+    },
+    "the last of us": {
+      "name": "the last of us",
+      "ws": 80000,
+      "category": "mixed"
+    },
+    "death stranding 2": {
+      "name": "death stranding 2",
+      "ws": 70000,
+      "category": "mixed"
+    },
+    "metal gear solid": {
+      "name": "metal gear solid",
+      "ws": 50000,
+      "category": "mixed"
+    },
+    "silent hill": {
+      "name": "silent hill",
+      "ws": 40000,
+      "category": "mixed"
+    },
+    "mass effect": {
+      "name": "mass effect",
+      "ws": 45000,
+      "category": "mixed"
+    },
+    "diablo": {
+      "name": "diablo",
+      "ws": 150000,
+      "category": "mixed"
+    },
+    "hollow knight silksong": {
+      "name": "hollow knight silksong",
+      "ws": 60000,
+      "category": "mixed"
+    },
+    "black myth wukong": {
+      "name": "black myth wukong",
+      "ws": 160000,
+      "category": "mixed"
+    },
+    "monster hunter wilds": {
+      "name": "monster hunter wilds",
+      "ws": 120000,
+      "category": "mixed"
+    },
+    "nintendo switch 2": {
+      "name": "nintendo switch 2",
+      "ws": 500000,
+      "category": "mixed"
+    },
+    "doom the dark ages": {
+      "name": "doom the dark ages",
+      "ws": 80000,
+      "category": "mixed"
+    },
+    "marvel rivals": {
+      "name": "marvel rivals",
+      "ws": 88000,
+      "category": "mixed"
+    },
+    "civilization 7": {
+      "name": "civilization 7",
+      "ws": 50000,
+      "category": "mixed"
+    },
+    "metroid prime 4": {
+      "name": "metroid prime 4",
+      "ws": 60000,
+      "category": "mixed"
+    },
+    "pokemon": {
+      "name": "pokemon",
+      "ws": 350000,
+      "category": "mixed"
+    },
+    "mario": {
+      "name": "mario",
+      "ws": 300000,
+      "category": "mixed"
+    },
+    "assassin's creed": {
+      "name": "assassin's creed",
+      "ws": 80000,
+      "category": "mixed"
+    },
+    "starfield": {
+      "name": "starfield",
+      "ws": 30000,
+      "category": "mixed"
+    },
+    "halo": {
+      "name": "halo",
+      "ws": 25000,
+      "category": "mixed"
+    },
+    "dragon age": {
+      "name": "dragon age",
+      "ws": 40000,
+      "category": "mixed"
+    },
+    "horizon": {
+      "name": "horizon",
+      "ws": 35000,
+      "category": "mixed"
+    },
+    "overwatch": {
+      "name": "overwatch",
+      "ws": 84000,
+      "category": "mixed"
+    },
+    "valorant": {
+      "name": "valorant",
+      "ws": 400000,
+      "category": "mixed"
+    },
+    "league of legends": {
+      "name": "league of legends",
+      "ws": 700000,
+      "category": "mixed"
+    },
+    "dota 2": {
+      "name": "dota 2",
+      "ws": 580000,
+      "category": "mixed"
+    },
+    "escape from tarkov": {
+      "name": "escape from tarkov",
+      "ws": 80000,
+      "category": "mixed"
+    },
+    "genshin impact": {
+      "name": "genshin impact",
+      "ws": 200000,
+      "category": "mixed"
+    },
+    "destiny 2": {
+      "name": "destiny 2",
+      "ws": 50000,
+      "category": "mixed"
+    },
+    "apex legends": {
+      "name": "apex legends",
+      "ws": 216000,
+      "category": "mixed"
+    },
+    "helldivers 2": {
+      "name": "helldivers 2",
+      "ws": 51000,
+      "category": "mixed"
+    },
+    "palworld": {
+      "name": "palworld",
+      "ws": 30000,
+      "category": "mixed"
+    },
+    "alan wake": {
+      "name": "alan wake",
+      "ws": 20000,
+      "category": "mixed"
+    },
+    "uncharted": {
+      "name": "uncharted",
+      "ws": 18000,
+      "category": "mixed"
+    },
+    "fable": {
+      "name": "fable",
+      "ws": 35000,
+      "category": "mixed"
+    },
+    "far cry": {
+      "name": "far cry",
+      "ws": 20000,
+      "category": "mixed"
+    },
+    "ghost of tsushima": {
+      "name": "ghost of tsushima",
+      "ws": 30000,
+      "category": "mixed"
+    },
+    "world of warcraft": {
+      "name": "world of warcraft",
+      "ws": 300000,
+      "category": "mixed"
+    },
+    "honkai star rail": {
+      "name": "honkai star rail",
+      "ws": 150000,
+      "category": "mixed"
+    },
+    "stellar blade": {
+      "name": "stellar blade",
+      "ws": 25000,
+      "category": "mixed"
+    },
+    "batman arkham": {
+      "name": "batman arkham",
+      "ws": 25000,
+      "category": "mixed"
+    },
+    "indiana jones": {
+      "name": "indiana jones",
+      "ws": 55000,
+      "category": "mixed"
+    },
+    "bioshock": {
+      "name": "bioshock",
+      "ws": 15000,
+      "category": "mixed"
+    },
+    "doom": {
+      "name": "doom",
+      "ws": 40000,
+      "category": "mixed"
+    },
+    "pubg": {
+      "name": "pubg",
+      "ws": 700000,
+      "category": "mixed"
+    },
+    "avowed": {
+      "name": "avowed",
+      "ws": 35000,
+      "category": "mixed"
+    },
+    "wolverine": {
+      "name": "wolverine",
+      "ws": 30000,
+      "category": "mixed"
+    },
+    "judas": {
+      "name": "judas",
+      "ws": 20000,
+      "category": "mixed"
+    },
+    "stardew valley": {
+      "name": "stardew valley",
+      "ws": 85000,
+      "category": "mixed"
+    },
+    "terraria": {
+      "name": "terraria",
+      "ws": 58000,
+      "category": "mixed"
+    },
+    "among us": {
+      "name": "among us",
+      "ws": 15000,
+      "category": "mixed"
+    },
+    "fall guys": {
+      "name": "fall guys",
+      "ws": 10000,
+      "category": "mixed"
+    },
+    "lethal company": {
+      "name": "lethal company",
+      "ws": 20000,
+      "category": "mixed"
+    },
+    "factorio": {
+      "name": "factorio",
+      "ws": 40000,
+      "category": "mixed"
+    },
+    "cities skylines": {
+      "name": "cities skylines",
+      "ws": 25000,
+      "category": "mixed"
+    },
+    "the sims": {
+      "name": "the sims",
+      "ws": 30000,
+      "category": "mixed"
+    },
+    "civilization": {
+      "name": "civilization",
+      "ws": 20000,
+      "category": "mixed"
+    },
+    "age of empires": {
+      "name": "age of empires",
+      "ws": 15000,
+      "category": "mixed"
+    },
+    "starcraft": {
+      "name": "starcraft",
+      "ws": 10000,
+      "category": "mixed"
+    },
+    "tekken": {
+      "name": "tekken",
+      "ws": 30000,
+      "category": "mixed"
+    },
+    "street fighter": {
+      "name": "street fighter",
+      "ws": 28000,
+      "category": "mixed"
+    },
+    "mortal kombat": {
+      "name": "mortal kombat",
+      "ws": 30000,
+      "category": "mixed"
+    },
+    "persona": {
+      "name": "persona",
+      "ws": 25000,
+      "category": "mixed"
+    },
+    "kingdom hearts": {
+      "name": "kingdom hearts",
+      "ws": 12000,
+      "category": "mixed"
+    },
+    "dark souls": {
+      "name": "dark souls",
+      "ws": 35000,
+      "category": "mixed"
+    },
+    "bloodborne": {
+      "name": "bloodborne",
+      "ws": 40000,
+      "category": "mixed"
+    },
+    "sekiro": {
+      "name": "sekiro",
+      "ws": 20000,
+      "category": "mixed"
+    },
+    "armored core": {
+      "name": "armored core",
+      "ws": 12000,
+      "category": "mixed"
+    },
+    "skull and bones": {
+      "name": "skull and bones",
+      "ws": 5000,
+      "category": "mixed"
+    },
+    "zenless zone zero": {
+      "name": "zenless zone zero",
+      "ws": 100000,
+      "category": "mixed"
+    },
+    "perfect dark": {
+      "name": "perfect dark",
+      "ws": 15000,
+      "category": "mixed"
+    },
+    "playstation": {
+      "name": "playstation",
+      "ws": 600000,
+      "category": "mixed"
+    },
+    "xbox": {
+      "name": "xbox",
+      "ws": 500000,
+      "category": "mixed"
+    },
+    "nintendo switch": {
+      "name": "nintendo switch",
+      "ws": 450000,
+      "category": "mixed"
+    },
+    "steam": {
+      "name": "steam",
+      "ws": 800000,
+      "category": "mixed"
+    },
+    "pc": {
+      "name": "pc",
+      "ws": 300000,
+      "category": "mixed"
+    },
+    "epic games store": {
+      "name": "epic games store",
+      "ws": 100000,
+      "category": "mixed"
+    },
+    "game pass": {
+      "name": "game pass",
+      "ws": 200000,
+      "category": "mixed"
+    },
+    "ps plus": {
+      "name": "ps plus",
+      "ws": 150000,
+      "category": "mixed"
+    },
+    "vr": {
+      "name": "vr",
+      "ws": 50000,
+      "category": "mixed"
+    },
+    "rockstar games": {
+      "name": "rockstar games",
+      "ws": 300000,
+      "category": "mixed"
+    },
+    "nintendo": {
+      "name": "nintendo",
+      "ws": 500000,
+      "category": "mixed"
+    },
+    "valve": {
+      "name": "valve",
+      "ws": 200000,
+      "category": "mixed"
+    },
+    "sony": {
+      "name": "sony",
+      "ws": 400000,
+      "category": "mixed"
+    },
+    "microsoft": {
+      "name": "microsoft",
+      "ws": 500000,
+      "category": "mixed"
+    },
+    "fromsoftware": {
+      "name": "fromsoftware",
+      "ws": 80000,
+      "category": "mixed"
+    },
+    "cd projekt red": {
+      "name": "cd projekt red",
+      "ws": 60000,
+      "category": "mixed"
+    },
+    "naughty dog": {
+      "name": "naughty dog",
+      "ws": 50000,
+      "category": "mixed"
+    },
+    "larian": {
+      "name": "larian",
+      "ws": 40000,
+      "category": "mixed"
+    },
+    "kojima productions": {
+      "name": "kojima productions",
+      "ws": 60000,
+      "category": "mixed"
+    },
+    "bethesda": {
+      "name": "bethesda",
+      "ws": 80000,
+      "category": "mixed"
+    },
+    "insomniac": {
+      "name": "insomniac",
+      "ws": 35000,
+      "category": "mixed"
+    },
+    "santa monica studio": {
+      "name": "santa monica studio",
+      "ws": 25000,
+      "category": "mixed"
+    },
+    "remedy": {
+      "name": "remedy",
+      "ws": 20000,
+      "category": "mixed"
+    },
+    "blizzard": {
+      "name": "blizzard",
+      "ws": 150000,
+      "category": "mixed"
+    },
+    "ea": {
+      "name": "ea",
+      "ws": 200000,
+      "category": "mixed"
+    },
+    "epic games": {
+      "name": "epic games",
+      "ws": 150000,
+      "category": "mixed"
+    },
+    "capcom": {
+      "name": "capcom",
+      "ws": 100000,
+      "category": "mixed"
+    },
+    "activision": {
+      "name": "activision",
+      "ws": 120000,
+      "category": "mixed"
+    },
+    "ubisoft": {
+      "name": "ubisoft",
+      "ws": 80000,
+      "category": "mixed"
+    },
+    "riot games": {
+      "name": "riot games",
+      "ws": 150000,
+      "category": "mixed"
+    },
+    "square enix": {
+      "name": "square enix",
+      "ws": 60000,
+      "category": "mixed"
+    },
+    "bioware": {
+      "name": "bioware",
+      "ws": 25000,
+      "category": "mixed"
+    },
+    "obsidian": {
+      "name": "obsidian",
+      "ws": 20000,
+      "category": "mixed"
+    },
+    "bungie": {
+      "name": "bungie",
+      "ws": 30000,
+      "category": "mixed"
+    },
+    "respawn": {
+      "name": "respawn",
+      "ws": 15000,
+      "category": "mixed"
+    },
+    "guerrilla": {
+      "name": "guerrilla",
+      "ws": 12000,
+      "category": "mixed"
+    },
+    "konami": {
+      "name": "konami",
+      "ws": 20000,
+      "category": "mixed"
+    },
+    "sega": {
+      "name": "sega",
+      "ws": 25000,
+      "category": "mixed"
+    },
+    "bandai namco": {
+      "name": "bandai namco",
+      "ws": 30000,
+      "category": "mixed"
+    },
+    "team cherry": {
+      "name": "team cherry",
+      "ws": 15000,
+      "category": "mixed"
+    },
+    "supergiant": {
+      "name": "supergiant",
+      "ws": 10000,
+      "category": "mixed"
+    },
+    "devolver": {
+      "name": "devolver",
+      "ws": 8000,
+      "category": "mixed"
+    },
+    "annapurna": {
+      "name": "annapurna",
+      "ws": 6000,
+      "category": "mixed"
+    },
+    "paradox": {
+      "name": "paradox",
+      "ws": 15000,
+      "category": "mixed"
+    },
+    "firaxis": {
+      "name": "firaxis",
+      "ws": 12000,
+      "category": "mixed"
+    },
+    "id software": {
+      "name": "id software",
+      "ws": 15000,
+      "category": "mixed"
+    },
+    "machine games": {
+      "name": "machine games",
+      "ws": 10000,
+      "category": "mixed"
+    },
+    "arkane": {
+      "name": "arkane",
+      "ws": 8000,
+      "category": "mixed"
+    },
+    "rare": {
+      "name": "rare",
+      "ws": 5000,
+      "category": "mixed"
+    },
+    "mojang": {
+      "name": "mojang",
+      "ws": 100000,
+      "category": "mixed"
+    },
+    "hoyoverse": {
+      "name": "hoyoverse",
+      "ws": 80000,
+      "category": "mixed"
+    },
+    "tencent": {
+      "name": "tencent",
+      "ws": 50000,
+      "category": "mixed"
+    }
+  },
+  "normalized_freq": {
+    "gta 6": 100,
+    "minecraft": 91,
+    "fortnite": 90,
+    "gta": 76,
+    "zelda": 78,
+    "call of duty": 82,
+    "counter-strike": 99,
+    "elder scrolls 6": 66,
+    "half-life 3": 73,
+    "elden ring": 66,
+    "cyberpunk 2077": 55,
+    "baldur's gate 3": 58,
+    "the witcher": 58,
+    "god of war": 53,
+    "spider-man": 51,
+    "resident evil": 62,
+    "final fantasy": 55,
+    "red dead redemption": 46,
+    "the last of us": 51,
+    "death stranding 2": 49,
+    "metal gear solid": 43,
+    "silent hill": 40,
+    "mass effect": 42,
+    "diablo": 62,
+    "hollow knight silksong": 46,
+    "black myth wukong": 63,
+    "monster hunter wilds": 58,
+    "nintendo switch 2": 82,
+    "doom the dark ages": 51,
+    "marvel rivals": 53,
+    "civilization 7": 43,
+    "metroid prime 4": 46,
+    "pokemon": 76,
+    "mario": 73,
+    "assassin's creed": 51,
+    "starfield": 35,
+    "halo": 32,
+    "dragon age": 40,
+    "horizon": 37,
+    "overwatch": 52,
+    "valorant": 78,
+    "league of legends": 87,
+    "dota 2": 84,
+    "escape from tarkov": 51,
+    "genshin impact": 66,
+    "destiny 2": 43,
+    "apex legends": 68,
+    "helldivers 2": 44,
+    "palworld": 35,
+    "alan wake": 28,
+    "uncharted": 26,
+    "fable": 37,
+    "far cry": 28,
+    "ghost of tsushima": 35,
+    "world of warcraft": 73,
+    "honkai star rail": 62,
+    "stellar blade": 32,
+    "batman arkham": 32,
+    "indiana jones": 45,
+    "bioshock": 23,
+    "doom": 40,
+    "pubg": 87,
+    "avowed": 37,
+    "wolverine": 35,
+    "judas": 28,
+    "stardew valley": 52,
+    "terraria": 46,
+    "among us": 23,
+    "fall guys": 17,
+    "lethal company": 28,
+    "factorio": 40,
+    "cities skylines": 32,
+    "the sims": 35,
+    "civilization": 28,
+    "age of empires": 23,
+    "starcraft": 17,
+    "tekken": 35,
+    "street fighter": 34,
+    "mortal kombat": 35,
+    "persona": 32,
+    "kingdom hearts": 20,
+    "dark souls": 37,
+    "bloodborne": 40,
+    "sekiro": 28,
+    "armored core": 20,
+    "skull and bones": 5,
+    "zenless zone zero": 55,
+    "perfect dark": 23,
+    "playstation": 85,
+    "xbox": 82,
+    "nintendo switch": 80,
+    "steam": 90,
+    "pc": 73,
+    "epic games store": 55,
+    "game pass": 66,
+    "ps plus": 62,
+    "vr": 43,
+    "rockstar games": 73,
+    "nintendo": 82,
+    "valve": 66,
+    "sony": 78,
+    "microsoft": 82,
+    "fromsoftware": 51,
+    "cd projekt red": 46,
+    "naughty dog": 43,
+    "larian": 40,
+    "kojima productions": 46,
+    "bethesda": 51,
+    "insomniac": 37,
+    "santa monica studio": 32,
+    "remedy": 28,
+    "blizzard": 62,
+    "ea": 66,
+    "epic games": 62,
+    "capcom": 55,
+    "activision": 58,
+    "ubisoft": 51,
+    "riot games": 62,
+    "square enix": 46,
+    "bioware": 32,
+    "obsidian": 28,
+    "bungie": 35,
+    "respawn": 23,
+    "guerrilla": 20,
+    "konami": 28,
+    "sega": 32,
+    "bandai namco": 35,
+    "team cherry": 23,
+    "supergiant": 17,
+    "devolver": 13,
+    "annapurna": 8,
+    "paradox": 23,
+    "firaxis": 20,
+    "id software": 23,
+    "machine games": 17,
+    "arkane": 13,
+    "rare": 5,
+    "mojang": 55,
+    "hoyoverse": 51,
+    "tencent": 43
+  },
+  "total_entities": 140
+}
