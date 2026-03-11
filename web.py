@@ -712,6 +712,7 @@ async function login() {
         status_filter = qs.get("status", [None])[0]
         source_filter = qs.get("source", [None])[0]
         min_score = int(qs.get("min_score", [0])[0])
+        max_score = int(qs.get("max_score", [0])[0])
         score_filter = qs.get("score_filter", [None])[0]  # "zero" or "nonzero"
         viral_level = qs.get("viral_level", [None])[0]
         tier_filter = qs.get("tier", [None])[0]
@@ -734,6 +735,9 @@ async function login() {
         if min_score > 0:
             conditions.append(f"COALESCE(a.total_score, 0) >= {ph}")
             params.append(min_score)
+        if max_score > 0:
+            conditions.append(f"COALESCE(a.total_score, 0) <= {ph}")
+            params.append(max_score)
         if score_filter == "zero":
             conditions.append("COALESCE(a.total_score, 0) = 0")
         elif score_filter == "nonzero":
@@ -5103,6 +5107,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <option value="min60">&ge; 60</option>
         <option value="min70">&ge; 70</option>
         <option value="min80">&ge; 80</option>
+        <option value="range30_70">30–70 (спорные)</option>
       </select>
       <input id="ed-search" placeholder="Поиск по заголовку..." oninput="debounceEdSearch()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px;min-width:180px">
       <button class="btn btn-sm btn-secondary" onclick="loadEditorial()">&#128269;</button>
@@ -8612,6 +8617,7 @@ async function loadEditorial(page) {
   if (source) url += `&source=${encodeURIComponent(source)}`;
   if (viral) url += `&viral_level=${viral}`;
   if (scoreFilter === 'zero') url += '&score_filter=zero';
+  else if (scoreFilter.startsWith('range')) { const [lo,hi] = scoreFilter.replace('range','').split('_'); url += '&min_score='+lo+'&max_score='+hi; }
   else if (scoreFilter.startsWith('min')) url += '&min_score=' + scoreFilter.replace('min','');
   if (tier) url += `&tier=${tier}`;
   if (search) url += `&q=${encodeURIComponent(search)}`;
@@ -9478,8 +9484,8 @@ function setTriageMode(mode) {
     if (mode === 'disputed') {
       // Filter to disputed: score 30-70, not duplicate/rejected
       document.getElementById('ed-status').value = 'in_review';
-      document.getElementById('ed-min-score').value = 30;
-      loadEditorial();
+      document.getElementById('ed-score-filter').value = 'range30_70';
+      loadEditorial(0);
     } else if (mode === 'table') {
       loadEditorial();
     }
