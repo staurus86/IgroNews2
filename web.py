@@ -673,7 +673,7 @@ async function login() {
                 status_counts[row[0]] = row[1]
 
         query = f"""
-            SELECT n.id, n.source, n.title, n.url, n.published_at, n.parsed_at, n.status,
+            SELECT n.id, n.source, n.title, n.description, n.url, n.published_at, n.parsed_at, n.status,
                    COALESCE(a.total_score, 0) as total_score,
                    COALESCE(a.quality_score, 0) as quality_score,
                    COALESCE(a.relevance_score, 0) as relevance_score,
@@ -691,6 +691,7 @@ async function login() {
                    COALESCE(a.entity_names, '[]') as entity_names,
                    COALESCE(a.entity_best_tier, '') as entity_best_tier,
                    COALESCE(a.reviewed_at, '') as reviewed_at,
+                   COALESCE(a.score_breakdown, '{{}}') as score_breakdown,
                    a.bigrams, a.llm_recommendation, a.llm_trend_forecast,
                    a.keyso_data, a.trends_data
             FROM news n
@@ -4196,6 +4197,29 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 .reason-badge.positive { background:rgba(23,191,99,0.2); color:#17bf63; }
 .reason-badge.negative { background:rgba(224,36,94,0.2); color:#e0245e; }
 .reason-badge.neutral { background:rgba(136,153,166,0.2); color:#8899a6; }
+
+/* Triage Mode Switcher */
+.triage-modes { display:flex; gap:0; margin-bottom:12px; background:#192734; border-radius:8px; overflow:hidden; }
+.triage-mode { padding:6px 14px; cursor:pointer; color:#8899a6; font-size:0.82em; border:none; background:none; transition:all .2s; }
+.triage-mode:hover { color:#e1e8ed; background:#22303c; }
+.triage-mode.active { color:#1da1f2; background:#22303c; border-bottom:2px solid #1da1f2; }
+
+/* Card mode (triage flow) */
+.triage-card { background:#192734; border-radius:12px; padding:24px; max-width:800px; margin:0 auto; border:1px solid #22303c; }
+.triage-card .tc-title { font-size:1.15em; font-weight:600; line-height:1.4; margin-bottom:12px; }
+.triage-card .tc-meta { display:flex; gap:16px; margin-bottom:16px; flex-wrap:wrap; font-size:0.85em; color:#8899a6; }
+.triage-card .tc-meta span { display:flex; align-items:center; gap:4px; }
+.triage-card .tc-text { font-size:0.92em; line-height:1.6; color:#ccd6dd; margin-bottom:16px; max-height:200px; overflow-y:auto; }
+.triage-card .tc-scores { display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+.triage-card .tc-score-item { background:#22303c; border-radius:8px; padding:8px 14px; text-align:center; min-width:70px; }
+.triage-card .tc-score-item .val { font-size:1.3em; font-weight:bold; }
+.triage-card .tc-score-item .lbl { font-size:0.72em; color:#8899a6; }
+.triage-card .tc-actions { display:flex; gap:10px; justify-content:center; margin-top:16px; }
+.triage-card .tc-actions .btn { padding:10px 24px; font-size:0.95em; }
+.triage-counter { text-align:center; color:#8899a6; font-size:0.85em; margin-bottom:12px; }
+
+/* Hotkey hints */
+.hotkey-hint { display:inline-block; background:#22303c; border:1px solid #38444d; border-radius:4px; padding:1px 5px; font-size:0.72em; color:#8899a6; margin-left:4px; font-family:monospace; }
 </style>
 </head>
 <body>
@@ -4253,6 +4277,30 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 
   <!-- EDITORIAL — единая рабочая вкладка -->
   <div class="panel active" id="panel-editorial">
+    <!-- Triage Mode Switcher (Phase 1, behind newsroom_triage_v1 flag) -->
+    <div class="triage-modes" id="triage-modes" style="display:none">
+      <div class="triage-mode active" data-mode="table" onclick="setTriageMode('table')">&#9776; Таблица</div>
+      <div class="triage-mode" data-mode="flow" onclick="setTriageMode('flow')">&#9654; Поток</div>
+      <div class="triage-mode" data-mode="disputed" onclick="setTriageMode('disputed')">&#9888; Спорные</div>
+    </div>
+
+    <!-- Flow mode container (one card at a time) -->
+    <div id="triage-flow" style="display:none">
+      <div class="triage-counter" id="triage-counter"></div>
+      <div class="triage-card" id="triage-card">
+        <div class="tc-title" id="tc-title"></div>
+        <div class="tc-meta" id="tc-meta"></div>
+        <div class="tc-text" id="tc-text"></div>
+        <div class="tc-scores" id="tc-scores"></div>
+        <div class="tc-actions">
+          <button class="btn btn-success" onclick="triageApprove()" title="Одобрить">&#10003; Одобрить <span class="hotkey-hint">A</span></button>
+          <button class="btn btn-danger" onclick="triageReject()" title="Отклонить">&#10007; Отклонить <span class="hotkey-hint">R</span></button>
+          <button class="btn btn-secondary" onclick="triageSkip()" title="Пропустить">&#10140; Далее <span class="hotkey-hint">S</span></button>
+          <button class="btn btn-secondary" onclick="openExplainDrawer(_triageCurrent?.id, _triageCurrent?.title)" title="Почему?">? Почему</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Stat cards -->
     <div class="stats" id="ed-stats"></div>
 
@@ -4787,6 +4835,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <span id="q-selected-count" style="color:#8899a6;font-size:0.85em;line-height:28px"></span>
       <button class="btn btn-sm btn-danger" onclick="cancelSelectedQueue()">Отменить выбранные</button>
       <button class="btn btn-sm btn-primary" onclick="retrySelectedQueue()">&#128260; Повторить выбранные</button>
+      <button class="btn btn-sm btn-warning" onclick="retryAllErrors()" id="q-retry-errors-btn" style="display:none">&#128260; Повторить все ошибки</button>
     </div>
   </div>
 
@@ -5243,6 +5292,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   t.classList.add('active');
   document.getElementById('panel-' + t.dataset.tab).classList.add('active');
   // Refresh data when switching to key tabs
+  if (t.dataset.tab === 'ops') { loadOpsDashboard(); loadFeatureFlags(); }
   if (t.dataset.tab === 'editorial') { loadEditorial(); }
   // moderation tab removed
   if (t.dataset.tab === 'news') { loadNewsPage(); }
@@ -6785,6 +6835,14 @@ function updateQueueSelectedCount() {
 }
 document.addEventListener('change', e => { if (e.target.classList.contains('queue-check')) updateQueueSelectedCount(); });
 
+async function retryAllErrors() {
+  const errorIds = _queueTasks.filter(t => t.status === 'error').map(t => t.id);
+  if (!errorIds.length) { showToast('Нет задач с ошибками', 'warning'); return; }
+  const r = await api('/api/queue/retry', {task_ids: errorIds});
+  if (r.status === 'ok') { showToast('Перезапущено ошибок: ' + r.retried, 'success'); loadQueueStandalone(); }
+  else showToast(r.message || 'Ошибка', 'error');
+}
+
 // ---- Standalone Queue tab ----
 async function loadQueueStandalone() {
   const r = await api('/api/queue');
@@ -6875,6 +6933,10 @@ function renderQueueStandalone() {
   const cnt = document.querySelectorAll('#q-table .queue-check:checked').length;
   const cntEl = document.getElementById('q-selected-count');
   if (cntEl) cntEl.textContent = cnt > 0 ? cnt + ' выбрано' : '';
+
+  // Show/hide retry all errors button
+  const retryErrBtn = document.getElementById('q-retry-errors-btn');
+  if (retryErrBtn) retryErrBtn.style.display = (stats.error || 0) > 0 ? '' : 'none';
 }
 
 function qFilterByStatus(status) {
@@ -7485,6 +7547,7 @@ function renderFinalTable() {
       <td style="white-space:nowrap">
         <button class="btn btn-sm" style="background:#9b59b6;color:#fff;padding:3px 7px" onclick="finToContent('${n.id}')" title="В контент">&#9998;</button>
         <button class="btn btn-sm btn-secondary" style="padding:3px 7px" onclick="exportOne('${n.id}')" title="В Sheets">&#9776;</button>
+        <button class="btn btn-sm btn-secondary" style="padding:3px 7px;font-size:0.75em" onclick="openExplainDrawer('${n.id}','${esc((n.title||'').slice(0,60)).replace(/'/g,"\\'")}')" title="Почему?">?</button>
       </td>
     </tr>`;
   }).join('');
@@ -8231,17 +8294,7 @@ function ffEnabled(flagId) {
   return !!_featureFlags[flagId];
 }
 
-function applyFeatureFlags() {
-  // Show/hide ops dashboard tab
-  const opsTab = document.getElementById('tab-ops');
-  if (opsTab) {
-    opsTab.style.display = ffEnabled('dashboard_v2') ? '' : 'none';
-  }
-  const opsPanel = document.getElementById('panel-ops');
-  if (opsPanel) {
-    opsPanel.style.display = ffEnabled('dashboard_v2') ? '' : 'none';
-  }
-}
+// applyFeatureFlags defined below after triage mode
 
 function renderFlagsList(flags) {
   const el = document.getElementById('ops-flags-list');
@@ -8408,20 +8461,151 @@ async function loadExplainData(newsId) {
   }
 }
 
-// Keyboard: Escape closes drawer
+// ═══════════════════════════════════════════
+// PHASE 1: TRIAGE MODE (newsroom_triage_v1)
+// ═══════════════════════════════════════════
+
+let _triageMode = 'table';
+let _triageIndex = 0;
+let _triageCurrent = null;
+let _triageList = [];
+
+function setTriageMode(mode) {
+  _triageMode = mode;
+  document.querySelectorAll('.triage-mode').forEach(m => m.classList.toggle('active', m.dataset.mode === mode));
+
+  const flow = document.getElementById('triage-flow');
+  const stats = document.getElementById('ed-stats');
+  const filters = document.querySelector('.dash-filters');
+  const bulk = filters ? filters.nextElementSibling : null;
+  const table = document.querySelector('#panel-editorial .table, #panel-editorial table')?.parentElement;
+  const pagination = document.getElementById('ed-pagination');
+
+  if (mode === 'flow') {
+    if (flow) flow.style.display = '';
+    if (stats) stats.style.display = 'none';
+    if (filters) filters.style.display = 'none';
+    if (bulk) bulk.style.display = 'none';
+    if (table) table.style.display = 'none';
+    if (pagination) pagination.style.display = 'none';
+    startTriageFlow();
+  } else {
+    if (flow) flow.style.display = 'none';
+    if (stats) stats.style.display = '';
+    if (filters) filters.style.display = '';
+    if (bulk) bulk.style.display = '';
+    if (table) table.style.display = '';
+    if (pagination) pagination.style.display = '';
+    if (mode === 'disputed') {
+      // Filter to disputed: score 30-70, not duplicate/rejected
+      document.getElementById('ed-status').value = 'in_review';
+      document.getElementById('ed-min-score').value = 30;
+      loadEditorial();
+    } else if (mode === 'table') {
+      loadEditorial();
+    }
+  }
+}
+
+async function startTriageFlow() {
+  // Load in_review items for sequential review
+  const data = await api('/api/editorial?status=in_review&limit=100');
+  _triageList = (data && data.news) ? data.news : [];
+  _triageIndex = 0;
+  renderTriageCard();
+}
+
+function renderTriageCard() {
+  if (_triageIndex >= _triageList.length) {
+    document.getElementById('triage-card').innerHTML = '<div style="text-align:center;padding:40px;color:#8899a6"><div style="font-size:1.3em;margin-bottom:12px">Все новости проверены</div><button class="btn btn-primary" onclick="setTriageMode(\'table\')">Вернуться к таблице</button></div>';
+    document.getElementById('triage-counter').textContent = '';
+    return;
+  }
+  const n = _triageList[_triageIndex];
+  _triageCurrent = n;
+  document.getElementById('triage-counter').textContent = `${_triageIndex + 1} из ${_triageList.length}`;
+
+  const sc = n.total_score || 0;
+  const scColor = sc >= 70 ? '#17bf63' : sc >= 40 ? '#ffad1f' : '#e0245e';
+  const vs = n.viral_score || 0;
+  const fh = n.freshness_hours;
+  const fLabel = fh >= 0 ? (fh < 1 ? '<1ч' : Math.round(fh)+'ч') : '-';
+
+  document.getElementById('tc-title').textContent = n.title || '';
+  document.getElementById('tc-meta').innerHTML = `
+    <span style="color:#1da1f2">${esc(n.source)}</span>
+    <span>&#9201; ${fLabel}</span>
+    <span>${n.sentiment_label === 'positive' ? '&#8853;' : n.sentiment_label === 'negative' ? '&#8854;' : '&#8856;'} ${n.sentiment_label || ''}</span>
+    ${n.entity_best_tier ? '<span style="font-weight:bold;color:' + (n.entity_best_tier==='S'?'#e0245e':n.entity_best_tier==='A'?'#ffad1f':'#8899a6') + '">' + n.entity_best_tier + '-tier</span>' : ''}
+  `;
+  document.getElementById('tc-text').textContent = n.description || n.title || '';
+  document.getElementById('tc-scores').innerHTML = `
+    <div class="tc-score-item"><div class="val" style="color:${scColor}">${sc}</div><div class="lbl">Total</div></div>
+    <div class="tc-score-item"><div class="val">${n.quality_score||0}</div><div class="lbl">Качество</div></div>
+    <div class="tc-score-item"><div class="val">${n.relevance_score||0}</div><div class="lbl">Релев.</div></div>
+    <div class="tc-score-item"><div class="val" style="color:${vs>=60?'#e0245e':vs>=30?'#ffad1f':'#8899a6'}">${vs}</div><div class="lbl">Вирал.</div></div>
+    <div class="tc-score-item"><div class="val">${n.headline_score||0}</div><div class="lbl">Заголовок</div></div>
+  `;
+}
+
+async function triageApprove() {
+  if (!_triageCurrent) return;
+  await api('/api/approve', {id: _triageCurrent.id});
+  showToast('Одобрено', 'success');
+  _triageIndex++;
+  renderTriageCard();
+}
+
+async function triageReject() {
+  if (!_triageCurrent) return;
+  await api('/api/reject', {id: _triageCurrent.id});
+  showToast('Отклонено', 'warning');
+  _triageIndex++;
+  renderTriageCard();
+}
+
+function triageSkip() {
+  _triageIndex++;
+  renderTriageCard();
+}
+
+// Keyboard shortcuts for editorial (global, check focus)
 document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') closeExplainDrawer();
+  if (e.key === 'Escape') { closeExplainDrawer(); return; }
+
+  // Only process hotkeys when no input/textarea is focused
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+  // Triage flow hotkeys
+  if (_triageMode === 'flow' && ffEnabled('newsroom_triage_v1')) {
+    if (e.key === 'a' || e.key === 'A' || e.key === 'ф' || e.key === 'Ф') { e.preventDefault(); triageApprove(); }
+    if (e.key === 'r' || e.key === 'R' || e.key === 'к' || e.key === 'К') { e.preventDefault(); triageReject(); }
+    if (e.key === 's' || e.key === 'S' || e.key === 'ы' || e.key === 'Ы') { e.preventDefault(); triageSkip(); }
+  }
 });
+
+// ═══════════════════════════════════════════
+// FEATURE FLAG UI HOOKS
+// ═══════════════════════════════════════════
+
+function applyFeatureFlags() {
+  // Ops dashboard
+  const opsTab = document.getElementById('tab-ops');
+  if (opsTab) opsTab.style.display = ffEnabled('dashboard_v2') ? '' : 'none';
+  const opsPanel = document.getElementById('panel-ops');
+  if (opsPanel) opsPanel.style.display = ffEnabled('dashboard_v2') ? '' : 'none';
+
+  // Triage modes
+  const triageModes = document.getElementById('triage-modes');
+  if (triageModes) triageModes.style.display = ffEnabled('newsroom_triage_v1') ? '' : 'none';
+}
 
 // ═══════════════════════════════════════════
 // INIT: Load feature flags on startup
 // ═══════════════════════════════════════════
 
 (function() {
-  const origLoadAll = typeof loadAll === 'function' ? loadAll : null;
-  // Patch into loadAll chain
-  const _origInit = window.onload || function(){};
-  // Load flags early
   setTimeout(function() {
     loadFeatureFlags().then(function() {
       if (ffEnabled('dashboard_v2')) {
