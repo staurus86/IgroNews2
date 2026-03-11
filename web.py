@@ -5100,6 +5100,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <!-- Bulk actions -->
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
       <button class="btn btn-sm btn-success" onclick="edRunAutoReview()" id="ed-review-btn">&#9654; Проверить новые</button>
+      <button class="btn btn-sm btn-secondary" onclick="edSelectZeroScore()" title="Выделить все новости с внутренним скором 0">&#9744; Score=0</button>
       <button class="btn btn-sm btn-secondary" onclick="edRescore()" title="Пересчитать скор для выбранных новостей (или всех in_review с score=0)">&#128260; Пересчитать скор</button>
       <span style="color:#38444d">|</span>
       <button class="btn btn-sm btn-primary" onclick="edApproveSelected()">&#10003; Одобрить</button>
@@ -8878,6 +8879,12 @@ document.getElementById('ed-table')?.addEventListener('change', (e) => {
 
 function _edGetSelected() {
   return [...document.querySelectorAll('.ed-cb:checked')].map(c => c.value);
+}
+
+function edSelectZeroScore() {
+  const zeroIds = new Set(_edData.filter(n => (n.total_score || 0) === 0).map(n => String(n.id)));
+  document.querySelectorAll('.ed-cb').forEach(cb => { cb.checked = zeroIds.has(cb.value); });
+  toast('Выделено: ' + zeroIds.size + ' новостей с score=0');
 }
 
 async function edApprove(id) {
