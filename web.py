@@ -712,6 +712,7 @@ async function login() {
         status_filter = qs.get("status", [None])[0]
         source_filter = qs.get("source", [None])[0]
         min_score = int(qs.get("min_score", [0])[0])
+        score_filter = qs.get("score_filter", [None])[0]  # "zero" or "nonzero"
         viral_level = qs.get("viral_level", [None])[0]
         tier_filter = qs.get("tier", [None])[0]
         search = qs.get("q", [None])[0]
@@ -733,6 +734,10 @@ async function login() {
         if min_score > 0:
             conditions.append(f"COALESCE(a.total_score, 0) >= {ph}")
             params.append(min_score)
+        if score_filter == "zero":
+            conditions.append("COALESCE(a.total_score, 0) = 0")
+        elif score_filter == "nonzero":
+            conditions.append("COALESCE(a.total_score, 0) > 0")
         if viral_level:
             conditions.append(f"a.viral_level = {ph}")
             params.append(viral_level)
@@ -5089,6 +5094,11 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <option value="A">A-tier</option>
         <option value="B">B-tier</option>
       </select>
+      <select id="ed-score-filter" onchange="loadEditorial(0)" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+        <option value="">Скор: все</option>
+        <option value="zero">Score = 0</option>
+        <option value="nonzero">Score &gt; 0</option>
+      </select>
       <input id="ed-min-score" type="number" value="0" min="0" max="100" placeholder="Мин. скор" onchange="loadEditorial()" style="width:70px;padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
       <input id="ed-search" placeholder="Поиск по заголовку..." oninput="debounceEdSearch()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px;min-width:180px">
       <button class="btn btn-sm btn-secondary" onclick="loadEditorial()">&#128269;</button>
@@ -8578,6 +8588,7 @@ function resetEdFilters() {
   document.getElementById('ed-source').value = '';
   document.getElementById('ed-viral').value = '';
   document.getElementById('ed-tier').value = '';
+  document.getElementById('ed-score-filter').value = '';
   document.getElementById('ed-min-score').value = '0';
   document.getElementById('ed-search').value = '';
   loadEditorial(0);
@@ -8589,6 +8600,7 @@ async function loadEditorial(page) {
   const source = document.getElementById('ed-source').value;
   const viral = document.getElementById('ed-viral').value;
   const tier = document.getElementById('ed-tier').value;
+  const scoreFilter = document.getElementById('ed-score-filter').value;
   const minScore = document.getElementById('ed-min-score').value || 0;
   const search = document.getElementById('ed-search').value;
   const offset = _edPage * _edLimit;
@@ -8597,6 +8609,7 @@ async function loadEditorial(page) {
   if (status) url += `&status=${status}`;
   if (source) url += `&source=${encodeURIComponent(source)}`;
   if (viral) url += `&viral_level=${viral}`;
+  if (scoreFilter) url += `&score_filter=${scoreFilter}`;
   if (tier) url += `&tier=${tier}`;
   if (minScore > 0) url += `&min_score=${minScore}`;
   if (search) url += `&q=${encodeURIComponent(search)}`;
