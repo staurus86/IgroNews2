@@ -18,10 +18,27 @@ PORT = int(os.getenv("PORT", 8080))
 # Secret key for signing cookies — stable across redeploys via env var
 _COOKIE_SECRET = os.getenv("COOKIE_SECRET", "igronews-default-secret-key-2024")
 
-# Users: {username: password_hash}
+# Users: {username: {"hash": password_hash, "role": "admin"|"editor"|"viewer"}}
 USERS = {
-    "admin": hashlib.sha256("admin123".encode()).hexdigest(),
+    "admin": {"hash": hashlib.sha256("admin123".encode()).hexdigest(), "role": "admin"},
 }
+
+# Role permissions
+ROLE_PERMISSIONS = {
+    "admin": {"read", "write", "approve", "settings", "users", "flags", "delete", "pipeline"},
+    "editor": {"read", "write", "approve", "pipeline"},
+    "viewer": {"read"},
+}
+
+def _user_role(username: str) -> str:
+    entry = USERS.get(username, {})
+    if isinstance(entry, dict):
+        return entry.get("role", "editor")
+    return "editor"  # legacy compat
+
+def _user_has_perm(username: str, perm: str) -> bool:
+    role = _user_role(username)
+    return perm in ROLE_PERMISSIONS.get(role, set())
 
 
 def _sign_cookie(username: str) -> str:
@@ -294,13 +311,15 @@ class AdminHandler(BaseHTTPRequestHandler):
         username = body.get("username", "")
         password = body.get("password", "")
         pw_hash = hashlib.sha256(password.encode()).hexdigest()
-        if USERS.get(username) == pw_hash:
+        entry = USERS.get(username, {})
+        stored_hash = entry.get("hash", entry) if isinstance(entry, dict) else entry
+        if stored_hash == pw_hash:
             signed = _sign_cookie(username)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Set-Cookie", f"session={signed}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
             self.end_headers()
-            self.wfile.write(json.dumps({"status": "ok"}).encode())
+            self.wfile.write(json.dumps({"status": "ok", "role": _user_role(username)}).encode())
         else:
             self._json({"status": "error", "message": "Invalid credentials"}, 401)
 
@@ -311,24 +330,46 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _get_users(self):
-        return [{"username": u} for u in USERS.keys()]
+        return [{"username": u, "role": _user_role(u)} for u in USERS.keys()]
 
     def _add_user(self, body):
         username = body.get("username", "")
         password = body.get("password", "")
+        role = body.get("role", "editor")
+        if role not in ROLE_PERMISSIONS:
+            role = "editor"
         if not username or not password:
             self._json({"status": "error", "message": "Username and password required"})
             return
-        USERS[username] = hashlib.sha256(password.encode()).hexdigest()
-        self._json({"status": "ok", "users": [{"username": u} for u in USERS.keys()]})
+        user = self._get_session_user()
+        if not _user_has_perm(user, "users"):
+            self._json({"status": "error", "message": "Недостаточно прав"}, 403)
+            return
+        USERS[username] = {"hash": hashlib.sha256(password.encode()).hexdigest(), "role": role}
+        self._json({"status": "ok", "users": self._get_users()})
 
     def _delete_user(self, body):
         username = body.get("username", "")
         if username == "admin":
             self._json({"status": "error", "message": "Cannot delete admin"})
             return
+        user = self._get_session_user()
+        if not _user_has_perm(user, "users"):
+            self._json({"status": "error", "message": "Недостаточно прав"}, 403)
+            return
         USERS.pop(username, None)
-        self._json({"status": "ok", "users": [{"username": u} for u in USERS.keys()]})
+        self._json({"status": "ok", "users": self._get_users()})
+
+    def _require_perm(self, perm: str) -> bool:
+        """Check permission. Returns True if allowed, sends 403 and returns False if denied."""
+        user = self._get_session_user()
+        if not user:
+            self._json({"error": "unauthorized"}, 401)
+            return False
+        if not _user_has_perm(user, perm):
+            self._json({"error": "Недостаточно прав"}, 403)
+            return False
+        return True
 
     def _serve_diag(self):
         """Публичный диагностический endpoint — проверка БД и парсинга."""
@@ -883,6 +924,8 @@ async function login() {
         self._json({"status": "ok"})
 
     def _save_settings(self, body):
+        if not self._require_perm("settings"):
+            return
         import config
         user = self._get_session_user() or "admin"
         changes = []
@@ -1474,6 +1517,8 @@ async function login() {
 
     def _pipeline_full_auto(self, body):
         """Режим 1: Полный автомат — score → >70 на LLM → финальный скор → >60 на рерайт → Sheets/Ready."""
+        if not self._require_perm("pipeline"):
+            return
         news_ids = body.get("news_ids", [])
         select_all = body.get("all_new", False)
 
@@ -1889,6 +1934,8 @@ async function login() {
         self._json({"status": "ok", "updated": len(news_ids)})
 
     def _delete_news(self, body):
+        if not self._require_perm("delete"):
+            return
         news_ids = body.get("news_ids", [])
         if not news_ids:
             self._json({"status": "error", "message": "news_ids required"})
@@ -4045,6 +4092,8 @@ async function login() {
             return {"flags": [], "error": str(e)}
 
     def _toggle_feature_flag(self, body):
+        if not self._require_perm("flags"):
+            return
         flag_id = body.get("flag_id", "")
         enabled = body.get("enabled", False)
         if not flag_id:
@@ -5832,7 +5881,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <div class="card">
           <h2>Пользователи</h2>
           <table>
-            <thead><tr><th>Логин</th><th>Действия</th></tr></thead>
+            <thead><tr><th>Логин</th><th>Роль</th><th>Действия</th></tr></thead>
             <tbody id="users-table"></tbody>
           </table>
         </div>
@@ -5840,6 +5889,13 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           <h2>Добавить пользователя</h2>
           <div class="form-group"><label>Логин</label><input id="new-username" autocomplete="off"></div>
           <div class="form-group"><label>Пароль</label><input id="new-password" type="password" autocomplete="new-password"></div>
+          <div class="form-group"><label>Роль</label>
+            <select id="new-role">
+              <option value="editor">Редактор</option>
+              <option value="viewer">Читатель</option>
+              <option value="admin">Админ</option>
+            </select>
+          </div>
           <button class="btn btn-primary" onclick="addUser()">Добавить</button>
           <hr style="border-color:#38444d;margin:15px 0">
           <h2>Сменить пароль</h2>
@@ -6265,19 +6321,25 @@ async function testKeyso() {
 // Users
 async function loadUsers() {
   const users = await api('/api/users');
-  document.getElementById('users-table').innerHTML = users.map(u =>
-    `<tr><td>${u.username}</td><td>${u.username==='admin'?'':'<button class="btn btn-sm btn-danger" onclick="deleteUser(\''+u.username+'\')">Удалить</button>'}</td></tr>`
-  ).join('');
+  const roleLabels = {admin:'Админ',editor:'Редактор',viewer:'Читатель'};
+  const roleColors = {admin:'#e0245e',editor:'#1da1f2',viewer:'#8899a6'};
+  document.getElementById('users-table').innerHTML = users.map(u => {
+    const rl = roleLabels[u.role]||u.role;
+    const rc = roleColors[u.role]||'#8899a6';
+    return `<tr><td>${esc(u.username)}</td><td style="color:${rc};font-weight:600">${rl}</td><td>${u.username==='admin'?'':'<button class="btn btn-sm btn-danger" onclick="deleteUser(\''+u.username+'\')">Удалить</button>'}</td></tr>`;
+  }).join('');
   const sel = document.getElementById('chpass-user');
   if (sel) {
-    sel.innerHTML = users.map(u => `<option value="${u.username}">${u.username}</option>`).join('');
+    sel.innerHTML = users.map(u => `<option value="${u.username}">${esc(u.username)}</option>`).join('');
   }
 }
 async function addUser() {
   const username = document.getElementById('new-username').value;
   const password = document.getElementById('new-password').value;
+  const role = document.getElementById('new-role').value;
   if (!username || !password) { toast('Заполните логин и пароль', true); return; }
-  await api('/api/users/add', {username, password});
+  const r = await api('/api/users/add', {username, password, role});
+  if (r.status === 'error') { toast(r.message, true); return; }
   toast('Пользователь добавлен');
   loadUsers();
 }
