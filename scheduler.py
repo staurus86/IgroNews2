@@ -556,12 +556,12 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
 
             if is_dup:
                 _update_task(task_id, "skipped", {"stage": "scoring", "reason": "duplicate", "score": total_score})
-                _trace(news_id, "full_auto", "skipped_duplicate", "Дубликат обнаружен", score_after=total_score)
+                _trace(news_id, "full_auto", "skipped_duplicate", "Дубликат обнаружен", s_after=total_score)
                 continue
 
             if is_rejected:
                 _update_task(task_id, "skipped", {"stage": "scoring", "reason": "auto_rejected", "score": total_score})
-                _trace(news_id, "full_auto", "auto_rejected", f"total_score={total_score} < 15", score_after=total_score)
+                _trace(news_id, "full_auto", "auto_rejected", f"total_score={total_score} < 15", s_after=total_score)
                 continue
 
             # Stage 2: Score threshold — only >70 goes to LLM enrichment
@@ -573,7 +573,7 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
                 })
                 _trace(news_id, "full_auto", "skipped_low_score",
                        f"total_score={total_score} < порога {FULL_AUTO_SCORE_THRESHOLD}, не отправлен на LLM",
-                       score_after=total_score)
+                       s_after=total_score)
                 logger.info("Full-auto skip (score %d < %d): %s", total_score, FULL_AUTO_SCORE_THRESHOLD, news.get("title", "")[:50])
                 continue
 

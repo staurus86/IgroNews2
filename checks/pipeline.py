@@ -186,12 +186,12 @@ def run_review_pipeline(news_list: list[dict], update_status: bool = True) -> di
                 r["auto_rejected"] = True
                 _trace(r["id"], "review_pipeline", "auto_rejected",
                        f"total_score={r.get('total_score',0)} < {AUTO_REJECT_SCORE}",
-                       score_after=r.get("total_score", 0))
+                       s_after=r.get("total_score", 0))
             else:
                 update_news_status(r["id"], "in_review")
                 _trace(r["id"], "review_pipeline", "in_review",
                        f"total_score={r.get('total_score',0)}, готово к модерации",
-                       score_after=r.get("total_score", 0))
+                       s_after=r.get("total_score", 0))
         try:
             save_check_results(
                 r["id"], r["checks"],
