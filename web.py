@@ -5096,10 +5096,14 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       </select>
       <select id="ed-score-filter" onchange="loadEditorial(0)" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
         <option value="">Скор: все</option>
-        <option value="zero">Score = 0</option>
-        <option value="nonzero">Score &gt; 0</option>
+        <option value="zero">= 0</option>
+        <option value="min10">&ge; 10</option>
+        <option value="min30">&ge; 30</option>
+        <option value="min50">&ge; 50</option>
+        <option value="min60">&ge; 60</option>
+        <option value="min70">&ge; 70</option>
+        <option value="min80">&ge; 80</option>
       </select>
-      <input id="ed-min-score" type="number" value="0" min="0" max="100" placeholder="Мин. скор" onchange="loadEditorial()" style="width:70px;padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
       <input id="ed-search" placeholder="Поиск по заголовку..." oninput="debounceEdSearch()" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px;min-width:180px">
       <button class="btn btn-sm btn-secondary" onclick="loadEditorial()">&#128269;</button>
       <button class="btn btn-sm btn-secondary" onclick="resetEdFilters()" title="Сбросить фильтры">&#10005;</button>
@@ -8589,7 +8593,6 @@ function resetEdFilters() {
   document.getElementById('ed-viral').value = '';
   document.getElementById('ed-tier').value = '';
   document.getElementById('ed-score-filter').value = '';
-  document.getElementById('ed-min-score').value = '0';
   document.getElementById('ed-search').value = '';
   loadEditorial(0);
 }
@@ -8601,7 +8604,6 @@ async function loadEditorial(page) {
   const viral = document.getElementById('ed-viral').value;
   const tier = document.getElementById('ed-tier').value;
   const scoreFilter = document.getElementById('ed-score-filter').value;
-  const minScore = document.getElementById('ed-min-score').value || 0;
   const search = document.getElementById('ed-search').value;
   const offset = _edPage * _edLimit;
 
@@ -8609,9 +8611,9 @@ async function loadEditorial(page) {
   if (status) url += `&status=${status}`;
   if (source) url += `&source=${encodeURIComponent(source)}`;
   if (viral) url += `&viral_level=${viral}`;
-  if (scoreFilter) url += `&score_filter=${scoreFilter}`;
+  if (scoreFilter === 'zero') url += '&score_filter=zero';
+  else if (scoreFilter.startsWith('min')) url += '&min_score=' + scoreFilter.replace('min','');
   if (tier) url += `&tier=${tier}`;
-  if (minScore > 0) url += `&min_score=${minScore}`;
   if (search) url += `&q=${encodeURIComponent(search)}`;
 
   const r = await (await fetch(url)).json();
