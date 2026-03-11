@@ -134,6 +134,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/cost_summary": lambda: self._json(self._get_cost_summary()),
             "/api/config_audit": lambda: self._json(self._get_config_audit()),
             "/api/ops_dashboard": lambda: self._json(self._get_ops_dashboard()),
+            # Phase 3: analytics funnel, source intelligence
+            "/api/analytics/funnel": lambda: self._json(self._get_funnel_analytics()),
+            "/api/analytics/cost_by_source": lambda: self._json(self._get_cost_by_source()),
         }
 
         # DOCX download (GET with query param)
@@ -3787,6 +3790,104 @@ async function login() {
 
         finally:
             cur.close()
+    # --- Phase 3: Analytics Funnel & Source Intelligence ---
+
+    def _get_funnel_analytics(self):
+        """Full pipeline funnel: parsed → reviewed → approved → enriched → final_passed → rewritten → exported → published."""
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            funnel = {}
+
+            # Total parsed
+            cur.execute("SELECT COUNT(*) FROM news")
+            funnel["parsed"] = cur.fetchone()[0]
+
+            # Reviewed (has analysis)
+            cur.execute("SELECT COUNT(*) FROM news_analysis WHERE total_score > 0")
+            funnel["reviewed"] = cur.fetchone()[0]
+
+            # By status
+            for status in ["in_review", "approved", "processed", "moderation", "ready", "rejected", "duplicate"]:
+                cur.execute(f"SELECT COUNT(*) FROM news WHERE status = {ph}", (status,))
+                funnel[status] = cur.fetchone()[0]
+
+            # Articles created (rewritten)
+            cur.execute("SELECT COUNT(*) FROM articles")
+            funnel["rewritten"] = cur.fetchone()[0]
+
+            # Published articles
+            cur.execute(f"SELECT COUNT(*) FROM articles WHERE status = 'published'")
+            funnel["published"] = cur.fetchone()[0]
+
+            # Conversion by source
+            cur.execute("""
+                SELECT n.source,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN n.status = 'ready' THEN 1 ELSE 0 END) as ready_count,
+                       SUM(CASE WHEN n.status = 'rejected' THEN 1 ELSE 0 END) as rejected_count,
+                       SUM(CASE WHEN n.status = 'duplicate' THEN 1 ELSE 0 END) as dup_count
+                FROM news n
+                GROUP BY n.source
+                ORDER BY total DESC
+            """)
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                by_source = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                by_source = [dict(r) for r in cur.fetchall()]
+
+            # Score distribution
+            cur.execute("""
+                SELECT
+                    SUM(CASE WHEN total_score >= 70 THEN 1 ELSE 0 END) as high,
+                    SUM(CASE WHEN total_score >= 40 AND total_score < 70 THEN 1 ELSE 0 END) as medium,
+                    SUM(CASE WHEN total_score >= 15 AND total_score < 40 THEN 1 ELSE 0 END) as low,
+                    SUM(CASE WHEN total_score < 15 THEN 1 ELSE 0 END) as rejected_range
+                FROM news_analysis WHERE total_score > 0
+            """)
+            row = cur.fetchone()
+            if row:
+                if _is_postgres():
+                    funnel["score_distribution"] = {"high": row[0] or 0, "medium": row[1] or 0, "low": row[2] or 0, "rejected_range": row[3] or 0}
+                else:
+                    funnel["score_distribution"] = {"high": row[0] or 0, "medium": row[1] or 0, "low": row[2] or 0, "rejected_range": row[3] or 0}
+
+            funnel["by_source"] = by_source
+            return funnel
+        except Exception as e:
+            return {"error": str(e)}
+        finally:
+            cur.close()
+
+    def _get_cost_by_source(self):
+        """API cost broken down by source (via news_id correlation)."""
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT n.source,
+                       COUNT(c.id) as api_calls,
+                       COALESCE(SUM(c.cost_usd), 0) as total_cost,
+                       COALESCE(AVG(c.latency_ms), 0) as avg_latency
+                FROM api_cost_log c
+                JOIN news n ON c.news_id = n.id
+                WHERE c.news_id != ''
+                GROUP BY n.source
+                ORDER BY total_cost DESC
+            """)
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                rows = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                rows = [dict(r) for r in cur.fetchall()]
+            return {"by_source": rows}
+        except Exception as e:
+            return {"by_source": [], "error": str(e)}
+        finally:
+            cur.close()
+
     # --- Phase 2: Content Versioning & Multi-Output ---
 
     def _get_article_versions(self, body):
@@ -4374,6 +4475,13 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 
 /* Hotkey hints */
 .hotkey-hint { display:inline-block; background:#22303c; border:1px solid #38444d; border-radius:4px; padding:1px 5px; font-size:0.72em; color:#8899a6; margin-left:4px; font-family:monospace; }
+
+/* Funnel */
+.funnel-bar { display:flex; align-items:center; gap:10px; }
+.funnel-bar .fb-label { min-width:100px; font-size:0.82em; color:#8899a6; text-align:right; }
+.funnel-bar .fb-track { flex:1; height:24px; background:#22303c; border-radius:4px; overflow:hidden; position:relative; }
+.funnel-bar .fb-fill { height:100%; border-radius:4px; transition:width .6s; display:flex; align-items:center; padding:0 8px; font-size:0.75em; font-weight:600; color:#fff; min-width:fit-content; }
+.funnel-bar .fb-val { min-width:50px; font-size:0.85em; font-weight:600; }
 </style>
 </head>
 <body>
@@ -4868,6 +4976,18 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <button class="btn btn-sm btn-secondary" onclick="loadAnalytics()">Обновить</button>
         <button class="btn btn-sm btn-primary" onclick="generateDigest('today')">&#128240; Дайджест за день</button>
         <button class="btn btn-sm btn-primary" onclick="generateDigest('week')">&#128240; Дайджест за неделю</button>
+      </div>
+    </div>
+
+    <!-- Funnel (Phase 3, behind analytics_funnel_v1) -->
+    <div id="analytics-funnel" style="display:none;margin-bottom:16px">
+      <div class="card" style="padding:16px">
+        <h3 style="font-size:0.95em;margin-bottom:12px">Воронка конверсии</h3>
+        <div id="funnel-bars" style="display:flex;flex-direction:column;gap:6px"></div>
+        <div style="margin-top:12px">
+          <h3 style="font-size:0.95em;margin-bottom:8px">Конверсия по источникам</h3>
+          <div id="funnel-sources" style="max-height:200px;overflow-y:auto"></div>
+        </div>
       </div>
     </div>
 
@@ -5461,7 +5581,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   if (t.dataset.tab === 'final') { loadFinal(); }
   if (t.dataset.tab === 'editor') { loadArticles(); }
   if (t.dataset.tab === 'viral') { loadViral(); }
-  if (t.dataset.tab === 'analytics') { loadAnalytics(); loadSavedDigests(); }
+  if (t.dataset.tab === 'analytics') { loadAnalytics(); loadSavedDigests(); loadFunnelAnalytics(); }
   if (t.dataset.tab === 'queue') { loadQueueStandalone(); }
   if (t.dataset.tab === 'health') { loadHealth(); }
   if (t.dataset.tab === 'settings') { loadSettings(); loadLogs(); loadQueue(); loadViralTriggers(); }
@@ -8828,6 +8948,59 @@ document.addEventListener('keydown', function(e) {
 });
 
 // ═══════════════════════════════════════════
+// PHASE 3: ANALYTICS FUNNEL
+// ═══════════════════════════════════════════
+
+async function loadFunnelAnalytics() {
+  if (!ffEnabled('analytics_funnel_v1')) {
+    const el = document.getElementById('analytics-funnel');
+    if (el) el.style.display = 'none';
+    return;
+  }
+  const el = document.getElementById('analytics-funnel');
+  if (el) el.style.display = '';
+
+  const data = await api('/api/analytics/funnel');
+  if (!data || data.error) return;
+
+  const stages = [
+    {key: 'parsed', label: 'Распарсено', color: '#8899a6'},
+    {key: 'reviewed', label: 'Проверено', color: '#1da1f2'},
+    {key: 'in_review', label: 'На модерации', color: '#ffad1f'},
+    {key: 'approved', label: 'Одобрено', color: '#17bf63'},
+    {key: 'processed', label: 'Обогащено', color: '#794bc4'},
+    {key: 'ready', label: 'Готово', color: '#17bf63'},
+    {key: 'rewritten', label: 'Рерайтнуто', color: '#1da1f2'},
+    {key: 'published', label: 'Опубликовано', color: '#e0245e'},
+  ];
+
+  const maxVal = data.parsed || 1;
+  const barsEl = document.getElementById('funnel-bars');
+  if (barsEl) {
+    barsEl.innerHTML = stages.map(s => {
+      const val = data[s.key] || 0;
+      const pct = Math.max(2, (val / maxVal) * 100);
+      return `<div class="funnel-bar">
+        <div class="fb-label">${s.label}</div>
+        <div class="fb-track"><div class="fb-fill" style="width:${pct}%;background:${s.color}">${val}</div></div>
+        <div class="fb-val">${val}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // Source conversion table
+  const srcEl = document.getElementById('funnel-sources');
+  if (srcEl && data.by_source) {
+    srcEl.innerHTML = '<table style="width:100%;font-size:0.82em"><thead><tr><th style="text-align:left">Источник</th><th>Всего</th><th>Ready</th><th>Rejected</th><th>Дубли</th><th>Конверсия</th></tr></thead><tbody>' +
+      data.by_source.map(s => {
+        const conv = s.total > 0 ? ((s.ready_count / s.total) * 100).toFixed(1) + '%' : '0%';
+        const convColor = s.ready_count / s.total > 0.1 ? '#17bf63' : s.ready_count / s.total > 0.03 ? '#ffad1f' : '#e0245e';
+        return `<tr><td>${esc(s.source)}</td><td style="text-align:center">${s.total}</td><td style="text-align:center;color:#17bf63">${s.ready_count}</td><td style="text-align:center;color:#e0245e">${s.rejected_count}</td><td style="text-align:center;color:#8899a6">${s.dup_count}</td><td style="text-align:center;color:${convColor};font-weight:bold">${conv}</td></tr>`;
+      }).join('') + '</tbody></table>';
+  }
+}
+
+// ═══════════════════════════════════════════
 // FEATURE FLAG UI HOOKS
 // ═══════════════════════════════════════════
 
@@ -8841,6 +9014,10 @@ function applyFeatureFlags() {
   // Triage modes
   const triageModes = document.getElementById('triage-modes');
   if (triageModes) triageModes.style.display = ffEnabled('newsroom_triage_v1') ? '' : 'none';
+
+  // Analytics funnel
+  const funnelEl = document.getElementById('analytics-funnel');
+  if (funnelEl) funnelEl.style.display = ffEnabled('analytics_funnel_v1') ? '' : 'none';
 }
 
 // ═══════════════════════════════════════════
