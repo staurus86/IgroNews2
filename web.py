@@ -6741,7 +6741,6 @@ async function testParse() {
 }
 
 // Health
-let _healthData = [];
 async function loadHealth() {
   const data = await api('/api/health');
   _healthData = data;
