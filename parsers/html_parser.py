@@ -335,6 +335,39 @@ def _extract_publish_date(soup) -> str:
     return ""
 
 
+def _extract_body_text(soup) -> str:
+    """Извлекает основной текст статьи, пробуя несколько селекторов."""
+    selectors = [
+        "article",
+        "div.article-body", "div.article__body", "div.article-content",
+        "div.post-content", "div.entry-content", "div.content-body",
+        "div.story-body", "div.news-body", "div.text-body",
+        "div[class*='article']", "div[class*='content']",
+        "main", "div.main-content",
+        "div[itemprop='articleBody']",
+    ]
+    for sel in selectors:
+        el = soup.select_one(sel)
+        if el:
+            clone = BeautifulSoup(str(el), "lxml")
+            for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside", "figure", "figcaption"]):
+                tag.decompose()
+            text = clone.get_text(separator=" ", strip=True)[:5000]
+            if len(text) >= 100:
+                return text
+
+    # Fallback: <body>
+    if soup.body:
+        clone = BeautifulSoup(str(soup.body), "lxml")
+        for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside", "figure", "figcaption", "form"]):
+            tag.decompose()
+        text = clone.get_text(separator=" ", strip=True)[:5000]
+        if len(text) >= 100:
+            return text
+
+    return ""
+
+
 def _fetch_article(url: str) -> tuple[str, str, str, str]:
     """Загружает статью и извлекает h1, description, plain_text, published_at."""
     try:
@@ -348,17 +381,20 @@ def _fetch_article(url: str) -> tuple[str, str, str, str]:
 
         description = ""
         meta_desc = soup.find("meta", attrs={"name": "description"})
+        if not meta_desc:
+            meta_desc = soup.find("meta", attrs={"property": "og:description"})
         if meta_desc:
             description = meta_desc.get("content", "")
 
         published_at = _extract_publish_date(soup)
 
-        article = soup.find("article") or soup.body
-        plain_text = ""
-        if article:
-            for tag in article.find_all(["script", "style", "nav", "footer", "header", "aside"]):
-                tag.decompose()
-            plain_text = article.get_text(separator=" ", strip=True)[:5000]
+        # Умный поиск текста по множеству селекторов
+        plain_text = _extract_body_text(soup)
+
+        # Fallback: если text пуст, используем description
+        if not plain_text and description:
+            plain_text = description
+            logger.debug("Text recovery for %s: using description (%d chars)", url, len(description))
 
         return h1, description, plain_text, published_at
     except Exception as e:

@@ -458,6 +458,25 @@ class AdminHandler(BaseHTTPRequestHandler):
                 cur.execute("SELECT COUNT(*) FROM news_analysis WHERE total_score = 0")
                 diag["score_zero"] = cur.fetchone()[0]
 
+                # Source-level audit: text_len=0 and score=0 per source
+                cur.execute("""
+                    SELECT n.source,
+                           COUNT(*) as total,
+                           SUM(CASE WHEN LENGTH(COALESCE(n.plain_text, '')) = 0 THEN 1 ELSE 0 END) as no_text,
+                           SUM(CASE WHEN LENGTH(COALESCE(n.description, '')) = 0 THEN 1 ELSE 0 END) as no_desc,
+                           SUM(CASE WHEN COALESCE(a.total_score, 0) = 0 THEN 1 ELSE 0 END) as score_zero
+                    FROM news n
+                    LEFT JOIN news_analysis a ON n.id = a.news_id
+                    GROUP BY n.source
+                    ORDER BY n.source
+                """)
+                if _is_postgres():
+                    cols = [d[0] for d in cur.description]
+                    audit_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                else:
+                    audit_rows = [dict(r) for r in cur.fetchall()]
+                diag["source_audit"] = audit_rows
+
             finally:
                 cur.close()
         except Exception as e:

@@ -13,6 +13,40 @@ MAX_AGE_DAYS = 30
 logger = logging.getLogger(__name__)
 
 
+def _extract_body_text(soup) -> str:
+    """Извлекает основной текст статьи, пробуя несколько селекторов."""
+    # Приоритетный список селекторов для тела статьи
+    selectors = [
+        "article",
+        "div.article-body", "div.article__body", "div.article-content",
+        "div.post-content", "div.entry-content", "div.content-body",
+        "div.story-body", "div.news-body", "div.text-body",
+        "div[class*='article']", "div[class*='content']",
+        "main", "div.main-content",
+        "div[itemprop='articleBody']",
+    ]
+    for sel in selectors:
+        el = soup.select_one(sel)
+        if el:
+            clone = BeautifulSoup(str(el), "lxml")
+            for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside", "figure", "figcaption"]):
+                tag.decompose()
+            text = clone.get_text(separator=" ", strip=True)[:5000]
+            if len(text) >= 100:
+                return text
+
+    # Fallback: <body> с очисткой
+    if soup.body:
+        clone = BeautifulSoup(str(soup.body), "lxml")
+        for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside", "figure", "figcaption", "form"]):
+            tag.decompose()
+        text = clone.get_text(separator=" ", strip=True)[:5000]
+        if len(text) >= 100:
+            return text
+
+    return ""
+
+
 def fetch_full_text(url: str) -> tuple[str, str, str, str]:
     """Загружает страницу и извлекает h1, description, plain_text, published_at."""
     try:
@@ -26,6 +60,8 @@ def fetch_full_text(url: str) -> tuple[str, str, str, str]:
 
         description = ""
         meta_desc = soup.find("meta", attrs={"name": "description"})
+        if not meta_desc:
+            meta_desc = soup.find("meta", attrs={"property": "og:description"})
         if meta_desc:
             description = meta_desc.get("content", "")
 
@@ -33,13 +69,8 @@ def fetch_full_text(url: str) -> tuple[str, str, str, str]:
         from parsers.html_parser import _extract_publish_date
         published_at = _extract_publish_date(soup)
 
-        # Извлекаем основной текст из article или body
-        article = soup.find("article") or soup.find("div", class_="article") or soup.body
-        plain_text = ""
-        if article:
-            for tag in article.find_all(["script", "style", "nav", "footer", "header", "aside"]):
-                tag.decompose()
-            plain_text = article.get_text(separator=" ", strip=True)[:5000]
+        # Извлекаем основной текст — умный поиск по множеству селекторов
+        plain_text = _extract_body_text(soup)
 
         return h1, description, plain_text, published_at
     except Exception as e:
@@ -95,6 +126,11 @@ def parse_rss_source(source: dict) -> int:
 
             if not description:
                 description = summary
+
+            # Fallback: если plain_text пустой, используем RSS summary
+            if not plain_text and summary:
+                plain_text = summary
+                logger.debug("Text recovery for %s: using RSS summary (%d chars)", link, len(summary))
 
             # Приоритет: дата из RSS, иначе из HTML страницы
             final_date = published or page_date
