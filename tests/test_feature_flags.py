@@ -16,8 +16,14 @@ class TestFeatureFlags(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Init test DB."""
+        try:
+            os.remove("test_flags.db")
+        except OSError:
+            pass
         from storage.database import init_db
+        from core.feature_flags import invalidate_cache
         init_db()
+        invalidate_cache()
 
     def test_default_flags_exist(self):
         from core.feature_flags import get_all_flags

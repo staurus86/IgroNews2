@@ -279,8 +279,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/articles/versions": lambda: self._get_article_versions(body),
             "/api/articles/multi_output": lambda: self._generate_multi_output(body),
             "/api/articles/regenerate_field": lambda: self._regenerate_field(body),
-            # Phase 4: threshold simulator
+            # Phase 4: threshold simulator, rescore
             "/api/simulate_thresholds": lambda: self._simulate_thresholds(body),
+            "/api/rescore": lambda: self._rescore_news(body),
         }
         handler = routes.get(path)
         if handler:
@@ -4632,6 +4633,50 @@ async function login() {
         finally:
             cur.close()
 
+    def _rescore_news(self, body):
+        """Re-run scoring pipeline for specific news or all with score=0."""
+        if not self._require_perm("pipeline"):
+            return
+        news_ids = body.get("news_ids", [])
+        rescore_zero = body.get("rescore_zero", False)
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        try:
+            if rescore_zero:
+                # Find all in_review with score=0 or no analysis
+                cur.execute(f"""
+                    SELECT n.* FROM news n
+                    LEFT JOIN news_analysis a ON n.id = a.news_id
+                    WHERE n.status = 'in_review'
+                    AND (a.total_score IS NULL OR a.total_score = 0)
+                    ORDER BY n.parsed_at DESC
+                    LIMIT 100
+                """)
+            elif news_ids:
+                placeholders = ",".join([ph] * len(news_ids))
+                cur.execute(f"SELECT * FROM news WHERE id IN ({placeholders})", tuple(news_ids))
+            else:
+                self._json({"status": "error", "message": "news_ids or rescore_zero required"})
+                return
+
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                news_list = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                news_list = [dict(r) for r in cur.fetchall()]
+        finally:
+            cur.close()
+
+        if not news_list:
+            self._json({"status": "ok", "rescored": 0, "message": "Нет новостей для пересчёта"})
+            return
+
+        from checks.pipeline import run_review_pipeline
+        result = run_review_pipeline(news_list, update_status=False)
+        scored = len(result.get("results", []))
+        self._json({"status": "ok", "rescored": scored})
+
     # --- Dashboard HTML ---
     def _serve_dashboard(self):
         html = DASHBOARD_HTML
@@ -5049,11 +5094,13 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <button class="btn btn-sm btn-secondary" onclick="loadEditorial()">&#128269;</button>
       <button class="btn btn-sm btn-secondary" onclick="resetEdFilters()" title="Сбросить фильтры">&#10005;</button>
       <span style="color:#8899a6;font-size:0.85em" id="ed-count"></span>
+      <span style="color:#657786;font-size:0.78em;margin-left:auto" id="ed-last-update"></span>
     </div>
 
     <!-- Bulk actions -->
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
       <button class="btn btn-sm btn-success" onclick="edRunAutoReview()" id="ed-review-btn">&#9654; Проверить новые</button>
+      <button class="btn btn-sm btn-secondary" onclick="edRescore()" title="Пересчитать скор для выбранных новостей (или всех in_review с score=0)">&#128260; Пересчитать скор</button>
       <span style="color:#38444d">|</span>
       <button class="btn btn-sm btn-primary" onclick="edApproveSelected()">&#10003; Одобрить</button>
       <button class="btn btn-sm btn-danger" onclick="edRejectSelected()">&#10007; Отклонить</button>
@@ -5085,6 +5132,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           <th style="width:65px">Свежесть</th>
           <th style="width:40px">Тон</th>
           <th style="width:120px">Теги</th>
+          <th class="sortable" onclick="edSort('published_at')" style="width:75px">Дата</th>
           <th style="width:120px">Действия</th>
         </tr></thead>
         <tbody id="ed-table"></tbody>
@@ -8581,6 +8629,9 @@ async function loadEditorial(page) {
   }
 
   document.getElementById('ed-count').textContent = `${total} новостей`;
+  // Update refresh timer
+  const upd = document.getElementById('ed-last-update');
+  if (upd) { const now = new Date(); upd.textContent = 'Обновлено: ' + now.toLocaleTimeString('ru-RU'); }
   renderEdTable();
   renderEdPagination(total);
 }
@@ -8598,7 +8649,7 @@ function renderEdTable() {
 
   const tbody = document.getElementById('ed-table');
   if (!data.length) {
-    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:40px;color:#8899a6">
+    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;padding:40px;color:#8899a6">
       <div style="font-size:1.3em;margin-bottom:12px">Нет новостей для отображения</div>
       <div style="margin-bottom:8px">Всего в базе: <b>${_edTotalAll}</b> новостей</div>
       <div style="margin-bottom:12px">${_edTotalAll === 0
@@ -8682,10 +8733,11 @@ function renderEdTable() {
       <td style="text-align:center"><span style="color:${fColor};font-size:0.85em">${fLabel}</span></td>
       <td style="text-align:center"><span style="color:${slColor}" title="${sl}">${sEmoji}</span></td>
       <td>${tagsHtml}</td>
+      <td style="font-size:0.72em;color:#8899a6;white-space:nowrap">${fmtDate(n.published_at)}</td>
       <td style="white-space:nowrap">${approveBtn} ${rejectBtn} ${editorBtn} ${explainBtn}</td>
     </tr>
     <tr class="ed-detail" id="ed-detail-${n.id}" style="display:none">
-      <td colspan="11" style="padding:12px 20px;background:#15202b;border-left:3px solid #1da1f2">
+      <td colspan="12" style="padding:12px 20px;background:#15202b;border-left:3px solid #1da1f2">
         ${_edRenderDetail(n, ents, tags)}
       </td>
     </tr>`;
@@ -8909,6 +8961,32 @@ async function edBatchRewrite() {
     toast(`Рерайт ${ids.length} в очередь...`);
     const r = await api('/api/queue/rewrite', {news_ids: ids, style: 'news'});
     if (r.status === 'ok') { toast(`${r.queued || ids.length} задач добавлено`); } else toast(r.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = origText; }
+  }
+}
+
+async function edRescore() {
+  let ids = _edGetSelected();
+  const btn = event && event.target ? event.target : null;
+  const origText = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '&#9203; Пересчёт...'; }
+  try {
+    let body;
+    if (ids.length) {
+      body = {news_ids: ids};
+      toast('Пересчёт скора для ' + ids.length + ' новостей...');
+    } else {
+      body = {rescore_zero: true};
+      toast('Пересчёт всех in_review с score=0...');
+    }
+    const r = await api('/api/rescore', body);
+    if (r.status === 'ok') {
+      toast('Пересчитано: ' + r.rescored);
+      loadEditorial();
+    } else {
+      toast(r.message || r.error || 'Ошибка', true);
+    }
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = origText; }
   }

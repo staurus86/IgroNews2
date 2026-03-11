@@ -51,8 +51,9 @@ def _check_single(news: dict) -> dict:
         result["early_exit"] = True
         return result
 
-    # Compute text once, reuse for all checks
-    text = news.get("title", "") + " " + news.get("plain_text", "")
+    # Compute text once, reuse for all checks — fallback to description if plain_text empty
+    plain = news.get("plain_text", "") or news.get("description", "") or ""
+    text = news.get("title", "") + " " + plain
 
     # Game entities — computed once, passed to viral_score
     game_ents = find_entities(text)
