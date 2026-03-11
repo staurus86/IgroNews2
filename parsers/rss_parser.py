@@ -17,20 +17,32 @@ def _extract_body_text(soup) -> str:
     """Извлекает основной текст статьи, пробуя несколько селекторов."""
     # Приоритетный список селекторов для тела статьи
     selectors = [
-        "article",
+        # Specific body selectors first (cleanest text)
+        "div#article-body",
+        "div[itemprop='articleBody']",
         "div.article-body", "div.article__body", "div.article-content",
         "div.post-content", "div.entry-content", "div.content-body",
         "div.story-body", "div.news-body", "div.text-body",
-        "div[class*='article']", "div[class*='content']",
-        "main", "div.main-content",
-        "div[itemprop='articleBody']",
+        "div.post__body", "div.article__content", "div.prose",
+        "section.article-body", "div.content-article",
+        # Broader selectors last
+        "div[class*='article-body']", "div[class*='post-content']",
+        "div[class*='articleBody']", "div[class*='entry-content']",
+        "article", "main",
     ]
     for sel in selectors:
         el = soup.select_one(sel)
         if el:
             clone = BeautifulSoup(str(el), "lxml")
-            for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside", "figure", "figcaption"]):
+            for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside",
+                                       "figure", "figcaption", "form", "button", "svg",
+                                       "noscript", "iframe"]):
                 tag.decompose()
+            # Remove share/social/bookmark divs
+            for div in clone.find_all(["div", "section"], class_=lambda c: c and any(
+                    kw in " ".join(c).lower() for kw in ["share", "social", "bookmark", "comment",
+                                                          "sidebar", "related", "newsletter", "promo", "ad-"])):
+                div.decompose()
             text = clone.get_text(separator=" ", strip=True)[:5000]
             if len(text) >= 100:
                 return text
@@ -38,8 +50,13 @@ def _extract_body_text(soup) -> str:
     # Fallback: <body> с очисткой
     if soup.body:
         clone = BeautifulSoup(str(soup.body), "lxml")
-        for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside", "figure", "figcaption", "form"]):
+        for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside",
+                                   "figure", "figcaption", "form", "button", "svg", "noscript", "iframe"]):
             tag.decompose()
+        for div in clone.find_all(["div", "section"], class_=lambda c: c and any(
+                kw in " ".join(c).lower() for kw in ["share", "social", "bookmark", "comment",
+                                                      "sidebar", "related", "newsletter", "promo", "ad-"])):
+            div.decompose()
         text = clone.get_text(separator=" ", strip=True)[:5000]
         if len(text) >= 100:
             return text

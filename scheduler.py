@@ -42,7 +42,7 @@ def parse_sources(interval_min: int):
     for source in sources:
         if source["type"] == "rss":
             total += parse_rss_source(source)
-        elif source["type"] in ("html", "dtf"):
+        elif source["type"] in ("html", "dtf", "gamesradar"):
             total += parse_html_source(source)
         elif source["type"] == "sitemap":
             from parsers.html_parser import parse_sitemap_source

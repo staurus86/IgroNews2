@@ -18,6 +18,8 @@ def parse_html_source(source: dict) -> int:
     """Парсит HTML-страницу с новостями, возвращает количество новых."""
     if source.get("type") == "dtf":
         return _parse_dtf(source)
+    if source.get("type") == "gamesradar":
+        return _parse_gamesradar(source)
 
     name = source["name"]
     url = source["url"]
@@ -97,6 +99,96 @@ def parse_html_source(source: dict) -> int:
         logger.error("Error parsing HTML %s: %s", name, e)
 
     logger.info("Parsed %s (HTML): %d new articles", name, count)
+    return count
+
+
+def _parse_gamesradar(source: dict) -> int:
+    """Парсит GamesRadar с главной страницы: Latest News + Trending."""
+    name = source["name"]
+    url = source["url"]
+    count = 0
+
+    try:
+        resp = fetch_with_retry(url)
+        soup = BeautifulSoup(resp.text, "lxml")
+
+        seen_urls = set()
+        links_to_process = []
+
+        # 1. Latest News — .listingResult.small elements
+        for item in soup.select(".listingResult.small"):
+            a_tag = item.find("a", href=True)
+            if not a_tag:
+                continue
+            href = a_tag["href"]
+            if not href.startswith("http"):
+                href = urljoin("https://www.gamesradar.com", href)
+            h3 = item.find(["h3", "h2", "h4"])
+            title = h3.get_text(strip=True) if h3 else a_tag.get_text(strip=True)
+            if title and len(title) > 15 and href not in seen_urls:
+                seen_urls.add(href)
+                links_to_process.append((href, title, "latest"))
+
+        # 2. Trending section — widget-header "Trending" + sibling links
+        for header in soup.find_all(["div", "h2"], class_=re.compile(r"widget-header")):
+            if "trending" not in header.get_text(strip=True).lower():
+                continue
+            parent = header.parent
+            if not parent:
+                continue
+            for a_tag in parent.find_all("a", href=True):
+                href = a_tag["href"]
+                if not href.startswith("http"):
+                    href = urljoin("https://www.gamesradar.com", href)
+                # Фильтр: только статьи, не хабы/гайды (должны содержать достаточно сегментов пути)
+                if href.count("/") < 5:
+                    continue
+                title = a_tag.get_text(strip=True)
+                # Очистка от префиксов типа "Opinion", "Review", "Now Playing"
+                for prefix in ["Opinion", "Review", "Now Playing", "Preview"]:
+                    if title.startswith(prefix):
+                        title = title[len(prefix):].strip()
+                if title and len(title) > 15 and href not in seen_urls:
+                    seen_urls.add(href)
+                    links_to_process.append((href, title, "trending"))
+
+        logger.info("GamesRadar: found %d links (%d latest + %d trending)",
+                     len(links_to_process),
+                     sum(1 for _, _, t in links_to_process if t == "latest"),
+                     sum(1 for _, _, t in links_to_process if t == "trending"))
+
+        for link, title, section in links_to_process[:30]:
+            if news_exists(link):
+                continue
+            time.sleep(1)
+            h1, description, plain_text, published_at = _fetch_article(link)
+            # Prefer page h1 over scraped title
+            final_title = h1 if h1 and len(h1) > 15 else title
+            news_id = insert_news(
+                source=name, url=link, title=final_title,
+                h1=h1, description=description,
+                plain_text=plain_text, published_at=published_at,
+            )
+            if news_id:
+                count += 1
+
+    except Exception as e:
+        logger.error("Error parsing GamesRadar HTML: %s", e)
+
+    # 3. Also try RSS feed as supplement (may have articles not on homepage)
+    rss_url = source.get("rss_url")
+    if rss_url:
+        try:
+            from parsers.rss_parser import parse_rss_source
+            rss_source = {**source, "type": "rss", "url": rss_url}
+            rss_count = parse_rss_source(rss_source)
+            count += rss_count
+            if rss_count:
+                logger.info("GamesRadar RSS supplement: %d new articles", rss_count)
+        except Exception as e:
+            logger.debug("GamesRadar RSS fallback failed: %s", e)
+
+    logger.info("Parsed %s (GamesRadar HTML+RSS): %d new articles", name, count)
     return count
 
 
@@ -338,20 +430,32 @@ def _extract_publish_date(soup) -> str:
 def _extract_body_text(soup) -> str:
     """Извлекает основной текст статьи, пробуя несколько селекторов."""
     selectors = [
-        "article",
+        # Specific body selectors first (cleanest text)
+        "div#article-body",
+        "div[itemprop='articleBody']",
         "div.article-body", "div.article__body", "div.article-content",
         "div.post-content", "div.entry-content", "div.content-body",
         "div.story-body", "div.news-body", "div.text-body",
-        "div[class*='article']", "div[class*='content']",
-        "main", "div.main-content",
-        "div[itemprop='articleBody']",
+        "div.post__body", "div.article__content", "div.prose",
+        "section.article-body", "div.content-article",
+        # Broader selectors last
+        "div[class*='article-body']", "div[class*='post-content']",
+        "div[class*='articleBody']", "div[class*='entry-content']",
+        "article", "main",
     ]
     for sel in selectors:
         el = soup.select_one(sel)
         if el:
             clone = BeautifulSoup(str(el), "lxml")
-            for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside", "figure", "figcaption"]):
+            for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside",
+                                       "figure", "figcaption", "form", "button", "svg",
+                                       "noscript", "iframe"]):
                 tag.decompose()
+            # Remove share/social/bookmark divs
+            for div in clone.find_all(["div", "section"], class_=lambda c: c and any(
+                    kw in " ".join(c).lower() for kw in ["share", "social", "bookmark", "comment",
+                                                          "sidebar", "related", "newsletter", "promo", "ad-"])):
+                div.decompose()
             text = clone.get_text(separator=" ", strip=True)[:5000]
             if len(text) >= 100:
                 return text
@@ -359,8 +463,13 @@ def _extract_body_text(soup) -> str:
     # Fallback: <body>
     if soup.body:
         clone = BeautifulSoup(str(soup.body), "lxml")
-        for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside", "figure", "figcaption", "form"]):
+        for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside",
+                                   "figure", "figcaption", "form", "button", "svg", "noscript", "iframe"]):
             tag.decompose()
+        for div in clone.find_all(["div", "section"], class_=lambda c: c and any(
+                kw in " ".join(c).lower() for kw in ["share", "social", "bookmark", "comment",
+                                                      "sidebar", "related", "newsletter", "promo", "ad-"])):
+            div.decompose()
         text = clone.get_text(separator=" ", strip=True)[:5000]
         if len(text) >= 100:
             return text
