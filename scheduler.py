@@ -18,6 +18,27 @@ logger = logging.getLogger(__name__)
 # Global pipeline stop flag (thread-safe via GIL)
 _pipeline_stop = False
 
+# Circuit breaker: consecutive API failures per service
+_api_failures = {}  # {service: consecutive_count}
+_API_FAILURE_THRESHOLD = 5  # after 5 consecutive failures, skip service
+
+
+def _api_circuit_open(service: str) -> bool:
+    """Returns True if circuit is open (too many failures, should skip)."""
+    return _api_failures.get(service, 0) >= _API_FAILURE_THRESHOLD
+
+
+def _api_record_failure(service: str):
+    """Records an API failure."""
+    _api_failures[service] = _api_failures.get(service, 0) + 1
+    if _api_failures[service] == _API_FAILURE_THRESHOLD:
+        logger.warning("Circuit breaker OPEN for %s after %d consecutive failures", service, _API_FAILURE_THRESHOLD)
+
+
+def _api_record_success(service: str):
+    """Resets failure counter on success."""
+    _api_failures[service] = 0
+
 
 def pipeline_stop():
     """Сигнал остановки пайплайна."""
@@ -109,6 +130,47 @@ def _auto_review_new():
 
     except Exception as e:
         logger.error("Auto-review error: %s", e)
+
+
+def _auto_rescore_zero():
+    """Ежедневный пересчёт новостей с score=0 или без анализа.
+
+    Подбирает news которые могли получить 0 из-за отсутствия plain_text,
+    но текст мог быть извлечён при повторном парсинге.
+    """
+    try:
+        from storage.database import get_connection, _is_postgres
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT n.* FROM news n
+                LEFT JOIN news_analysis a ON n.id = a.news_id
+                WHERE n.status IN ('in_review', 'rejected')
+                AND (a.total_score IS NULL OR a.total_score = 0 OR a.news_id IS NULL)
+                AND n.plain_text != '' AND n.plain_text IS NOT NULL
+                ORDER BY n.parsed_at DESC
+                LIMIT 200
+            """)
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+            else:
+                news_list = [dict(row) for row in cur.fetchall()]
+        finally:
+            cur.close()
+
+        if not news_list:
+            return
+
+        from checks.pipeline import run_review_pipeline
+        result = run_review_pipeline(news_list, update_status=True)
+        rescored = len(result.get("results", []))
+        improved = sum(1 for r in result.get("results", []) if r.get("total_score", 0) > 0)
+        logger.info("Auto-rescore: %d rescored, %d improved (score>0)", rescored, improved)
+
+    except Exception as e:
+        logger.error("Auto-rescore error: %s", e)
 
 
 def _auto_approve_high_score(results: list):
@@ -289,37 +351,57 @@ def _do_process(news: dict) -> dict:
     bigrams = keywords.get("bigrams", [])
     trigrams = keywords.get("trigrams", [])
 
-    # 2. Keys.so (with rate limit) — region по источнику
+    # 2. Keys.so (with rate limit + circuit breaker) — region по источнику
     top_bigram = bigrams[0][0] if bigrams else title
     source = news.get("source", "")
     keyso_region = config.keyso_region_for_source(source)
-    try:
-        keyso_info = get_keyword_info(top_bigram, region=keyso_region)
-        time.sleep(2)
-        similar = get_similar_keywords(top_bigram, limit=10, region=keyso_region)
-        time.sleep(2)
-    except Exception as e:
-        logger.warning("Keys.so error: %s", e)
+    from apis.cache import rate_check
+    if rate_check("keyso") and not _api_circuit_open("keyso"):
+        try:
+            keyso_info = get_keyword_info(top_bigram, region=keyso_region)
+            time.sleep(2)
+            similar = get_similar_keywords(top_bigram, limit=10, region=keyso_region)
+            time.sleep(2)
+            _api_record_success("keyso")
+        except Exception as e:
+            logger.warning("Keys.so error: %s", e)
+            _api_record_failure("keyso")
+            keyso_info = {"ws": 0, "wsk": 0}
+            similar = []
+    else:
+        logger.warning("Keys.so skipped (rate limit or circuit breaker)")
         keyso_info = {"ws": 0, "wsk": 0}
         similar = []
 
-    # 3. Google Trends (with rate limit)
-    try:
-        trends = get_trends_for_keyword(top_bigram)
-        time.sleep(3)
-    except Exception as e:
-        logger.warning("Trends error: %s", e)
+    # 3. Google Trends (with rate limit + circuit breaker)
+    if rate_check("trends") and not _api_circuit_open("trends"):
+        try:
+            trends = get_trends_for_keyword(top_bigram)
+            time.sleep(3)
+            _api_record_success("trends")
+        except Exception as e:
+            logger.warning("Trends error: %s", e)
+            _api_record_failure("trends")
+            trends = {}
+    else:
+        logger.warning("Trends skipped (rate limit or circuit breaker)")
         trends = {}
 
-    # 4. LLM (with rate limit)
-    try:
-        fc = forecast_trend(
-            title=title, text=text, bigrams=bigrams,
-            keyso_freq=keyso_info.get("ws", 0), trends=trends,
-        )
-        time.sleep(2)
-    except Exception as e:
-        logger.warning("LLM error: %s", e)
+    # 4. LLM (with rate limit + circuit breaker)
+    if rate_check("llm") and not _api_circuit_open("llm"):
+        try:
+            fc = forecast_trend(
+                title=title, text=text, bigrams=bigrams,
+                keyso_freq=keyso_info.get("ws", 0), trends=trends,
+            )
+            time.sleep(2)
+            _api_record_success("llm")
+        except Exception as e:
+            logger.warning("LLM error: %s", e)
+            _api_record_failure("llm")
+            fc = None
+    else:
+        logger.warning("LLM skipped (rate limit or circuit breaker)")
         fc = None
     recommendation = fc.get("recommendation", "") if fc else ""
     trend_score = str(fc.get("trend_score", "")) if fc else ""
@@ -1001,8 +1083,15 @@ def start_scheduler():
     # Очистка старых задач из task_queue раз в сутки
     scheduler.add_job(cleanup_old_tasks, "interval", hours=24, id="cleanup_tasks")
 
+    # Очистка просроченных записей кэша каждые 6 часов
+    from apis.cache import cache_cleanup
+    scheduler.add_job(cache_cleanup, "interval", hours=6, id="cache_cleanup")
+
     # Публикация запланированных статей: каждую минуту
     scheduler.add_job(publish_scheduled_articles, "interval", minutes=1, id="publish_scheduled")
+
+    # Авто-пересчёт news с score=0: ежедневно в 04:00
+    scheduler.add_job(_auto_rescore_zero, "cron", hour=4, minute=0, id="auto_rescore_zero")
 
     # Авто-дайджест: ежедневно в 23:00 по Москве
     scheduler.add_job(generate_auto_digest, "cron", hour=23, minute=0, id="auto_digest")

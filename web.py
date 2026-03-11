@@ -2175,10 +2175,12 @@ async function login() {
         conn = get_connection()
         cur = conn.cursor()
         try:
-            ph = "%s" if _is_postgres() else "?"
-            for nid in news_ids:
-                cur.execute(f"DELETE FROM news_analysis WHERE news_id = {ph}", (nid,))
-                cur.execute(f"DELETE FROM news WHERE id = {ph}", (nid,))
+            if _is_postgres():
+                placeholders = ",".join(["%s"] * len(news_ids))
+            else:
+                placeholders = ",".join(["?"] * len(news_ids))
+            cur.execute(f"DELETE FROM news_analysis WHERE news_id IN ({placeholders})", tuple(news_ids))
+            cur.execute(f"DELETE FROM news WHERE id IN ({placeholders})", tuple(news_ids))
             conn.commit()
             self._json({"status": "ok", "deleted": len(news_ids)})
 
@@ -4842,14 +4844,14 @@ async function login() {
         ph = "%s" if _is_postgres() else "?"
         try:
             if rescore_zero:
-                # Find all in_review with score=0 or no analysis
+                # Find all with score=0, missing analysis, or rejected due to low quality
                 cur.execute(f"""
                     SELECT n.* FROM news n
                     LEFT JOIN news_analysis a ON n.id = a.news_id
-                    WHERE n.status = 'in_review'
-                    AND (a.total_score IS NULL OR a.total_score = 0)
+                    WHERE n.status IN ('in_review', 'new', 'rejected')
+                    AND (a.total_score IS NULL OR a.total_score = 0 OR a.news_id IS NULL)
                     ORDER BY n.parsed_at DESC
-                    LIMIT 100
+                    LIMIT 500
                 """)
             elif news_ids:
                 placeholders = ",".join([ph] * len(news_ids))

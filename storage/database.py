@@ -10,6 +10,7 @@ import config
 logger = logging.getLogger(__name__)
 
 _conn = None
+_pool = None  # PostgreSQL connection pool
 
 
 def _is_postgres():
@@ -17,8 +18,19 @@ def _is_postgres():
 
 
 def get_connection():
-    global _conn
+    global _conn, _pool
     if _conn is not None:
+        # Validate PostgreSQL connection is alive
+        if _is_postgres():
+            try:
+                _conn.isolation_level  # triggers error if closed
+                cur = _conn.cursor()
+                cur.execute("SELECT 1")
+                cur.close()
+            except Exception:
+                logger.warning("PostgreSQL connection lost, reconnecting...")
+                _conn = None
+                return get_connection()
         return _conn
 
     if _is_postgres():
@@ -31,7 +43,7 @@ def get_connection():
         _conn.autocommit = True
     else:
         db_path = config.DATABASE_URL.replace("sqlite:///", "")
-        _conn = sqlite3.connect(db_path)
+        _conn = sqlite3.connect(db_path, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
 
     return _conn

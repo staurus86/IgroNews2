@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 _cache = OrderedDict()
 _cache_lock = threading.Lock()
-_MAX_CACHE_SIZE = 500
+_MAX_CACHE_SIZE = 2000  # increased from 500 for 2000+ news items
 _DEFAULT_TTL = 86400  # 24 hours
 
 
@@ -53,6 +53,18 @@ def get_cache_stats() -> dict:
         total = len(_cache)
         alive = sum(1 for e in _cache.values() if now <= e["expires"])
         return {"total": total, "alive": alive, "expired": total - alive, "max": _MAX_CACHE_SIZE}
+
+
+def cache_cleanup():
+    """Удаляет просроченные записи из кэша. Вызывается периодически."""
+    with _cache_lock:
+        now = time.time()
+        expired_keys = [k for k, v in _cache.items() if now > v["expires"]]
+        for k in expired_keys:
+            _cache.pop(k, None)
+    if expired_keys:
+        logger.debug("Cache cleanup: removed %d expired entries", len(expired_keys))
+    return len(expired_keys)
 
 
 def clear_cache():
