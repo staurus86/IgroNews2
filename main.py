@@ -1,4 +1,5 @@
 import logging
+import signal
 import sys
 
 logging.basicConfig(
@@ -15,8 +16,23 @@ from web import start_web
 from apis.cache import setup_dashboard_logging
 
 
+def _handle_shutdown(signum, frame):
+    """Graceful shutdown: stop pipelines, then exit."""
+    logging.info("Received signal %s, shutting down gracefully...", signum)
+    try:
+        from scheduler import pipeline_stop
+        pipeline_stop()
+    except Exception:
+        pass
+    sys.exit(0)
+
+
 def main():
     logging.info("IgroNews starting...")
+
+    # Graceful shutdown on SIGTERM (Docker/Railway) and SIGINT (Ctrl+C)
+    signal.signal(signal.SIGTERM, _handle_shutdown)
+    signal.signal(signal.SIGINT, _handle_shutdown)
 
     # Подключаем логи для дашборда
     setup_dashboard_logging()

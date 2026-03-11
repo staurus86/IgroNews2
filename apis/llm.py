@@ -131,32 +131,32 @@ def _call_llm_raw(prompt: str, key_index: int = 0, news_id: str = "") -> dict | 
 
 def _call_llm(prompt: str) -> dict | None:
     """Вызывает LLM с retry, fallback ключами и rate limiting."""
-    from apis.cache import retry_call, rate_check, rate_increment
+    import time as _time
+    from apis.cache import rate_check, rate_increment
     if not rate_check("llm"):
         logger.warning("LLM rate limit exceeded")
         return None
     for i in range(len(_API_KEYS)):
-        try:
-            rate_increment("llm")
-            result = _call_llm_raw(prompt, i)
-            if result is not None:
-                return result
-        except json.JSONDecodeError as e:
-            logger.warning("LLM key %d JSON parse error: %s", i, e)
-            continue
-        except Exception as e:
-            logger.warning("LLM key %d error: %s", i, e)
-            # Retry once with delay
-            import time
-            time.sleep(2)
+        # Up to 3 attempts per key (JSON errors are retryable)
+        for attempt in range(3):
             try:
-                rate_increment("llm")
                 result = _call_llm_raw(prompt, i)
+                rate_increment("llm")  # count only on actual call
                 if result is not None:
                     return result
-            except Exception as e2:
-                logger.warning("LLM key %d retry failed: %s", i, e2)
-                continue
+            except json.JSONDecodeError as e:
+                logger.warning("LLM key %d JSON parse error (attempt %d/3): %s", i, attempt + 1, e)
+                if attempt < 2:
+                    _time.sleep(2 * (attempt + 1))  # 2s, 4s
+                    continue
+                # Last attempt failed — try next key
+                break
+            except Exception as e:
+                logger.warning("LLM key %d error (attempt %d/3): %s", i, attempt + 1, e)
+                if attempt < 2:
+                    _time.sleep(3 * (attempt + 1))  # 3s, 6s
+                    continue
+                break
     logger.error("All LLM keys failed")
     return None
 

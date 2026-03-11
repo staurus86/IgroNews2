@@ -91,9 +91,16 @@ def get_similar_keywords(keyword: str, limit: int = 10, region: str = None) -> l
 
 
 def check_keywords_bulk(keywords: list[str]) -> dict:
-    """Массовая проверка частотности списка ключевых слов."""
+    """Массовая проверка частотности списка ключевых слов (с кэшем 24ч)."""
     if not keywords:
         return {}
+
+    from apis.cache import cache_get, cache_set, cache_key
+    # Cache by sorted keyword list
+    ck = cache_key("keyso_bulk", ",".join(sorted(keywords[:20])))
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
 
     try:
         # Создаём задачу
@@ -108,21 +115,31 @@ def check_keywords_bulk(keywords: list[str]) -> dict:
         if not uid:
             return {}
 
-        # Получаем результат
+        # Получаем результат с retry
         import time
-        time.sleep(3)
-        result_resp = requests.get(
-            f"{config.KEYSO_BASE_URL}/tools/keywords_by_list/{uid}",
-            params={"token": config.KEYSO_API_KEY, "per_page": len(keywords)},
-            timeout=15,
-        )
-        result_resp.raise_for_status()
-        result_data = result_resp.json()
+        for attempt in range(3):
+            time.sleep(3 + attempt * 2)  # 3s, 5s, 7s
+            try:
+                result_resp = requests.get(
+                    f"{config.KEYSO_BASE_URL}/tools/keywords_by_list/{uid}",
+                    params={"token": config.KEYSO_API_KEY, "per_page": len(keywords)},
+                    timeout=15,
+                )
+                result_resp.raise_for_status()
+                result_data = result_resp.json()
+                if result_data.get("data"):
+                    break
+            except Exception:
+                if attempt == 2:
+                    raise
+                continue
 
-        return {
+        result = {
             item["word"]: {"ws": item.get("ws", 0), "wsk": item.get("wsk", 0)}
             for item in result_data.get("data", [])
         }
+        cache_set(ck, result, ttl=86400)  # 24h
+        return result
     except Exception as e:
         logger.error("Keys.so bulk check error: %s", e)
         return {}

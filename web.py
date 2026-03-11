@@ -1586,11 +1586,11 @@ async function login() {
         select_all = body.get("all_new", False)
 
         if select_all and not news_ids:
-            # Выбрать все new/in_review
+            # Выбрать все new/in_review (исключая уже обработанные)
             conn = get_connection()
             cur = conn.cursor()
             try:
-                cur.execute("SELECT id FROM news WHERE status IN ('new', 'in_review') ORDER BY parsed_at DESC LIMIT 5000")
+                cur.execute("SELECT id FROM news WHERE status IN ('new', 'in_review') AND status NOT IN ('duplicate', 'rejected', 'ready', 'processed') ORDER BY parsed_at DESC LIMIT 5000")
                 if _is_postgres():
                     news_ids = [r[0] for r in cur.fetchall()]
                 else:
@@ -1633,6 +1633,8 @@ async function login() {
 
     def _pipeline_no_llm(self, body):
         """Режим 2: Без LLM — score → Sheets/NotReady + Модерация."""
+        if not self._require_perm("pipeline"):
+            return
         news_ids = body.get("news_ids", [])
         select_all = body.get("all_new", False)
 
@@ -1640,7 +1642,7 @@ async function login() {
             conn = get_connection()
             cur = conn.cursor()
             try:
-                cur.execute("SELECT id FROM news WHERE status IN ('new', 'in_review') ORDER BY parsed_at DESC LIMIT 5000")
+                cur.execute("SELECT id FROM news WHERE status IN ('new', 'in_review') AND status NOT IN ('duplicate', 'rejected', 'ready', 'processed') ORDER BY parsed_at DESC LIMIT 5000")
                 if _is_postgres():
                     news_ids = [r[0] for r in cur.fetchall()]
                 else:

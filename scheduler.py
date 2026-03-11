@@ -10,7 +10,7 @@ from nlp.tfidf import extract_keywords
 from apis.keyso import get_keyword_info, get_similar_keywords
 from apis.google_trends import get_trends_for_keyword
 from apis.llm import forecast_trend, suggest_keyso_queries
-from storage.database import get_unprocessed_news, update_news_status, save_analysis, cleanup_old_plaintext
+from storage.database import get_unprocessed_news, update_news_status, save_analysis, cleanup_old_plaintext, cleanup_old_tasks
 from storage.sheets import write_news_row
 
 logger = logging.getLogger(__name__)
@@ -628,7 +628,13 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
 
             # Stage 6: Export to Sheets/Ready
             _update_task(task_id, "running", {"stage": "exporting", "score": total_score, "final_score": final_score})
-            sheet_row = write_ready_row(news, analysis, rewrite)
+            try:
+                sheet_row = write_ready_row(news, analysis, rewrite)
+            except Exception as sheets_err:
+                logger.error("Full-auto Sheets write failed for %s: %s", news_id, sheets_err)
+                sheet_row = None
+                # Article saved to DB already — not lost
+                time.sleep(10)  # Back off on Sheets error
 
             update_news_status(news_id, "ready")
             _update_task(task_id, "done", {
@@ -991,6 +997,9 @@ def start_scheduler():
 
     # Очистка старого plain_text раз в сутки (экономия памяти БД)
     scheduler.add_job(cleanup_old_plaintext, "interval", hours=24, id="cleanup_plaintext")
+
+    # Очистка старых задач из task_queue раз в сутки
+    scheduler.add_job(cleanup_old_tasks, "interval", hours=24, id="cleanup_tasks")
 
     # Публикация запланированных статей: каждую минуту
     scheduler.add_job(publish_scheduled_articles, "interval", minutes=1, id="publish_scheduled")

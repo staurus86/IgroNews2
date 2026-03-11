@@ -228,6 +228,11 @@ def init_db():
     if not _is_postgres():
         conn.commit()
 
+    # ─── Indexes for performance ───
+    _create_indexes(cur)
+    if not _is_postgres():
+        conn.commit()
+
     # Initialize feature flags and observability tables
     try:
         from core.feature_flags import init_flags_table
@@ -241,6 +246,27 @@ def init_db():
         logger.warning("Observability tables init skipped: %s", e)
 
     logger.info("Database initialized")
+
+
+def _create_indexes(cur):
+    """Create indexes for frequently-queried columns (IF NOT EXISTS is safe to re-run)."""
+    indexes = [
+        "CREATE INDEX IF NOT EXISTS idx_news_status ON news(status)",
+        "CREATE INDEX IF NOT EXISTS idx_news_parsed_at ON news(parsed_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_news_source ON news(source)",
+        "CREATE INDEX IF NOT EXISTS idx_analysis_score ON news_analysis(total_score DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_analysis_newsid ON news_analysis(news_id)",
+        "CREATE INDEX IF NOT EXISTS idx_task_queue_status ON task_queue(status)",
+        "CREATE INDEX IF NOT EXISTS idx_task_queue_type ON task_queue(task_type)",
+        "CREATE INDEX IF NOT EXISTS idx_task_queue_created ON task_queue(created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_articles_status ON articles(status)",
+        "CREATE INDEX IF NOT EXISTS idx_articles_newsid ON articles(news_id)",
+    ]
+    for sql in indexes:
+        try:
+            cur.execute(sql)
+        except Exception as e:
+            logger.debug("Index creation skipped: %s", e)
 
 
 def _add_column_if_missing(cur, table, column, col_type):
@@ -445,6 +471,30 @@ def cleanup_old_plaintext(days: int = 14):
     if count > 0:
         logger.info("Cleaned plain_text for %d old news items", count)
     return count
+
+
+def cleanup_old_tasks(days: int = 7):
+    """Удаляет завершённые/отменённые задачи старше N дней."""
+    conn = get_connection()
+    cur = conn.cursor()
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        cur.execute(f"""
+            DELETE FROM task_queue
+            WHERE created_at < {ph} AND status IN ('done', 'error', 'cancelled', 'skipped')
+        """, (cutoff,))
+        if _is_postgres():
+            count = cur.rowcount
+        else:
+            count = cur.rowcount
+            conn.commit()
+        if count > 0:
+            logger.info("Cleaned %d old tasks from task_queue", count)
+        return count
+    finally:
+        cur.close()
 
 
 def save_digest(digest_id: str, digest_date: str, style: str,

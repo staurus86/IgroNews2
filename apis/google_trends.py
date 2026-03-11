@@ -35,5 +35,5 @@ def get_trends_for_keyword(keyword: str) -> dict:
         logger.error("Google Trends init error: %s", e)
         result = {r: 0 for r in config.REGIONS}
 
-    cache_set(ck, result, ttl=21600)  # 6 hours
+    cache_set(ck, result, ttl=86400)  # 24 hours
     return result

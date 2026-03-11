@@ -143,6 +143,18 @@ def run_review_pipeline(news_list: list[dict], update_status: bool = True) -> di
         news_list: список новостей для проверки
         update_status: если True — обновляет статусы в БД (in_review/duplicate)
     """
+    # Chunk large batches to avoid O(n²) dedup explosion
+    CHUNK_SIZE = 100
+    if len(news_list) > CHUNK_SIZE:
+        all_results = []
+        all_groups = []
+        for start in range(0, len(news_list), CHUNK_SIZE):
+            chunk = news_list[start:start + CHUNK_SIZE]
+            chunk_result = run_review_pipeline(chunk, update_status=update_status)
+            all_results.extend(chunk_result.get("results", []))
+            all_groups.extend(chunk_result.get("groups", []))
+        return {"results": all_results, "groups": all_groups}
+
     try:
         results = [_check_single(news) for news in news_list]
     finally:

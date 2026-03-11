@@ -6,7 +6,7 @@ for HTML/RSS parsers.
 import logging
 import random
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import requests
@@ -82,7 +82,7 @@ def _is_domain_blocked(domain: str) -> bool:
     if not state:
         return False
     if state["failures"] >= CIRCUIT_BREAKER_THRESHOLD:
-        if datetime.utcnow() < state["blocked_until"]:
+        if datetime.now(timezone.utc) < state["blocked_until"]:
             return True
         # Cooldown expired, reset
         del _circuit_breaker[domain]
@@ -93,10 +93,10 @@ def _is_domain_blocked(domain: str) -> bool:
 def _record_failure(domain: str):
     """Record a failure for circuit breaker."""
     if domain not in _circuit_breaker:
-        _circuit_breaker[domain] = {"failures": 0, "blocked_until": datetime.utcnow()}
+        _circuit_breaker[domain] = {"failures": 0, "blocked_until": datetime.now(timezone.utc)}
     _circuit_breaker[domain]["failures"] += 1
     if _circuit_breaker[domain]["failures"] >= CIRCUIT_BREAKER_THRESHOLD:
-        _circuit_breaker[domain]["blocked_until"] = datetime.utcnow() + CIRCUIT_BREAKER_COOLDOWN
+        _circuit_breaker[domain]["blocked_until"] = datetime.now(timezone.utc) + CIRCUIT_BREAKER_COOLDOWN
         logger.warning("Circuit breaker OPEN for domain %s — skipping for 1 hour", domain)
 
 
@@ -129,7 +129,7 @@ def get_session(proxy_url: str = None) -> requests.Session:
     return session
 
 
-def fetch_with_retry(url: str, max_retries: int = 3, timeout: int = 15) -> requests.Response:
+def fetch_with_retry(url: str, max_retries: int = 3, timeout: int = 10) -> requests.Response:
     """
     Fetch a URL with retry logic, proxy rotation, and circuit breaker.
 
