@@ -57,7 +57,7 @@ DEFAULT_FLAGS = {
         "phase": 3,
     },
     "seo_extended_v1": {
-        "enabled": False,
+        "enabled": True,
         "description": "Extended SEO analysis layer",
         "phase": 3,
     },
@@ -145,7 +145,7 @@ def init_flags_table():
         "dashboard_v2", "explainability_v1", "newsroom_triage_v1",
         "final_confidence_v1", "content_versions_v1", "analytics_funnel_v1",
         "queue_retry_v1", "admin_safety_v1",
-        "storyline_mode_v1", "source_health_plus_v1",
+        "storyline_mode_v1", "source_health_plus_v1", "seo_extended_v1",
     ]
     for flag_id in _ENABLE_BY_DEFAULT:
         try:

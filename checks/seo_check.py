@@ -139,6 +139,61 @@ def analyze_seo(title: str, seo_title: str, seo_description: str, text: str, tag
             checks.append({"name": "Подзаголовки", "status": "warn",
                             "message": "Статья >500 слов без подзаголовков — добавьте ## или <h2>"})
 
+    # --- SEO 2.0 extended checks ---
+
+    # 10. SEO Title differs from Title
+    if seo_title and title:
+        if seo_title.lower().strip() == title.lower().strip():
+            checks.append({"name": "Уникальность SEO Title", "status": "warn",
+                            "message": "SEO Title совпадает с заголовком — лучше адаптировать под поиск"})
+        else:
+            checks.append({"name": "Уникальность SEO Title", "status": "pass",
+                            "message": "SEO Title отличается от заголовка"})
+
+    # 11. Description contains keywords from title
+    if seo_description and title_words:
+        desc_lower = seo_description.lower()
+        desc_kw = sum(1 for w in title_words if w in desc_lower)
+        if desc_kw >= 2:
+            checks.append({"name": "Ключевые в Description", "status": "pass",
+                            "message": f"{desc_kw} ключевых слов из заголовка в Description"})
+        elif desc_kw == 1:
+            checks.append({"name": "Ключевые в Description", "status": "warn",
+                            "message": "Только 1 ключевое слово в Description — добавьте ещё"})
+        else:
+            checks.append({"name": "Ключевые в Description", "status": "fail",
+                            "message": "Ключевые слова заголовка отсутствуют в Description"})
+
+    # 12. Paragraph structure
+    paragraphs = [p.strip() for p in re.split(r'\n\s*\n|\n', text) if p.strip()]
+    if len(paragraphs) >= 3:
+        checks.append({"name": "Структура абзацев", "status": "pass",
+                        "message": f"{len(paragraphs)} абзацев — хорошая структура"})
+    elif len(paragraphs) >= 2:
+        checks.append({"name": "Структура абзацев", "status": "warn",
+                        "message": f"Только {len(paragraphs)} абзаца — разбейте текст"})
+    else:
+        checks.append({"name": "Структура абзацев", "status": "fail",
+                        "message": "Текст одним блоком — разбейте на абзацы"})
+
+    # 13. Internal linking potential (URLs in text)
+    urls_in_text = re.findall(r'https?://\S+', text)
+    if urls_in_text:
+        checks.append({"name": "Ссылки в тексте", "status": "pass",
+                        "message": f"{len(urls_in_text)} ссылок в тексте"})
+    elif wcount > 300:
+        checks.append({"name": "Ссылки в тексте", "status": "warn",
+                        "message": "Нет ссылок — добавьте внутренние/внешние ссылки"})
+
+    # 14. Numbers / data in text (search engines prefer data-rich content)
+    numbers = re.findall(r'\b\d{2,}\b', text)
+    if len(numbers) >= 3:
+        checks.append({"name": "Данные и цифры", "status": "pass",
+                        "message": f"{len(numbers)} числовых значений — контент богат данными"})
+    elif len(numbers) >= 1:
+        checks.append({"name": "Данные и цифры", "status": "warn",
+                        "message": f"Только {len(numbers)} чисел — добавьте факты и статистику"})
+
     # Calculate score
     weights = {"pass": 1.0, "warn": 0.5, "fail": 0.0}
     total = len(checks)
