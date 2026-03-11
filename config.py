@@ -56,11 +56,11 @@ SOURCES = [
     {"name": "GameSpot",         "type": "rss",  "url": "https://www.gamespot.com/feeds/mashup/",      "interval": 10},
     {"name": "PCGamer",          "type": "rss",  "url": "https://www.pcgamer.com/rss/",                "interval": 10},
     {"name": "Eurogamer",        "type": "rss",  "url": "https://www.eurogamer.net/?format=rss",       "interval": 15},  # может блокировать Cloudflare
-    {"name": "Kotaku",            "type": "rss",  "url": "https://kotaku.com/rss",                      "interval": 15},
+    {"name": "Kotaku",            "type": "homepage",  "url": "https://kotaku.com/latest",              "interval": 15, "rss_url": "https://kotaku.com/rss"},
     {"name": "GamesRadar",       "type": "gamesradar",  "url": "https://www.gamesradar.com/",           "interval": 15, "rss_url": "https://www.gamesradar.com/rss/"},
-    {"name": "Polygon",          "type": "rss",  "url": "https://www.polygon.com/rss/index.xml",       "interval": 15},  # может блокировать Cloudflare
+    {"name": "Polygon",          "type": "homepage",  "url": "https://www.polygon.com/",                "interval": 15, "rss_url": "https://www.polygon.com/rss/index.xml"},
     {"name": "Destructoid",      "type": "rss",  "url": "https://www.destructoid.com/feed/",            "interval": 15},
-    {"name": "RockPaperShotgun", "type": "rss",  "url": "https://feeds.feedburner.com/RockPaperShotgun", "interval": 30},
+    {"name": "RockPaperShotgun", "type": "homepage",  "url": "https://www.rockpapershotgun.com/news", "interval": 30, "rss_url": "https://feeds.feedburner.com/RockPaperShotgun"},
     {"name": "GameRant",         "type": "rss",  "url": "https://gamerant.com/feed/",                  "interval": 10},
     {"name": "StopGame",         "type": "html", "url": "https://stopgame.ru/news",                    "interval": 10, "selector": "a[href*='/newsdata/']", "title_selector": "", "url_pattern": r"/newsdata/\d+"},
     {"name": "Playground",       "type": "rss",  "url": "https://www.playground.ru/rss/news.xml",      "interval": 15},

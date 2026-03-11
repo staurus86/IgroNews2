@@ -20,6 +20,8 @@ def parse_html_source(source: dict) -> int:
         return _parse_dtf(source)
     if source.get("type") == "gamesradar":
         return _parse_gamesradar(source)
+    if source.get("type") == "homepage":
+        return _parse_homepage(source)
 
     name = source["name"]
     url = source["url"]
@@ -99,6 +101,93 @@ def parse_html_source(source: dict) -> int:
         logger.error("Error parsing HTML %s: %s", name, e)
 
     logger.info("Parsed %s (HTML): %d new articles", name, count)
+    return count
+
+
+def _parse_homepage(source: dict) -> int:
+    """Универсальный парсер главной страницы: собирает ссылки из h2/h3/a.block."""
+    name = source["name"]
+    url = source["url"]
+    domain = re.search(r'https?://([^/]+)', url).group(1) if re.search(r'https?://([^/]+)', url) else ""
+    count = 0
+
+    try:
+        resp = fetch_with_retry(url)
+        soup = BeautifulSoup(resp.text, "lxml")
+
+        seen_urls = set()
+        links_to_process = []
+
+        # Strategy 1: h2/h3 containing <a> tags (Polygon, RPS, most sites)
+        for h in soup.find_all(["h2", "h3"]):
+            a_tag = h.find("a", href=True)
+            if not a_tag:
+                continue
+            href = a_tag["href"]
+            if not href.startswith("http"):
+                href = urljoin(url, href)
+            if domain and domain not in href:
+                continue
+            title = a_tag.get_text(strip=True)
+            if title and len(title) > 15 and href not in seen_urls:
+                seen_urls.add(href)
+                links_to_process.append((href, title))
+
+        # Strategy 2: <a> with class "block" or long text (Kotaku style)
+        if len(links_to_process) < 5:
+            skip_patterns = ["/latest", "/tag/", "/author/", "/about", "/search", "/users/"]
+            for a_tag in soup.find_all("a", href=True):
+                href = a_tag["href"]
+                if not href.startswith("http"):
+                    href = urljoin(url, href)
+                if domain and domain not in href:
+                    continue
+                if any(p in href for p in skip_patterns):
+                    continue
+                title = a_tag.get_text(strip=True)
+                # Clean category prefixes
+                for prefix in ["Culture", "News", "Opinion", "Entertainment", "Tips & Guides", "Commentary", "Review"]:
+                    if title.startswith(prefix):
+                        title = title[len(prefix):].strip()
+                if title and len(title) > 25 and href not in seen_urls:
+                    seen_urls.add(href)
+                    links_to_process.append((href, title))
+                    if len(links_to_process) >= 30:
+                        break
+
+        logger.info("%s: found %d article links on homepage", name, len(links_to_process))
+
+        for link, title in links_to_process[:30]:
+            if news_exists(link):
+                continue
+            time.sleep(1)
+            h1, description, plain_text, published_at = _fetch_article(link)
+            final_title = h1 if h1 and len(h1) > 15 else title
+            news_id = insert_news(
+                source=name, url=link, title=final_title,
+                h1=h1, description=description,
+                plain_text=plain_text, published_at=published_at,
+            )
+            if news_id:
+                count += 1
+
+    except Exception as e:
+        logger.error("Error parsing %s homepage: %s", name, e)
+
+    # Also try RSS as supplement
+    rss_url = source.get("rss_url")
+    if rss_url:
+        try:
+            from parsers.rss_parser import parse_rss_source
+            rss_source = {**source, "type": "rss", "url": rss_url}
+            rss_count = parse_rss_source(rss_source)
+            count += rss_count
+            if rss_count:
+                logger.info("%s RSS supplement: %d new articles", name, rss_count)
+        except Exception as e:
+            logger.debug("%s RSS fallback failed: %s", name, e)
+
+    logger.info("Parsed %s (homepage+RSS): %d new articles", name, count)
     return count
 
 
