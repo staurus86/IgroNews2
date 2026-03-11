@@ -4304,13 +4304,14 @@ async function login() {
             base_health = get_sources_health()
 
             cutoff_7d = (dt_mod.now(timezone.utc) - timedelta(days=7)).isoformat()
+            day_expr = "CAST(parsed_at AS TEXT)" if _is_postgres() else "parsed_at"
             cur.execute(f"""
                 SELECT source,
-                       CAST(SUBSTR(parsed_at, 1, 10) AS TEXT) as day,
+                       SUBSTRING({day_expr}, 1, 10) as day,
                        COUNT(*) as cnt
                 FROM news
                 WHERE parsed_at > {ph}
-                GROUP BY source, SUBSTR(parsed_at, 1, 10)
+                GROUP BY source, SUBSTRING({day_expr}, 1, 10)
                 ORDER BY source, day
             """, (cutoff_7d,))
             if _is_postgres():
@@ -5934,10 +5935,14 @@ document.querySelectorAll('.settings-tab').forEach(t => t.addEventListener('clic
 
 function toast(msg, isError) {
   const el = document.getElementById('toast');
+  if (!el) return;
   el.textContent = msg;
   el.className = 'toast' + (isError ? ' error' : '');
   el.style.display = 'block';
   setTimeout(() => el.style.display = 'none', 3000);
+}
+function showToast(msg, type) {
+  toast(msg, type === 'error' || type === 'warning');
 }
 
 async function api(url, body) {
@@ -7402,6 +7407,7 @@ async function loadQueue() {
 function updateQueueBadge() {
   const pending = _queueTasks.filter(t => t.status === 'pending' || t.status === 'processing').length;
   const badge = document.getElementById('queue-badge');
+  if (!badge) return;
   if (pending > 0) { badge.textContent = pending; badge.style.display = 'inline'; }
   else { badge.style.display = 'none'; }
 }
