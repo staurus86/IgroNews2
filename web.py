@@ -129,6 +129,11 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/digests": lambda: self._json(self._get_digests()),
             "/api/viral_triggers": lambda: self._json(self._get_viral_triggers()),
             "/api/final": lambda: self._json(self._get_final()),
+            # Phase 0: feature flags, observability, dashboard v2
+            "/api/feature_flags": lambda: self._json(self._get_feature_flags()),
+            "/api/cost_summary": lambda: self._json(self._get_cost_summary()),
+            "/api/config_audit": lambda: self._json(self._get_config_audit()),
+            "/api/ops_dashboard": lambda: self._json(self._get_ops_dashboard()),
         }
 
         # DOCX download (GET with query param)
@@ -243,6 +248,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/moderation": lambda: self._get_moderation(body),
             "/api/moderation/rewrite": lambda: self._moderation_rewrite(body),
             "/api/seo_check": lambda: self._seo_check(body),
+            # Phase 0: feature flags, decision trace
+            "/api/feature_flags/toggle": lambda: self._toggle_feature_flag(body),
+            "/api/decision_trace": lambda: self._get_decision_trace(body),
         }
         handler = routes.get(path)
         if handler:
@@ -863,21 +871,42 @@ async function login() {
 
     def _save_settings(self, body):
         import config
-        if "llm_model" in body:
+        user = self._get_session_user() or "admin"
+        changes = []
+        if "llm_model" in body and body["llm_model"] != config.LLM_MODEL:
+            changes.append(("llm_model", config.LLM_MODEL, body["llm_model"]))
             config.LLM_MODEL = body["llm_model"]
-        if "keyso_region" in body:
+        if "keyso_region" in body and body["keyso_region"] != config.KEYSO_REGION:
+            changes.append(("keyso_region", config.KEYSO_REGION, body["keyso_region"]))
             config.KEYSO_REGION = body["keyso_region"]
-        if "sheets_tab" in body:
+        if "sheets_tab" in body and body["sheets_tab"] != config.SHEETS_TAB:
+            changes.append(("sheets_tab", config.SHEETS_TAB, body["sheets_tab"]))
             config.SHEETS_TAB = body["sheets_tab"]
         if "auto_approve_threshold" in body:
             try:
-                config.AUTO_APPROVE_THRESHOLD = int(body["auto_approve_threshold"])
+                new_val = int(body["auto_approve_threshold"])
+                if new_val != config.AUTO_APPROVE_THRESHOLD:
+                    changes.append(("auto_approve_threshold", str(config.AUTO_APPROVE_THRESHOLD), str(new_val)))
+                    config.AUTO_APPROVE_THRESHOLD = new_val
             except (ValueError, TypeError):
                 pass
         if "auto_rewrite_on_publish_now" in body:
-            config.AUTO_REWRITE_ON_PUBLISH_NOW = bool(body["auto_rewrite_on_publish_now"])
-        if "auto_rewrite_style" in body:
+            new_val = bool(body["auto_rewrite_on_publish_now"])
+            if new_val != config.AUTO_REWRITE_ON_PUBLISH_NOW:
+                changes.append(("auto_rewrite_on_publish_now", str(config.AUTO_REWRITE_ON_PUBLISH_NOW), str(new_val)))
+                config.AUTO_REWRITE_ON_PUBLISH_NOW = new_val
+        if "auto_rewrite_style" in body and body["auto_rewrite_style"] != config.AUTO_REWRITE_STYLE:
+            changes.append(("auto_rewrite_style", config.AUTO_REWRITE_STYLE, body["auto_rewrite_style"]))
             config.AUTO_REWRITE_STYLE = body["auto_rewrite_style"]
+
+        # Audit log config changes
+        for setting_name, old_val, new_val in changes:
+            try:
+                from core.observability import log_config_change
+                log_config_change(setting_name, old_val, new_val, changed_by=user)
+            except Exception:
+                pass
+
         self._json({"status": "ok"})
 
     def _test_llm(self, body):
@@ -3745,6 +3774,193 @@ async function login() {
 
         finally:
             cur.close()
+    # --- Phase 0: Feature Flags & Observability API ---
+
+    def _get_feature_flags(self):
+        try:
+            from core.feature_flags import get_all_flags
+            return {"flags": get_all_flags()}
+        except Exception as e:
+            return {"flags": [], "error": str(e)}
+
+    def _toggle_feature_flag(self, body):
+        flag_id = body.get("flag_id", "")
+        enabled = body.get("enabled", False)
+        if not flag_id:
+            self._json({"error": "flag_id required"}, 400)
+            return
+        try:
+            from core.feature_flags import set_flag
+            user = self._get_session_user() or "admin"
+            set_flag(flag_id, bool(enabled), updated_by=user)
+            self._json({"status": "ok", "flag_id": flag_id, "enabled": enabled})
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
+
+    def _get_cost_summary(self):
+        try:
+            from core.observability import get_cost_summary
+            return get_cost_summary(days=1)
+        except Exception as e:
+            return {"error": str(e), "total_cost_usd": 0, "total_calls": 0, "by_type": []}
+
+    def _get_config_audit(self):
+        try:
+            from core.observability import get_config_audit
+            return {"audit": get_config_audit(limit=50)}
+        except Exception as e:
+            return {"audit": [], "error": str(e)}
+
+    def _get_decision_trace(self, body):
+        news_id = body.get("news_id", "")
+        if not news_id:
+            self._json({"error": "news_id required"}, 400)
+            return
+        try:
+            from core.observability import get_decision_trace
+            trace = get_decision_trace(news_id)
+            self._json({"news_id": news_id, "trace": trace})
+        except Exception as e:
+            self._json({"error": str(e)}, 500)
+
+    def _get_ops_dashboard(self):
+        """Operational dashboard: action items, counts, health summary."""
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            result = {}
+
+            # News counts by status
+            cur.execute("SELECT status, COUNT(*) as cnt FROM news GROUP BY status")
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                status_rows = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                status_rows = [dict(r) for r in cur.fetchall()]
+            status_counts = {r["status"]: r["cnt"] for r in status_rows}
+            result["status_counts"] = status_counts
+
+            # Pending review
+            result["pending_review"] = status_counts.get("in_review", 0)
+
+            # Ready to publish
+            result["ready_to_publish"] = status_counts.get("ready", 0)
+
+            # Articles in moderation
+            result["in_moderation"] = status_counts.get("moderation", 0)
+
+            # Queue stats
+            cur.execute("SELECT status, COUNT(*) as cnt FROM task_queue GROUP BY status")
+            if _is_postgres():
+                columns = [desc[0] for desc in cur.description]
+                q_rows = [dict(zip(columns, r)) for r in cur.fetchall()]
+            else:
+                q_rows = [dict(r) for r in cur.fetchall()]
+            queue_counts = {r["status"]: r["cnt"] for r in q_rows}
+            result["queue_counts"] = queue_counts
+            result["queue_errors"] = queue_counts.get("error", 0)
+            result["queue_running"] = queue_counts.get("running", 0) + queue_counts.get("pending", 0)
+
+            # High-score candidates (final_score >= 60 not yet ready)
+            ph = "%s" if _is_postgres() else "?"
+            try:
+                cur.execute(f"""
+                    SELECT COUNT(*) FROM news n
+                    JOIN news_analysis na ON n.id = na.news_id
+                    WHERE n.status IN ('processed', 'approved', 'in_review')
+                    AND na.total_score >= 60
+                """)
+                row = cur.fetchone()
+                result["high_score_candidates"] = row[0] if row else 0
+            except Exception:
+                result["high_score_candidates"] = 0
+
+            # Source health: count sources with recent failures
+            try:
+                from checks.health import get_source_health
+                health_data = get_source_health()
+                degraded = sum(1 for s in health_data if s.get("status") == "degraded" or s.get("error_rate", 0) > 0.3)
+                result["degraded_sources"] = degraded
+            except Exception:
+                result["degraded_sources"] = 0
+
+            # API cost today
+            try:
+                from core.observability import get_cost_summary
+                cost = get_cost_summary(days=1)
+                result["api_cost_today"] = cost.get("total_cost_usd", 0)
+                result["api_calls_today"] = cost.get("total_calls", 0)
+            except Exception:
+                result["api_cost_today"] = 0
+                result["api_calls_today"] = 0
+
+            # Draft articles count
+            try:
+                cur.execute("SELECT COUNT(*) FROM articles WHERE status = 'draft'")
+                row = cur.fetchone()
+                result["draft_articles"] = row[0] if row else 0
+            except Exception:
+                result["draft_articles"] = 0
+
+            # Action items (prioritized recommendations)
+            actions = []
+            if result["pending_review"] > 0:
+                actions.append({
+                    "priority": 1,
+                    "type": "review",
+                    "title": f"Проверь {result['pending_review']} новост{'ь' if result['pending_review'] == 1 else 'ей'} на модерации",
+                    "tab": "editorial",
+                    "count": result["pending_review"],
+                })
+            if result["queue_errors"] > 0:
+                actions.append({
+                    "priority": 2,
+                    "type": "error",
+                    "title": f"{result['queue_errors']} задач{'а' if result['queue_errors'] == 1 else ''} с ошибкой в очереди",
+                    "tab": "queue",
+                    "count": result["queue_errors"],
+                })
+            if result["high_score_candidates"] > 0:
+                actions.append({
+                    "priority": 3,
+                    "type": "opportunity",
+                    "title": f"{result['high_score_candidates']} кандидат{'ов' if result['high_score_candidates'] != 1 else ''} с высоким скором",
+                    "tab": "final",
+                    "count": result["high_score_candidates"],
+                })
+            if result["degraded_sources"] > 0:
+                actions.append({
+                    "priority": 4,
+                    "type": "warning",
+                    "title": f"{result['degraded_sources']} источник{'ов' if result['degraded_sources'] != 1 else ''} деградируют",
+                    "tab": "health",
+                    "count": result["degraded_sources"],
+                })
+            if result["ready_to_publish"] > 0:
+                actions.append({
+                    "priority": 5,
+                    "type": "publish",
+                    "title": f"{result['ready_to_publish']} материал{'ов' if result['ready_to_publish'] != 1 else ''} готовы к публикации",
+                    "tab": "editor",
+                    "count": result["ready_to_publish"],
+                })
+            if result["draft_articles"] > 0:
+                actions.append({
+                    "priority": 6,
+                    "type": "draft",
+                    "title": f"{result['draft_articles']} черновик{'ов' if result['draft_articles'] != 1 else ''} ждут доработки",
+                    "tab": "editor",
+                    "count": result["draft_articles"],
+                })
+
+            result["actions"] = sorted(actions, key=lambda a: a["priority"])
+            return result
+        except Exception as e:
+            logger.error("Ops dashboard error: %s", e)
+            return {"error": str(e)}
+        finally:
+            cur.close()
+
     # --- Dashboard HTML ---
     def _serve_dashboard(self):
         html = DASHBOARD_HTML
@@ -3933,6 +4149,53 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   .dash-filters { flex-direction:column; }
   .dash-filters select, .dash-filters input { width:100%; }
 }
+
+/* Ops Dashboard */
+.ops-action-card { background:#192734; border-radius:8px; padding:12px 16px; margin-bottom:8px; display:flex; align-items:center; gap:12px; cursor:pointer; border-left:4px solid #38444d; transition:all .2s; }
+.ops-action-card:hover { background:#22303c; transform:translateX(4px); }
+.ops-action-card[data-type="review"] { border-left-color:#1da1f2; }
+.ops-action-card[data-type="error"] { border-left-color:#e0245e; }
+.ops-action-card[data-type="opportunity"] { border-left-color:#ffad1f; }
+.ops-action-card[data-type="warning"] { border-left-color:#f5a623; }
+.ops-action-card[data-type="publish"] { border-left-color:#17bf63; }
+.ops-action-card[data-type="draft"] { border-left-color:#8899a6; }
+.ops-action-count { font-size:1.4em; font-weight:bold; min-width:36px; text-align:center; }
+.ops-action-title { font-size:0.95em; }
+
+/* Feature Flag Toggle */
+.flag-row { display:flex; align-items:center; justify-content:space-between; background:#192734; border-radius:6px; padding:8px 14px; margin-bottom:4px; }
+.flag-row .flag-name { font-weight:600; font-size:0.9em; }
+.flag-row .flag-desc { color:#8899a6; font-size:0.8em; }
+.flag-row .flag-phase { color:#8899a6; font-size:0.75em; background:#22303c; padding:2px 6px; border-radius:4px; }
+.flag-toggle { position:relative; width:40px; height:22px; cursor:pointer; }
+.flag-toggle input { opacity:0; width:0; height:0; }
+.flag-toggle .slider { position:absolute; top:0; left:0; right:0; bottom:0; background:#38444d; border-radius:22px; transition:.3s; }
+.flag-toggle .slider:before { content:''; position:absolute; width:16px; height:16px; left:3px; bottom:3px; background:#8899a6; border-radius:50%; transition:.3s; }
+.flag-toggle input:checked + .slider { background:#17bf63; }
+.flag-toggle input:checked + .slider:before { transform:translateX(18px); background:#fff; }
+
+/* Explain Drawer */
+.explain-drawer { position:fixed; top:0; right:-480px; width:460px; height:100vh; background:#192734; border-left:1px solid #22303c; z-index:1000; transition:right .3s ease; overflow-y:auto; padding:20px; box-shadow:-4px 0 20px rgba(0,0,0,0.4); }
+.explain-drawer.open { right:0; }
+.explain-drawer .close-btn { position:absolute; top:12px; right:16px; cursor:pointer; color:#8899a6; font-size:1.3em; background:none; border:none; }
+.explain-drawer .close-btn:hover { color:#e1e8ed; }
+.explain-section { margin-bottom:16px; }
+.explain-section h3 { color:#1da1f2; font-size:0.95em; margin-bottom:8px; }
+.score-bar { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+.score-bar .bar-label { min-width:100px; font-size:0.82em; color:#8899a6; }
+.score-bar .bar-track { flex:1; height:8px; background:#22303c; border-radius:4px; overflow:hidden; }
+.score-bar .bar-fill { height:100%; border-radius:4px; transition:width .5s; }
+.score-bar .bar-val { min-width:32px; text-align:right; font-size:0.82em; font-weight:600; }
+.trace-step { background:#22303c; border-radius:6px; padding:8px 12px; margin-bottom:6px; font-size:0.85em; border-left:3px solid #38444d; }
+.trace-step[data-decision="in_review"] { border-left-color:#1da1f2; }
+.trace-step[data-decision="approved"] { border-left-color:#17bf63; }
+.trace-step[data-decision="rejected"], .trace-step[data-decision="auto_rejected"] { border-left-color:#e0245e; }
+.trace-step[data-decision="duplicate"] { border-left-color:#8899a6; }
+.trace-step[data-decision="enriched"] { border-left-color:#ffad1f; }
+.reason-badge { display:inline-block; padding:2px 8px; border-radius:12px; font-size:0.75em; font-weight:600; }
+.reason-badge.positive { background:rgba(23,191,99,0.2); color:#17bf63; }
+.reason-badge.negative { background:rgba(224,36,94,0.2); color:#e0245e; }
+.reason-badge.neutral { background:rgba(136,153,166,0.2); color:#8899a6; }
 </style>
 </head>
 <body>
@@ -3956,6 +4219,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 
 <div class="container">
   <div class="tabs">
+    <div class="tab" data-tab="ops" id="tab-ops" style="display:none">&#9889; Обзор</div>
     <div class="tab active" data-tab="editorial">Редакция</div>
     <div class="tab" data-tab="news">Обогащённые</div>
     <div class="tab" data-tab="final">Финал</div>
@@ -3968,7 +4232,25 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div style="margin-left:auto"><a href="/logout" class="btn btn-secondary btn-sm">Выйти</a></div>
   </div>
 
-  <!-- DASHBOARD -->
+  <!-- OPS DASHBOARD (Phase 1, behind feature flag dashboard_v2) -->
+  <div class="panel" id="panel-ops" style="display:none">
+    <h2>&#9889; Что делать сейчас</h2>
+    <div id="ops-actions" style="margin:16px 0"></div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">
+      <div class="stat" id="ops-pending"><div class="num" id="ops-pending-num">—</div><div class="lbl">Ждут ревью</div></div>
+      <div class="stat" id="ops-ready"><div class="num" id="ops-ready-num" style="color:#17bf63">—</div><div class="lbl">Готовы</div></div>
+      <div class="stat" id="ops-errors"><div class="num" id="ops-errors-num" style="color:#e0245e">—</div><div class="lbl">Ошибки очереди</div></div>
+      <div class="stat" id="ops-candidates"><div class="num" id="ops-candidates-num" style="color:#ffad1f">—</div><div class="lbl">Кандидаты ≥60</div></div>
+      <div class="stat" id="ops-degraded"><div class="num" id="ops-degraded-num" style="color:#e0245e">—</div><div class="lbl">Источники &#9888;</div></div>
+      <div class="stat" id="ops-cost"><div class="num" id="ops-cost-num" style="color:#8899a6;font-size:1.2em">—</div><div class="lbl">API сегодня ($)</div></div>
+      <div class="stat" id="ops-drafts"><div class="num" id="ops-drafts-num" style="color:#8899a6">—</div><div class="lbl">Черновики</div></div>
+    </div>
+    <div id="ops-flags" style="margin-top:20px">
+      <h2 style="margin-bottom:8px">&#9873; Feature Flags</h2>
+      <div id="ops-flags-list"></div>
+    </div>
+  </div>
+
   <!-- EDITORIAL — единая рабочая вкладка -->
   <div class="panel active" id="panel-editorial">
     <!-- Stat cards -->
@@ -4933,6 +5215,25 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- Explain Drawer (Phase 1, behind explainability_v1 flag) -->
+<div class="explain-drawer" id="explain-drawer">
+  <button class="close-btn" onclick="closeExplainDrawer()">&times;</button>
+  <h2 style="margin-bottom:12px">&#128269; Почему так?</h2>
+  <div id="explain-title" style="font-weight:600;margin-bottom:12px;font-size:1.05em"></div>
+  <div class="explain-section">
+    <h3>Score Breakdown</h3>
+    <div id="explain-scores"></div>
+  </div>
+  <div class="explain-section">
+    <h3>Решения системы</h3>
+    <div id="explain-trace"></div>
+  </div>
+  <div class="explain-section">
+    <h3>Причина статуса</h3>
+    <div id="explain-reason" style="font-size:0.9em;color:#8899a6"></div>
+  </div>
+</div>
 
 <script>
 // Tabs
@@ -7422,6 +7723,7 @@ function renderEdTable() {
     const approveBtn = canApprove ? `<button class="btn btn-sm btn-primary" onclick="edApprove('${n.id}')" title="Одобрить" style="padding:2px 6px">&#10003;</button>` : '';
     const rejectBtn = canApprove ? `<button class="btn btn-sm btn-danger" onclick="edReject('${n.id}')" title="Отклонить" style="padding:2px 6px">&#10007;</button>` : '';
     const editorBtn = `<button class="btn btn-sm btn-secondary" onclick="edToEditor('${n.id}')" title="В редактор" style="padding:2px 6px">&#9998;</button>`;
+    const explainBtn = `<button class="btn btn-sm btn-secondary" onclick="openExplainDrawer('${n.id}','${esc(n.title).replace(/'/g,"\\'")}') " title="Почему?" style="padding:2px 6px;font-size:0.75em">?</button>`;
 
     return `<tr class="ed-row" data-id="${n.id}">
       <td><input type="checkbox" class="ed-cb" value="${n.id}" style="width:15px;height:15px"></td>
@@ -7438,7 +7740,7 @@ function renderEdTable() {
       <td style="text-align:center"><span style="color:${fColor};font-size:0.85em">${fLabel}</span></td>
       <td style="text-align:center"><span style="color:${slColor}" title="${sl}">${sEmoji}</span></td>
       <td>${tagsHtml}</td>
-      <td style="white-space:nowrap">${approveBtn} ${rejectBtn} ${editorBtn}</td>
+      <td style="white-space:nowrap">${approveBtn} ${rejectBtn} ${editorBtn} ${explainBtn}</td>
     </tr>
     <tr class="ed-detail" id="ed-detail-${n.id}" style="display:none">
       <td colspan="11" style="padding:12px 20px;background:#15202b;border-left:3px solid #1da1f2">
@@ -7906,6 +8208,228 @@ function getEdSelectedIds() {
 // ═══════════════════════════════════════════
 
 // Moderation tab removed — use Редакция filter "Модерация" instead
+
+// ═══════════════════════════════════════════
+// PHASE 0: OPS DASHBOARD & FEATURE FLAGS
+// ═══════════════════════════════════════════
+
+let _featureFlags = {};
+
+async function loadFeatureFlags() {
+  try {
+    const data = await api('/api/feature_flags');
+    if (data && data.flags) {
+      _featureFlags = {};
+      data.flags.forEach(f => { _featureFlags[f.flag_id] = f.enabled; });
+      applyFeatureFlags();
+      renderFlagsList(data.flags);
+    }
+  } catch(e) { console.warn('Feature flags load error:', e); }
+}
+
+function ffEnabled(flagId) {
+  return !!_featureFlags[flagId];
+}
+
+function applyFeatureFlags() {
+  // Show/hide ops dashboard tab
+  const opsTab = document.getElementById('tab-ops');
+  if (opsTab) {
+    opsTab.style.display = ffEnabled('dashboard_v2') ? '' : 'none';
+  }
+  const opsPanel = document.getElementById('panel-ops');
+  if (opsPanel) {
+    opsPanel.style.display = ffEnabled('dashboard_v2') ? '' : 'none';
+  }
+}
+
+function renderFlagsList(flags) {
+  const el = document.getElementById('ops-flags-list');
+  if (!el) return;
+  el.innerHTML = flags.map(f => `
+    <div class="flag-row">
+      <div style="flex:1">
+        <span class="flag-name">${esc(f.flag_id)}</span>
+        <span class="flag-phase">P${f.phase}</span>
+        <div class="flag-desc">${esc(f.description)}</div>
+      </div>
+      <label class="flag-toggle">
+        <input type="checkbox" ${f.enabled ? 'checked' : ''} onchange="toggleFlag('${esc(f.flag_id)}', this.checked)">
+        <span class="slider"></span>
+      </label>
+    </div>
+  `).join('');
+}
+
+async function toggleFlag(flagId, enabled) {
+  const data = await api('/api/feature_flags/toggle', {flag_id: flagId, enabled});
+  if (data && data.status === 'ok') {
+    _featureFlags[flagId] = enabled;
+    applyFeatureFlags();
+    showToast((enabled ? 'Включен' : 'Выключен') + ': ' + flagId, enabled ? 'success' : 'warning');
+  }
+}
+
+async function loadOpsDashboard() {
+  if (!ffEnabled('dashboard_v2')) return;
+  try {
+    const data = await api('/api/ops_dashboard');
+    if (!data || data.error) return;
+
+    // Update counters
+    const set = (id, val) => { const el = document.getElementById(id); if(el) el.textContent = val; };
+    set('ops-pending-num', data.pending_review || 0);
+    set('ops-ready-num', data.ready_to_publish || 0);
+    set('ops-errors-num', data.queue_errors || 0);
+    set('ops-candidates-num', data.high_score_candidates || 0);
+    set('ops-degraded-num', data.degraded_sources || 0);
+    set('ops-cost-num', '$' + (data.api_cost_today || 0).toFixed(3));
+    set('ops-drafts-num', data.draft_articles || 0);
+
+    // Render action cards
+    const actEl = document.getElementById('ops-actions');
+    if (actEl && data.actions) {
+      const typeColors = {review:'#1da1f2', error:'#e0245e', opportunity:'#ffad1f', warning:'#f5a623', publish:'#17bf63', draft:'#8899a6'};
+      actEl.innerHTML = data.actions.length === 0
+        ? '<div style="color:#8899a6;padding:12px">Всё под контролем &#10004;</div>'
+        : data.actions.map(a => `
+          <div class="ops-action-card" data-type="${a.type}" onclick="switchToTab('${a.tab}')">
+            <div class="ops-action-count" style="color:${typeColors[a.type] || '#8899a6'}">${a.count}</div>
+            <div class="ops-action-title">${esc(a.title)}</div>
+          </div>
+        `).join('');
+    }
+  } catch(e) { console.warn('Ops dashboard error:', e); }
+}
+
+// ═══════════════════════════════════════════
+// PHASE 1: EXPLAIN DRAWER (EXPLAINABILITY)
+// ═══════════════════════════════════════════
+
+function openExplainDrawer(newsId, title) {
+  if (!ffEnabled('explainability_v1')) {
+    showToast('Включите флаг explainability_v1 в настройках', 'warning');
+    return;
+  }
+  const drawer = document.getElementById('explain-drawer');
+  if (!drawer) return;
+  document.getElementById('explain-title').textContent = title || '';
+  document.getElementById('explain-scores').innerHTML = '<div style="color:#8899a6">Загрузка...</div>';
+  document.getElementById('explain-trace').innerHTML = '';
+  document.getElementById('explain-reason').innerHTML = '';
+  drawer.classList.add('open');
+  loadExplainData(newsId);
+}
+
+function closeExplainDrawer() {
+  const drawer = document.getElementById('explain-drawer');
+  if (drawer) drawer.classList.remove('open');
+}
+
+async function loadExplainData(newsId) {
+  try {
+    // Load decision trace
+    const traceData = await api('/api/decision_trace', {news_id: newsId});
+
+    // Load news detail for score breakdown
+    const detail = await api('/api/news/detail', {id: newsId});
+
+    // Render score breakdown
+    const scoresEl = document.getElementById('explain-scores');
+    if (detail && detail.analysis) {
+      const a = detail.analysis;
+      let breakdown = {};
+      if (a.score_breakdown) {
+        try { breakdown = typeof a.score_breakdown === 'string' ? JSON.parse(a.score_breakdown) : a.score_breakdown; } catch(e) {}
+      }
+
+      const bars = [
+        {label: 'Качество', val: breakdown.quality || a.quality_score || 0, color: '#1da1f2'},
+        {label: 'Релевантность', val: breakdown.relevance || a.relevance_score || 0, color: '#17bf63'},
+        {label: 'Свежесть', val: breakdown.freshness || 0, color: '#ffad1f'},
+        {label: 'Виральность', val: breakdown.viral || a.viral_score || 0, color: '#e0245e'},
+        {label: 'Заголовок', val: a.headline_score || 0, color: '#794bc4'},
+        {label: 'Momentum', val: breakdown.momentum_bonus || a.momentum_score || 0, max: 20, color: '#f5a623'},
+        {label: 'Source Weight', val: Math.round((breakdown.source_weight || 1) * 100), max: 150, color: '#8899a6'},
+        {label: 'Feedback', val: breakdown.feedback_adj || 0, max: 20, min: -10, color: '#1da1f2'},
+      ];
+
+      scoresEl.innerHTML = bars.map(b => {
+        const max = b.max || 100;
+        const pct = Math.max(0, Math.min(100, ((b.val - (b.min||0)) / (max - (b.min||0))) * 100));
+        const barColor = b.val < 30 ? '#e0245e' : b.val < 60 ? '#ffad1f' : b.color;
+        return `<div class="score-bar">
+          <div class="bar-label">${b.label}</div>
+          <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
+          <div class="bar-val">${b.val}</div>
+        </div>`;
+      }).join('') + `<div style="margin-top:10px;font-size:0.95em"><strong>Total Score: ${a.total_score || 0}</strong></div>`;
+    } else {
+      scoresEl.innerHTML = '<div style="color:#8899a6">Нет данных о скоринге</div>';
+    }
+
+    // Render trace
+    const traceEl = document.getElementById('explain-trace');
+    if (traceData && traceData.trace && traceData.trace.length > 0) {
+      traceEl.innerHTML = traceData.trace.map(t => `
+        <div class="trace-step" data-decision="${esc(t.decision)}">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <strong>${esc(t.step)}</strong>
+            <span class="reason-badge ${t.decision === 'rejected' || t.decision === 'auto_rejected' || t.decision === 'duplicate' ? 'negative' : t.decision === 'approved' || t.decision === 'in_review' ? 'positive' : 'neutral'}">${esc(t.decision)}</span>
+          </div>
+          <div style="color:#8899a6">${esc(t.reason)}</div>
+          ${t.score_after ? '<div style="margin-top:4px;font-size:0.8em">Score: ' + t.score_after + '</div>' : ''}
+        </div>
+      `).join('');
+    } else {
+      traceEl.innerHTML = '<div style="color:#8899a6">Нет записей трассировки</div>';
+    }
+
+    // Reason summary
+    const reasonEl = document.getElementById('explain-reason');
+    if (detail && detail.news) {
+      const status = detail.news.status;
+      const reasons = {
+        'new': 'Новость только что распарсена, ещё не проверена',
+        'in_review': 'Прошла авто-ревью, ждёт модерации редактора',
+        'approved': 'Одобрена для обогащения (Keys.so + Trends + LLM)',
+        'rejected': 'Отклонена: низкий скор или ручное решение',
+        'duplicate': 'Обнаружен дубликат по TF-IDF или entity overlap',
+        'processed': 'Обогащена данными API, готова к оценке',
+        'moderation': 'Экспортирована без LLM, ждёт ручную проверку',
+        'ready': 'Прошла все этапы, готова к публикации',
+      };
+      reasonEl.textContent = reasons[status] || 'Статус: ' + status;
+    }
+
+  } catch(e) {
+    console.warn('Explain data error:', e);
+    document.getElementById('explain-scores').innerHTML = '<div style="color:#e0245e">Ошибка загрузки</div>';
+  }
+}
+
+// Keyboard: Escape closes drawer
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeExplainDrawer();
+});
+
+// ═══════════════════════════════════════════
+// INIT: Load feature flags on startup
+// ═══════════════════════════════════════════
+
+(function() {
+  const origLoadAll = typeof loadAll === 'function' ? loadAll : null;
+  // Patch into loadAll chain
+  const _origInit = window.onload || function(){};
+  // Load flags early
+  setTimeout(function() {
+    loadFeatureFlags().then(function() {
+      if (ffEnabled('dashboard_v2')) {
+        loadOpsDashboard();
+      }
+    });
+  }, 500);
+})();
 
 </script>
 </body>

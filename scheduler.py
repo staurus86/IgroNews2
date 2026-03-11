@@ -512,6 +512,14 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
     from apis.llm import rewrite_news
     from storage.sheets import write_ready_row
 
+    # Decision trace helper (best-effort)
+    def _trace(nid, step, decision, reason="", details=None, s_before=0, s_after=0):
+        try:
+            from core.observability import log_decision
+            log_decision(nid, step, decision, reason, details, s_before, s_after)
+        except Exception:
+            pass
+
     for i, (news_id, task_id) in enumerate(zip(news_ids, task_ids)):
         if _pipeline_stop:
             # Cancel remaining tasks
@@ -548,10 +556,12 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
 
             if is_dup:
                 _update_task(task_id, "skipped", {"stage": "scoring", "reason": "duplicate", "score": total_score})
+                _trace(news_id, "full_auto", "skipped_duplicate", "Дубликат обнаружен", score_after=total_score)
                 continue
 
             if is_rejected:
                 _update_task(task_id, "skipped", {"stage": "scoring", "reason": "auto_rejected", "score": total_score})
+                _trace(news_id, "full_auto", "auto_rejected", f"total_score={total_score} < 15", score_after=total_score)
                 continue
 
             # Stage 2: Score threshold — only >70 goes to LLM enrichment
@@ -561,6 +571,9 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
                     "reason": f"Скор {total_score} < {FULL_AUTO_SCORE_THRESHOLD}",
                     "score": total_score,
                 })
+                _trace(news_id, "full_auto", "skipped_low_score",
+                       f"total_score={total_score} < порога {FULL_AUTO_SCORE_THRESHOLD}, не отправлен на LLM",
+                       score_after=total_score)
                 logger.info("Full-auto skip (score %d < %d): %s", total_score, FULL_AUTO_SCORE_THRESHOLD, news.get("title", "")[:50])
                 continue
 
@@ -589,6 +602,10 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
                     "final_score": final_score,
                     "recommendation": recommendation,
                 })
+                _trace(news_id, "full_auto", "filtered_final_score",
+                       f"final_score={final_score} < порога {FULL_AUTO_FINAL_THRESHOLD}, не отправлен на рерайт",
+                       {"total_score": total_score, "final_score": final_score, "recommendation": recommendation},
+                       s_before=total_score, s_after=final_score)
                 logger.info("Full-auto filtered (final %d < %d): %s", final_score, FULL_AUTO_FINAL_THRESHOLD, news.get("title", "")[:50])
                 continue
 
@@ -622,6 +639,10 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
                 "sheet_row": sheet_row,
                 "rewrite_title": rewrite.get("title", "")[:100],
             })
+            _trace(news_id, "full_auto", "published_ready",
+                   f"Прошёл все этапы: score={total_score}, final={final_score}, рерайт выполнен, экспорт в Sheets",
+                   {"total_score": total_score, "final_score": final_score, "sheet_row": sheet_row},
+                   s_before=total_score, s_after=final_score)
             logger.info("Full-auto complete: %s → final=%d, Ready row %s", news.get("title", "")[:50], final_score, sheet_row)
 
         except Exception as e:

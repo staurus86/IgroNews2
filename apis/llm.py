@@ -91,17 +91,35 @@ PROMPT_KEYSO_QUERIES = """
 """
 
 
-def _call_llm_raw(prompt: str, key_index: int = 0) -> dict | None:
+def _call_llm_raw(prompt: str, key_index: int = 0, news_id: str = "") -> dict | None:
     """Один вызов LLM с конкретным ключом."""
+    import time as _t
     key = _API_KEYS[key_index] if key_index < len(_API_KEYS) else _API_KEYS[0]
     c = OpenAI(api_key=key, base_url=config.OPENAI_BASE_URL)
+    t0 = _t.time()
     response = c.chat.completions.create(
         model=config.LLM_MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
     )
+    latency_ms = int((_t.time() - t0) * 1000)
     text = response.choices[0].message.content
     logger.info("LLM response (key %d): %s", key_index + 1, text[:200])
+
+    # Track API cost (best-effort)
+    try:
+        usage = getattr(response, 'usage', None)
+        tokens_in = getattr(usage, 'prompt_tokens', 0) if usage else 0
+        tokens_out = getattr(usage, 'completion_tokens', 0) if usage else 0
+        # Estimate cost (approximate for common models)
+        cost = (tokens_in * 0.15 + tokens_out * 0.6) / 1_000_000  # gpt-4o-mini pricing
+        from core.observability import track_api_call
+        track_api_call("llm", endpoint="chat.completions", model=config.LLM_MODEL,
+                       tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost,
+                       latency_ms=latency_ms, news_id=news_id)
+    except Exception:
+        pass
+
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = "\n".join(cleaned.split("\n")[1:])

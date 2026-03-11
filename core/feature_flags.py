@@ -1,0 +1,240 @@
+"""
+Feature Flag System for IgroNews.
+
+Centralized feature flags stored in DB with in-memory cache.
+Supports: global enable/disable, per-environment, instant toggle.
+All new features must be behind a flag.
+
+Usage:
+    from core.feature_flags import is_enabled, set_flag, get_all_flags
+    if is_enabled("dashboard_v2"):
+        ...
+"""
+
+import json
+import logging
+import threading
+import time
+from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
+
+# In-memory cache with TTL
+_cache = {}
+_cache_lock = threading.Lock()
+_CACHE_TTL = 30  # seconds
+
+# Default flags — all new features start disabled
+DEFAULT_FLAGS = {
+    "dashboard_v2": {
+        "enabled": False,
+        "description": "Action-first dashboard tab",
+        "phase": 1,
+    },
+    "explainability_v1": {
+        "enabled": False,
+        "description": "Score breakdown and decision trace for each news",
+        "phase": 1,
+    },
+    "newsroom_triage_v1": {
+        "enabled": False,
+        "description": "3-mode triage UX for editorial tab",
+        "phase": 2,
+    },
+    "storyline_mode_v1": {
+        "enabled": False,
+        "description": "Cluster/storyline grouping of similar news",
+        "phase": 3,
+    },
+    "final_confidence_v1": {
+        "enabled": False,
+        "description": "Confidence score and decision aids in Final tab",
+        "phase": 2,
+    },
+    "content_versions_v1": {
+        "enabled": False,
+        "description": "Article version history and diff",
+        "phase": 3,
+    },
+    "seo_extended_v1": {
+        "enabled": False,
+        "description": "Extended SEO analysis layer",
+        "phase": 3,
+    },
+    "analytics_funnel_v1": {
+        "enabled": False,
+        "description": "Full funnel analytics and cost visibility",
+        "phase": 4,
+    },
+    "queue_retry_v1": {
+        "enabled": False,
+        "description": "Enhanced queue observability and retry controls",
+        "phase": 2,
+    },
+    "source_health_plus_v1": {
+        "enabled": False,
+        "description": "Advanced source health intelligence",
+        "phase": 3,
+    },
+    "admin_safety_v1": {
+        "enabled": False,
+        "description": "Admin safety features: audit trail, config rollback",
+        "phase": 4,
+    },
+    "api_cost_tracking_v1": {
+        "enabled": True,
+        "description": "Track API call costs (LLM, Keys.so, Trends)",
+        "phase": 0,
+    },
+    "decision_trace_v1": {
+        "enabled": True,
+        "description": "Log decision reasons for each news processing step",
+        "phase": 0,
+    },
+}
+
+
+def _get_db():
+    """Lazy import to avoid circular deps."""
+    from storage.database import get_connection, _is_postgres
+    return get_connection(), _is_postgres()
+
+
+def init_flags_table():
+    """Create feature_flags table and seed defaults. Called from init_db()."""
+    conn, is_pg = _get_db()
+    cur = conn.cursor()
+    ph = "%s" if is_pg else "?"
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS feature_flags (
+            flag_id TEXT PRIMARY KEY,
+            enabled INTEGER DEFAULT 0,
+            description TEXT DEFAULT '',
+            phase INTEGER DEFAULT 0,
+            updated_at TEXT,
+            updated_by TEXT DEFAULT 'system'
+        )
+    """)
+    if not is_pg:
+        conn.commit()
+
+    # Seed missing flags (additive only — never overwrite existing)
+    now = datetime.now(timezone.utc).isoformat()
+    for flag_id, meta in DEFAULT_FLAGS.items():
+        try:
+            if is_pg:
+                cur.execute(f"""
+                    INSERT INTO feature_flags (flag_id, enabled, description, phase, updated_at)
+                    VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
+                    ON CONFLICT (flag_id) DO NOTHING
+                """, (flag_id, 1 if meta["enabled"] else 0, meta["description"], meta["phase"], now))
+            else:
+                cur.execute(f"""
+                    INSERT OR IGNORE INTO feature_flags (flag_id, enabled, description, phase, updated_at)
+                    VALUES ({ph}, {ph}, {ph}, {ph}, {ph})
+                """, (flag_id, 1 if meta["enabled"] else 0, meta["description"], meta["phase"], now))
+        except Exception:
+            pass
+
+    if not is_pg:
+        conn.commit()
+    cur.close()
+    logger.info("Feature flags table initialized (%d flags)", len(DEFAULT_FLAGS))
+
+
+def _load_from_db():
+    """Load all flags from DB into cache."""
+    try:
+        conn, is_pg = _get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT flag_id, enabled, description, phase, updated_at, updated_by FROM feature_flags")
+        if is_pg:
+            columns = [desc[0] for desc in cur.description]
+            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            rows = [dict(row) for row in cur.fetchall()]
+        cur.close()
+
+        result = {}
+        for row in rows:
+            result[row["flag_id"]] = {
+                "enabled": bool(row["enabled"]),
+                "description": row.get("description", ""),
+                "phase": row.get("phase", 0),
+                "updated_at": row.get("updated_at", ""),
+                "updated_by": row.get("updated_by", "system"),
+            }
+        return result
+    except Exception as e:
+        logger.warning("Failed to load feature flags from DB: %s", e)
+        # Fallback to defaults
+        return {k: {"enabled": v["enabled"], "description": v["description"],
+                     "phase": v["phase"], "updated_at": "", "updated_by": "system"}
+                for k, v in DEFAULT_FLAGS.items()}
+
+
+def _get_cached_flags():
+    """Get flags with TTL cache."""
+    global _cache
+    with _cache_lock:
+        now = time.time()
+        if _cache and _cache.get("_ts", 0) + _CACHE_TTL > now:
+            return _cache
+        flags = _load_from_db()
+        flags["_ts"] = now
+        _cache = flags
+        return _cache
+
+
+def invalidate_cache():
+    """Force reload on next access."""
+    global _cache
+    with _cache_lock:
+        _cache = {}
+
+
+def is_enabled(flag_id: str) -> bool:
+    """Check if a feature flag is enabled. Returns False for unknown flags."""
+    flags = _get_cached_flags()
+    entry = flags.get(flag_id)
+    if entry is None:
+        return False
+    return entry.get("enabled", False)
+
+
+def set_flag(flag_id: str, enabled: bool, updated_by: str = "admin"):
+    """Toggle a feature flag. Persists to DB immediately."""
+    conn, is_pg = _get_db()
+    cur = conn.cursor()
+    ph = "%s" if is_pg else "?"
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        cur.execute(
+            f"UPDATE feature_flags SET enabled = {ph}, updated_at = {ph}, updated_by = {ph} WHERE flag_id = {ph}",
+            (1 if enabled else 0, now, updated_by, flag_id)
+        )
+        if not is_pg:
+            conn.commit()
+    finally:
+        cur.close()
+    invalidate_cache()
+    logger.info("Feature flag '%s' set to %s by %s", flag_id, enabled, updated_by)
+
+
+def get_all_flags() -> list[dict]:
+    """Return all flags as list of dicts for API/UI."""
+    flags = _get_cached_flags()
+    result = []
+    for flag_id, meta in sorted(flags.items()):
+        if flag_id == "_ts":
+            continue
+        result.append({
+            "flag_id": flag_id,
+            "enabled": meta.get("enabled", False),
+            "description": meta.get("description", ""),
+            "phase": meta.get("phase", 0),
+            "updated_at": meta.get("updated_at", ""),
+            "updated_by": meta.get("updated_by", "system"),
+        })
+    return result

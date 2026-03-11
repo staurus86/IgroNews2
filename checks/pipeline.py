@@ -118,6 +118,20 @@ def _check_single(news: dict) -> dict:
     result["total_score"] = total_score
     result["status"] = news.get("status", "new")
 
+    # Score breakdown for explainability
+    result["score_breakdown"] = {
+        "quality": result["checks"]["quality"]["score"],
+        "relevance": result["checks"]["relevance"]["score"],
+        "freshness": result["checks"]["freshness"]["score"],
+        "viral": result["checks"]["viral"]["score"],
+        "momentum_bonus": momentum_bonus,
+        "headline_bonus": headline_bonus,
+        "source_weight": sw,
+        "feedback_adj": round(feedback_adj, 2),
+        "base_avg": sum(c["score"] for c in result["checks"].values()) // 4,
+        "final_total": total_score,
+    }
+
     return result
 
 
@@ -151,17 +165,33 @@ def run_review_pipeline(news_list: list[dict], update_status: bool = True) -> di
         for member in group["members"]:
             member["dedup_status"] = group["status"]
 
+    # Decision trace helper (best-effort, non-blocking)
+    def _trace(news_id, step, decision, reason="", details=None, s_before=0, s_after=0):
+        try:
+            from core.observability import log_decision
+            log_decision(news_id, step, decision, reason, details, s_before, s_after)
+        except Exception:
+            pass
+
     # Save check results in DB (always) + update statuses (optional)
     AUTO_REJECT_SCORE = 15
     for r in results:
         if update_status:
             if r.get("is_duplicate"):
                 update_news_status(r["id"], "duplicate")
+                _trace(r["id"], "review_pipeline", "duplicate",
+                       "Дубликат обнаружен по TF-IDF/entity overlap")
             elif r.get("total_score", 0) < AUTO_REJECT_SCORE:
                 update_news_status(r["id"], "rejected")
                 r["auto_rejected"] = True
+                _trace(r["id"], "review_pipeline", "auto_rejected",
+                       f"total_score={r.get('total_score',0)} < {AUTO_REJECT_SCORE}",
+                       score_after=r.get("total_score", 0))
             else:
                 update_news_status(r["id"], "in_review")
+                _trace(r["id"], "review_pipeline", "in_review",
+                       f"total_score={r.get('total_score',0)}, готово к модерации",
+                       score_after=r.get("total_score", 0))
         try:
             save_check_results(
                 r["id"], r["checks"],
@@ -171,6 +201,7 @@ def run_review_pipeline(news_list: list[dict], update_status: bool = True) -> di
                 headline=r.get("headline"),
                 total_score=r.get("total_score", 0),
                 entities=r.get("game_entities"),
+                score_breakdown=r.get("score_breakdown"),
             )
         except Exception as e:
             logger.warning("Failed to save check results for %s: %s", r["id"], e)

@@ -9,15 +9,31 @@ HEADERS = {"Content-Type": "application/json"}
 
 def _make_request(endpoint: str, params: dict, region: str = None) -> dict | None:
     """Выполняет запрос к Keys.so API."""
+    import time as _t
     params["auth-token"] = config.KEYSO_API_KEY
     if "base" not in params:
         params["base"] = region or config.KEYSO_REGION
+    t0 = _t.time()
     try:
         url = f"{config.KEYSO_BASE_URL}{endpoint}"
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
+        latency_ms = int((_t.time() - t0) * 1000)
+        # Track API cost (best-effort)
+        try:
+            from core.observability import track_api_call
+            track_api_call("keyso", endpoint=endpoint, latency_ms=latency_ms)
+        except Exception:
+            pass
         return resp.json()
     except Exception as e:
+        latency_ms = int((_t.time() - t0) * 1000)
+        try:
+            from core.observability import track_api_call
+            track_api_call("keyso", endpoint=endpoint, latency_ms=latency_ms,
+                           status="error", error_message=str(e)[:200])
+        except Exception:
+            pass
         logger.error("Keys.so API error (%s): %s", endpoint, e)
         return None
 

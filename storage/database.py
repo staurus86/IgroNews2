@@ -198,8 +198,28 @@ def init_db():
     # Articles: scheduled publication time
     _add_column_if_missing(cur, "articles", "scheduled_at", "TEXT")
 
+    # Phase 0: new columns for explainability (nullable, safe)
+    _add_column_if_missing(cur, "news_analysis", "decision_reason", "TEXT DEFAULT ''")
+    _add_column_if_missing(cur, "news_analysis", "score_breakdown", "TEXT DEFAULT '{}'")
+
+    # Phase 2: confidence and cluster
+    _add_column_if_missing(cur, "news_analysis", "confidence_score", "INTEGER DEFAULT 0")
+    _add_column_if_missing(cur, "news_analysis", "cluster_id", "TEXT DEFAULT ''")
+
     if not _is_postgres():
         conn.commit()
+
+    # Initialize feature flags and observability tables
+    try:
+        from core.feature_flags import init_flags_table
+        init_flags_table()
+    except Exception as e:
+        logger.warning("Feature flags init skipped: %s", e)
+    try:
+        from core.observability import init_observability_tables
+        init_observability_tables()
+    except Exception as e:
+        logger.warning("Observability tables init skipped: %s", e)
 
     logger.info("Database initialized")
 
@@ -330,7 +350,7 @@ def save_analysis(news_id: str, **kwargs):
 def save_check_results(news_id: str, checks: dict, sentiment: dict = None,
                        tags: list = None, momentum: dict = None,
                        headline: dict = None, total_score: int = 0,
-                       entities: list = None):
+                       entities: list = None, score_breakdown: dict = None):
     """Сохраняет результаты проверок (viral, sentiment, freshness и др.) в news_analysis."""
     import json
     conn = get_connection()
@@ -367,6 +387,7 @@ def save_check_results(news_id: str, checks: dict, sentiment: dict = None,
         "entity_names": json.dumps(ent_names, ensure_ascii=False),
         "entity_best_tier": ent_best_tier,
         "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        "score_breakdown": json.dumps(score_breakdown or {}, ensure_ascii=False),
     }
 
     # Ensure row exists in news_analysis

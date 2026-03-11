@@ -21,6 +21,13 @@ def main():
     # Подключаем логи для дашборда
     setup_dashboard_logging()
 
+    # Structured logging with correlation IDs
+    try:
+        from core.observability import setup_structured_logging
+        setup_structured_logging()
+    except Exception as e:
+        logging.warning("Structured logging init skipped: %s", e)
+
     # Инициализация БД
     init_db()
 
