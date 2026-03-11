@@ -140,7 +140,8 @@ def _extract_cached(text_lower: str) -> tuple:
 def extract_entities(news: dict) -> dict:
     """Извлекает именованные сущности из новости. Результаты кешируются (LRU 256)."""
     title = news.get("title", "").lower()
-    text = (title + " " + news.get("plain_text", "")).lower()
+    plain = news.get("plain_text", "") or news.get("description", "") or ""
+    text = (title + " " + plain).lower()
 
     studios, games, platforms, numbers, events, total = _extract_cached(text)
 

@@ -79,7 +79,8 @@ TAXONOMY = {
 
 def auto_tag(news: dict) -> list[dict]:
     """Возвращает список тегов для новости."""
-    text = (news.get("title", "") + " " + news.get("plain_text", "")).lower()
+    plain = news.get("plain_text", "") or news.get("description", "") or ""
+    text = (news.get("title", "") + " " + plain).lower()
     tags = []
     for tag_id, tag_info in TAXONOMY.items():
         hits = sum(1 for kw in tag_info["keywords"] if kw in text)

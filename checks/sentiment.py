@@ -37,7 +37,8 @@ _ALL_NEGATIVE = NEGATIVE_RU + NEGATIVE_EN
 
 def analyze_sentiment(news: dict) -> dict:
     """Анализирует тональность новости. Возвращает score от -1 до +1."""
-    text = (news.get("title", "") + " " + news.get("plain_text", "")).lower()
+    plain = news.get("plain_text", "") or news.get("description", "") or ""
+    text = (news.get("title", "") + " " + plain).lower()
 
     pos_hits = sum(1 for w in _ALL_POSITIVE if w in text)
     neg_hits = sum(1 for w in _ALL_NEGATIVE if w in text)

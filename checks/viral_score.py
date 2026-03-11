@@ -806,7 +806,8 @@ def get_calendar_boost(dt: Optional[datetime] = None) -> tuple[int, str]:
 
 def viral_score(news: dict, precomputed_entities: list = None) -> dict:
     title = news.get("title", "").lower()
-    text = (title + " " + news.get("plain_text", "")).lower()
+    plain = news.get("plain_text", "") or news.get("description", "") or ""
+    text = (title + " " + plain).lower()
 
     score = 0
     triggered = []
