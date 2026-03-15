@@ -5,7 +5,7 @@ import json
 import logging
 import time
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 _cache = OrderedDict()
 _cache_lock = threading.Lock()
-_MAX_CACHE_SIZE = 2000  # increased from 500 for 2000+ news items
+_MAX_CACHE_SIZE = 1000  # reduced from 2000 — each entry can be large
 _DEFAULT_TTL = 86400  # 24 hours
 
 
@@ -149,11 +149,10 @@ def retry_call(fn, *args, max_retries: int = 3, base_delay: float = 2.0,
     return None
 
 
-# --- In-memory log ring buffer ---
+# --- In-memory log ring buffer (deque = O(1) append/evict vs list.pop(0) = O(n)) ---
 
-_log_buffer = []
+_log_buffer = deque(maxlen=300)
 _log_lock = threading.Lock()
-_MAX_LOG_ENTRIES = 300
 
 
 class DashboardLogHandler(logging.Handler):
@@ -169,8 +168,6 @@ class DashboardLogHandler(logging.Handler):
             }
             with _log_lock:
                 _log_buffer.append(entry)
-                while len(_log_buffer) > _MAX_LOG_ENTRIES:
-                    _log_buffer.pop(0)
         except Exception:
             pass
 

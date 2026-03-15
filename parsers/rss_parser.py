@@ -13,11 +13,29 @@ MAX_AGE_DAYS = 30
 logger = logging.getLogger(__name__)
 
 
+_JUNK_TAGS = ["script", "style", "nav", "footer", "header", "aside",
+              "figure", "figcaption", "form", "button", "svg", "noscript", "iframe"]
+_JUNK_CLASS_KW = ["share", "social", "bookmark", "comment", "sidebar", "related", "newsletter", "promo", "ad-"]
+
+
+def _clean_element(el) -> str:
+    """Очищает элемент от мусора через get_text с предварительным удалением тегов.
+    Использует str(el) для клона — минимальная аллокация по сравнению с deepcopy."""
+    clone = BeautifulSoup(str(el), "lxml")
+    for tag in clone.find_all(_JUNK_TAGS):
+        tag.decompose()
+    for div in clone.find_all(["div", "section"]):
+        cls = div.get("class", [])
+        if cls and any(kw in " ".join(cls).lower() for kw in _JUNK_CLASS_KW):
+            div.decompose()
+    text = clone.get_text(separator=" ", strip=True)[:5000]
+    del clone
+    return text
+
+
 def _extract_body_text(soup) -> str:
     """Извлекает основной текст статьи, пробуя несколько селекторов."""
-    # Приоритетный список селекторов для тела статьи
     selectors = [
-        # Specific body selectors first (cleanest text)
         "div#article-body",
         "div[itemprop='articleBody']",
         "div.article-body", "div.article__body", "div.article-content",
@@ -25,7 +43,6 @@ def _extract_body_text(soup) -> str:
         "div.story-body", "div.news-body", "div.text-body",
         "div.post__body", "div.article__content", "div.prose",
         "section.article-body", "div.content-article",
-        # Broader selectors last
         "div[class*='article-body']", "div[class*='post-content']",
         "div[class*='articleBody']", "div[class*='entry-content']",
         "article", "main",
@@ -33,31 +50,12 @@ def _extract_body_text(soup) -> str:
     for sel in selectors:
         el = soup.select_one(sel)
         if el:
-            clone = BeautifulSoup(str(el), "lxml")
-            for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside",
-                                       "figure", "figcaption", "form", "button", "svg",
-                                       "noscript", "iframe"]):
-                tag.decompose()
-            # Remove share/social/bookmark divs
-            for div in clone.find_all(["div", "section"], class_=lambda c: c and any(
-                    kw in " ".join(c).lower() for kw in ["share", "social", "bookmark", "comment",
-                                                          "sidebar", "related", "newsletter", "promo", "ad-"])):
-                div.decompose()
-            text = clone.get_text(separator=" ", strip=True)[:5000]
+            text = _clean_element(el)
             if len(text) >= 100:
                 return text
 
-    # Fallback: <body> с очисткой
     if soup.body:
-        clone = BeautifulSoup(str(soup.body), "lxml")
-        for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside",
-                                   "figure", "figcaption", "form", "button", "svg", "noscript", "iframe"]):
-            tag.decompose()
-        for div in clone.find_all(["div", "section"], class_=lambda c: c and any(
-                kw in " ".join(c).lower() for kw in ["share", "social", "bookmark", "comment",
-                                                      "sidebar", "related", "newsletter", "promo", "ad-"])):
-            div.decompose()
-        text = clone.get_text(separator=" ", strip=True)[:5000]
+        text = _clean_element(soup.body)
         if len(text) >= 100:
             return text
 
@@ -68,7 +66,11 @@ def fetch_full_text(url: str) -> tuple[str, str, str, str]:
     """Загружает страницу и извлекает h1, description, plain_text, published_at."""
     try:
         resp = fetch_with_retry(url)
-        soup = BeautifulSoup(resp.text, "lxml")
+        # Limit HTML to 500KB to prevent OOM on huge pages
+        html_text = resp.text[:512_000]
+        del resp  # free response body immediately
+        soup = BeautifulSoup(html_text, "lxml")
+        del html_text
 
         h1 = ""
         h1_tag = soup.find("h1")
@@ -89,6 +91,7 @@ def fetch_full_text(url: str) -> tuple[str, str, str, str]:
         # Извлекаем основной текст — умный поиск по множеству селекторов
         plain_text = _extract_body_text(soup)
 
+        del soup  # free lxml tree immediately
         return h1, description, plain_text, published_at
     except Exception as e:
         logger.warning("Failed to fetch full text from %s: %s", url, e)

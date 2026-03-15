@@ -1,3 +1,4 @@
+import gzip
 import json
 import hmac
 import os
@@ -14,6 +15,10 @@ from storage.database import get_connection, _is_postgres, get_unprocessed_news,
 
 logger = logging.getLogger(__name__)
 PORT = int(os.getenv("PORT", 8080))
+
+# Pre-compressed dashboard HTML (computed once at module load, see bottom)
+_DASHBOARD_HTML_GZIP = None
+_DASHBOARD_HTML_BYTES = None
 
 # Secret key for signing cookies — stable across redeploys via env var
 _COOKIE_SECRET = os.getenv("COOKIE_SECRET", "igronews-default-secret-key-2024")
@@ -300,12 +305,20 @@ class AdminHandler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _accepts_gzip(self):
+        return "gzip" in self.headers.get("Accept-Encoding", "")
+
     def _json(self, data, code=200):
         body = json.dumps(data, ensure_ascii=False, default=str).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-cache, no-store")
+        # Gzip if body > 1KB and client supports it
+        if len(body) > 1024 and self._accepts_gzip():
+            body = gzip.compress(body, compresslevel=6)
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
@@ -1082,7 +1095,7 @@ async function login() {
             try:
                 ph = "%s" if _is_postgres() else "?"
                 placeholders = ",".join([ph] * len(news_ids))
-                cur.execute(f"SELECT id, title, description, plain_text FROM news WHERE id IN ({placeholders})", news_ids)
+                cur.execute(f"SELECT id, title, description FROM news WHERE id IN ({placeholders})", news_ids)
                 if _is_postgres():
                     columns = [desc[0] for desc in cur.description]
                     rows = [dict(zip(columns, row)) for row in cur.fetchall()]
@@ -1154,9 +1167,9 @@ async function login() {
                 qs = parse_qs(urlparse(self.path).query)
                 status_filter = qs.get("status", [None])[0]
                 if status_filter:
-                    cur.execute(f"SELECT id, title, description, plain_text FROM news WHERE status = {ph} ORDER BY parsed_at DESC LIMIT 200", (status_filter,))
+                    cur.execute(f"SELECT id, title, description FROM news WHERE status = {ph} ORDER BY parsed_at DESC LIMIT 100", (status_filter,))
                 else:
-                    cur.execute("SELECT id, title, description, plain_text FROM news ORDER BY parsed_at DESC LIMIT 200")
+                    cur.execute("SELECT id, title, description FROM news ORDER BY parsed_at DESC LIMIT 100")
                 if _is_postgres():
                     columns = [desc[0] for desc in cur.description]
                     rows = [dict(zip(columns, row)) for row in cur.fetchall()]
@@ -1231,7 +1244,7 @@ async function login() {
             try:
                 ph = "%s" if _is_postgres() else "?"
                 placeholders = ",".join([ph] * len(news_ids))
-                cur.execute(f"SELECT * FROM news WHERE id IN ({placeholders})", news_ids)
+                cur.execute(f"SELECT id, source, url, title, h1, description, plain_text, published_at, parsed_at, status FROM news WHERE id IN ({placeholders})", news_ids)
                 if _is_postgres():
                     columns = [desc[0] for desc in cur.description]
                     news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
@@ -1256,9 +1269,9 @@ async function login() {
             try:
                 ph = "%s" if _is_postgres() else "?"
                 if status:
-                    cur.execute(f"SELECT * FROM news WHERE status = {ph} ORDER BY parsed_at DESC LIMIT {ph}", (status, limit))
+                    cur.execute(f"SELECT id, source, url, title, h1, description, plain_text, published_at, parsed_at, status FROM news WHERE status = {ph} ORDER BY parsed_at DESC LIMIT {ph}", (status, limit))
                 else:
-                    cur.execute(f"SELECT * FROM news ORDER BY parsed_at DESC LIMIT {ph}", (limit,))
+                    cur.execute(f"SELECT id, source, url, title, h1, description, plain_text, published_at, parsed_at, status FROM news ORDER BY parsed_at DESC LIMIT {ph}", (limit,))
                 if _is_postgres():
                     columns = [desc[0] for desc in cur.description]
                     news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
@@ -1344,7 +1357,8 @@ async function login() {
 
                 # Берём один батч
                 cur.execute(f"""
-                    SELECT * FROM news WHERE status = 'new'
+                    SELECT id, source, url, title, h1, description, plain_text, published_at, parsed_at, status
+                    FROM news WHERE status = 'new'
                     ORDER BY parsed_at DESC LIMIT {ph}
                 """, (BATCH_SIZE,))
                 if _is_postgres():
@@ -4879,11 +4893,25 @@ async function login() {
 
     # --- Dashboard HTML ---
     def _serve_dashboard(self):
-        html = DASHBOARD_HTML
-        body = html.encode()
+        global _DASHBOARD_HTML_GZIP, _DASHBOARD_HTML_BYTES
+        # Pre-compress dashboard HTML once (saves ~400KB per request)
+        if _DASHBOARD_HTML_BYTES is None:
+            _DASHBOARD_HTML_BYTES = DASHBOARD_HTML.encode()
+            _DASHBOARD_HTML_GZIP = gzip.compress(_DASHBOARD_HTML_BYTES, compresslevel=9)
+            logger.info("Dashboard HTML compressed: %dKB -> %dKB (%.0f%% saved)",
+                        len(_DASHBOARD_HTML_BYTES) // 1024, len(_DASHBOARD_HTML_GZIP) // 1024,
+                        (1 - len(_DASHBOARD_HTML_GZIP) / len(_DASHBOARD_HTML_BYTES)) * 100)
+
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        # Allow browser to cache for 5 min, revalidate after
+        self.send_header("Cache-Control", "public, max-age=300, must-revalidate")
+        if self._accepts_gzip():
+            body = _DASHBOARD_HTML_GZIP
+            self.send_header("Content-Encoding", "gzip")
+        else:
+            body = _DASHBOARD_HTML_BYTES
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 

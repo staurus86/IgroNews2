@@ -296,14 +296,19 @@ def _parse_dtf(source: dict) -> int:
 
     try:
         resp = fetch_with_retry(url)
+        page_text = resp.text[:1_000_000]  # Limit to 1MB
+        del resp
 
         # Ищем JSON в __INITIAL_STATE__
-        match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.+?})\s*;?\s*</script>', resp.text, re.DOTALL)
+        match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.+?})\s*;?\s*</script>', page_text, re.DOTALL)
         if not match:
             logger.warning("DTF: __INITIAL_STATE__ not found, trying HTML fallback")
-            return _parse_dtf_html_fallback(source, resp.text)
+            return _parse_dtf_html_fallback(source, page_text)
 
-        data = json.loads(match.group(1))
+        json_str = match.group(1)
+        del match
+        data = json.loads(json_str)
+        del json_str
 
         # Новая структура: feed@subsite.items
         entries = []
@@ -326,7 +331,11 @@ def _parse_dtf(source: dict) -> int:
         if not entries:
             logger.warning("DTF: no entries found in JSON (%d keys: %s), trying HTML fallback",
                            len(data), ", ".join(list(data.keys())[:10]))
-            return _parse_dtf_html_fallback(source, resp.text)
+            result = _parse_dtf_html_fallback(source, page_text)
+            del page_text
+            return result
+
+        del page_text  # free page text — no longer needed
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=30)
 
@@ -574,10 +583,28 @@ def _extract_publish_date(soup) -> str:
     return ""
 
 
+_JUNK_TAGS = ["script", "style", "nav", "footer", "header", "aside",
+              "figure", "figcaption", "form", "button", "svg", "noscript", "iframe"]
+_JUNK_CLASS_KW = ["share", "social", "bookmark", "comment", "sidebar", "related", "newsletter", "promo", "ad-"]
+
+
+def _clean_element(el) -> str:
+    """Очищает элемент от мусора и возвращает текст."""
+    clone = BeautifulSoup(str(el), "lxml")
+    for tag in clone.find_all(_JUNK_TAGS):
+        tag.decompose()
+    for div in clone.find_all(["div", "section"]):
+        cls = div.get("class", [])
+        if cls and any(kw in " ".join(cls).lower() for kw in _JUNK_CLASS_KW):
+            div.decompose()
+    text = clone.get_text(separator=" ", strip=True)[:5000]
+    del clone
+    return text
+
+
 def _extract_body_text(soup) -> str:
     """Извлекает основной текст статьи, пробуя несколько селекторов."""
     selectors = [
-        # Specific body selectors first (cleanest text)
         "div#article-body",
         "div[itemprop='articleBody']",
         "div.article-body", "div.article__body", "div.article-content",
@@ -585,7 +612,6 @@ def _extract_body_text(soup) -> str:
         "div.story-body", "div.news-body", "div.text-body",
         "div.post__body", "div.article__content", "div.prose",
         "section.article-body", "div.content-article",
-        # Broader selectors last
         "div[class*='article-body']", "div[class*='post-content']",
         "div[class*='articleBody']", "div[class*='entry-content']",
         "article", "main",
@@ -593,31 +619,12 @@ def _extract_body_text(soup) -> str:
     for sel in selectors:
         el = soup.select_one(sel)
         if el:
-            clone = BeautifulSoup(str(el), "lxml")
-            for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside",
-                                       "figure", "figcaption", "form", "button", "svg",
-                                       "noscript", "iframe"]):
-                tag.decompose()
-            # Remove share/social/bookmark divs
-            for div in clone.find_all(["div", "section"], class_=lambda c: c and any(
-                    kw in " ".join(c).lower() for kw in ["share", "social", "bookmark", "comment",
-                                                          "sidebar", "related", "newsletter", "promo", "ad-"])):
-                div.decompose()
-            text = clone.get_text(separator=" ", strip=True)[:5000]
+            text = _clean_element(el)
             if len(text) >= 100:
                 return text
 
-    # Fallback: <body>
     if soup.body:
-        clone = BeautifulSoup(str(soup.body), "lxml")
-        for tag in clone.find_all(["script", "style", "nav", "footer", "header", "aside",
-                                   "figure", "figcaption", "form", "button", "svg", "noscript", "iframe"]):
-            tag.decompose()
-        for div in clone.find_all(["div", "section"], class_=lambda c: c and any(
-                kw in " ".join(c).lower() for kw in ["share", "social", "bookmark", "comment",
-                                                      "sidebar", "related", "newsletter", "promo", "ad-"])):
-            div.decompose()
-        text = clone.get_text(separator=" ", strip=True)[:5000]
+        text = _clean_element(soup.body)
         if len(text) >= 100:
             return text
 
@@ -628,7 +635,10 @@ def _fetch_article(url: str) -> tuple[str, str, str, str]:
     """Загружает статью и извлекает h1, description, plain_text, published_at."""
     try:
         resp = fetch_with_retry(url)
-        soup = BeautifulSoup(resp.text, "lxml")
+        html_text = resp.text[:512_000]  # Limit to 500KB to prevent OOM
+        del resp
+        soup = BeautifulSoup(html_text, "lxml")
+        del html_text
 
         h1 = ""
         h1_tag = soup.find("h1")
@@ -646,6 +656,8 @@ def _fetch_article(url: str) -> tuple[str, str, str, str]:
 
         # Умный поиск текста по множеству селекторов
         plain_text = _extract_body_text(soup)
+
+        del soup  # free lxml tree immediately
 
         # Fallback: если text пуст, используем description
         if not plain_text and description:

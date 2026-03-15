@@ -1,3 +1,4 @@
+import gc
 import logging
 import json
 import time
@@ -70,6 +71,9 @@ def parse_sources(interval_min: int):
             total += parse_sitemap_source(source)
     logger.info("[%dmin] Total new articles: %d", interval_min, total)
 
+    # Free memory from parsing (BeautifulSoup/lxml trees, response bodies)
+    gc.collect()
+
     # Auto-review: бесплатный локальный анализ сразу после парсинга
     if total > 0:
         _auto_review_new()
@@ -87,7 +91,7 @@ def _auto_review_new():
         cur = conn.cursor()
         try:
             ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"SELECT * FROM news WHERE status = 'new' ORDER BY parsed_at DESC LIMIT {ph}", (20,))
+            cur.execute(f"SELECT id, source, url, title, h1, description, plain_text, published_at, parsed_at, status FROM news WHERE status = 'new' ORDER BY parsed_at DESC LIMIT {ph}", (20,))
             if _is_postgres():
                 columns = [desc[0] for desc in cur.description]
                 news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
@@ -1077,15 +1081,15 @@ def start_scheduler():
     # process_news ОТКЛЮЧЁН из автозапуска — вызывается только вручную через веб-панель
     # Это экономит Keys.so, Google Trends и LLM API
 
-    # Очистка старого plain_text раз в сутки (экономия памяти БД)
-    scheduler.add_job(cleanup_old_plaintext, "interval", hours=24, id="cleanup_plaintext")
+    # Очистка старого plain_text раз в сутки (7 дней вместо 14 — экономия RAM в БД)
+    scheduler.add_job(lambda: cleanup_old_plaintext(days=7), "interval", hours=24, id="cleanup_plaintext")
 
     # Очистка старых задач из task_queue раз в сутки
     scheduler.add_job(cleanup_old_tasks, "interval", hours=24, id="cleanup_tasks")
 
-    # Очистка просроченных записей кэша каждые 6 часов
+    # Очистка просроченных записей кэша каждые 3 часа (was 6)
     from apis.cache import cache_cleanup
-    scheduler.add_job(cache_cleanup, "interval", hours=6, id="cache_cleanup")
+    scheduler.add_job(cache_cleanup, "interval", hours=3, id="cache_cleanup")
 
     # Публикация запланированных статей: каждую минуту
     scheduler.add_job(publish_scheduled_articles, "interval", minutes=1, id="publish_scheduled")
