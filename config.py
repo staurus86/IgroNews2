@@ -52,20 +52,20 @@ TELEGRAM_NOTIFY_THRESHOLD = int(os.getenv("TELEGRAM_NOTIFY_THRESHOLD", "70"))
 # Sources — flat list, scheduler distributes by interval
 SOURCES = [
     # RSS
-    {"name": "IGN",              "type": "rss",  "url": "https://feeds.ign.com/ign/all",               "interval": 5},
-    {"name": "GameSpot",         "type": "rss",  "url": "https://www.gamespot.com/feeds/mashup/",      "interval": 10},
-    {"name": "PCGamer",          "type": "rss",  "url": "https://www.pcgamer.com/rss/",                "interval": 10},
-    {"name": "Eurogamer",        "type": "rss",  "url": "https://www.eurogamer.net/?format=rss",       "interval": 15},  # может блокировать Cloudflare
-    {"name": "Kotaku",            "type": "homepage",  "url": "https://kotaku.com/latest",              "interval": 15, "rss_url": "https://kotaku.com/rss"},
-    {"name": "GamesRadar",       "type": "gamesradar",  "url": "https://www.gamesradar.com/",           "interval": 15, "rss_url": "https://www.gamesradar.com/rss/"},
-    {"name": "Polygon",          "type": "homepage",  "url": "https://www.polygon.com/",                "interval": 15, "rss_url": "https://www.polygon.com/rss/index.xml"},
-    {"name": "Destructoid",      "type": "rss",  "url": "https://www.destructoid.com/feed/",            "interval": 15},
-    {"name": "RockPaperShotgun", "type": "homepage",  "url": "https://www.rockpapershotgun.com/news", "interval": 30, "rss_url": "https://feeds.feedburner.com/RockPaperShotgun"},
-    {"name": "GameRant",         "type": "rss",  "url": "https://gamerant.com/feed/",                  "interval": 10},
-    {"name": "StopGame",         "type": "html", "url": "https://stopgame.ru/news",                    "interval": 10, "selector": "a[href*='/newsdata/']", "title_selector": "", "url_pattern": r"/newsdata/\d+"},
-    {"name": "Playground",       "type": "rss",  "url": "https://www.playground.ru/rss/news.xml",      "interval": 15},
+    {"name": "IGN",              "type": "rss",  "url": "https://feeds.ign.com/ign/all",               "interval": 15},
+    {"name": "GameSpot",         "type": "rss",  "url": "https://www.gamespot.com/feeds/mashup/",      "interval": 30},
+    {"name": "PCGamer",          "type": "rss",  "url": "https://www.pcgamer.com/rss/",                "interval": 30},
+    {"name": "Eurogamer",        "type": "rss",  "url": "https://www.eurogamer.net/?format=rss",       "interval": 45},  # может блокировать Cloudflare
+    {"name": "Kotaku",            "type": "homepage",  "url": "https://kotaku.com/latest",              "interval": 45, "rss_url": "https://kotaku.com/rss"},
+    {"name": "GamesRadar",       "type": "gamesradar",  "url": "https://www.gamesradar.com/",           "interval": 45, "rss_url": "https://www.gamesradar.com/rss/"},
+    {"name": "Polygon",          "type": "homepage",  "url": "https://www.polygon.com/",                "interval": 45, "rss_url": "https://www.polygon.com/rss/index.xml"},
+    {"name": "Destructoid",      "type": "rss",  "url": "https://www.destructoid.com/feed/",            "interval": 45},
+    {"name": "RockPaperShotgun", "type": "homepage",  "url": "https://www.rockpapershotgun.com/news", "interval": 90, "rss_url": "https://feeds.feedburner.com/RockPaperShotgun"},
+    {"name": "GameRant",         "type": "rss",  "url": "https://gamerant.com/feed/",                  "interval": 30},
+    {"name": "StopGame",         "type": "html", "url": "https://stopgame.ru/news",                    "interval": 30, "selector": "a[href*='/newsdata/']", "title_selector": "", "url_pattern": r"/newsdata/\d+"},
+    {"name": "Playground",       "type": "rss",  "url": "https://www.playground.ru/rss/news.xml",      "interval": 45},
     # HTML
-    {"name": "DTF",              "type": "dtf",  "url": "https://dtf.ru/games",                        "interval": 10, "selector": "a[href*='/games/']", "title_selector": "", "url_pattern": r"/games/\d+"},
-    {"name": "iXBT.games",       "type": "html", "url": "https://ixbt.games/news",                    "interval": 30, "selector": "a[href*='/news/']", "title_selector": "h3", "url_pattern": r"/news/\d{4}/\d{2}/\d{2}/"},
-    {"name": "VGTimes",          "type": "html", "url": "https://vgtimes.ru/news/",                    "interval": 30, "selector": "a[href*='.html']", "title_selector": "", "url_pattern": r"/\d+-.*\.html"},
+    {"name": "DTF",              "type": "dtf",  "url": "https://dtf.ru/games",                        "interval": 30, "selector": "a[href*='/games/']", "title_selector": "", "url_pattern": r"/games/\d+"},
+    {"name": "iXBT.games",       "type": "html", "url": "https://ixbt.games/news",                    "interval": 90, "selector": "a[href*='/news/']", "title_selector": "h3", "url_pattern": r"/news/\d{4}/\d{2}/\d{2}/"},
+    {"name": "VGTimes",          "type": "html", "url": "https://vgtimes.ru/news/",                    "interval": 90, "selector": "a[href*='.html']", "title_selector": "", "url_pattern": r"/\d+-.*\.html"},
 ]
