@@ -4667,7 +4667,7 @@ async function login() {
                         pass
                 trig_counts = Counter()
                 for t in all_triggers:
-                    label = t.get("trigger") or t.get("name") or (t if isinstance(t, str) else "")
+                    label = t.get("label") or t.get("trigger") or t.get("name") or (t if isinstance(t, str) else "")
                     if label:
                         trig_counts[label] += 1
                 top_triggers = [name for name, _ in trig_counts.most_common(5)]
