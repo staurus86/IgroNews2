@@ -62,6 +62,10 @@ SOURCES = [
     {"name": "Destructoid",      "type": "rss",  "url": "https://www.destructoid.com/feed/",            "interval": 45},
     {"name": "RockPaperShotgun", "type": "homepage",  "url": "https://www.rockpapershotgun.com/news", "interval": 90, "rss_url": "https://feeds.feedburner.com/RockPaperShotgun"},
     {"name": "GameRant",         "type": "rss",  "url": "https://gamerant.com/feed/",                  "interval": 30},
+    {"name": "VGC",              "type": "rss",  "url": "https://www.videogameschronicle.com/feed",    "interval": 45},
+    {"name": "Gematsu",          "type": "rss",  "url": "https://www.gematsu.com/feed",                "interval": 45},
+    {"name": "TheGamer",         "type": "rss",  "url": "https://www.thegamer.com/feed/",              "interval": 45},
+    {"name": "GamingBolt",       "type": "rss",  "url": "https://www.gamingbolt.com/feed",             "interval": 45},
     {"name": "StopGame",         "type": "html", "url": "https://stopgame.ru/news",                    "interval": 30, "selector": "a[href*='/newsdata/']", "title_selector": "", "url_pattern": r"/newsdata/\d+"},
     {"name": "Playground",       "type": "rss",  "url": "https://www.playground.ru/rss/news.xml",      "interval": 45},
     # HTML
