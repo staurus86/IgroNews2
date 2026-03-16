@@ -4606,7 +4606,9 @@ async function login() {
             cur.execute(f"""
                 SELECT n.id, n.source, n.title, n.published_at, n.status,
                        COALESCE(a.total_score, 0) as total_score,
-                       COALESCE(a.viral_score, 0) as viral_score
+                       COALESCE(a.viral_score, 0) as viral_score,
+                       COALESCE(a.entity_names, '[]') as entity_names,
+                       COALESCE(a.viral_data, '{{}}') as viral_data
                 FROM news n
                 LEFT JOIN news_analysis a ON n.id = a.news_id
                 WHERE n.parsed_at > {ph}
@@ -4627,6 +4629,7 @@ async function login() {
             pairs = tfidf_similarity(titles)
             groups = build_groups(news_list, pairs)
 
+            from collections import Counter
             storylines = []
             for g in groups:
                 members = g["members"]
@@ -4638,6 +4641,37 @@ async function login() {
                 count = len(members)
                 phase = "trending" if count >= 5 else "developing" if count >= 3 else "emerging"
 
+                # Aggregate game entities across cluster
+                all_entities = []
+                for m in members:
+                    try:
+                        ents = json.loads(m.get("entity_names") or "[]")
+                        if isinstance(ents, list):
+                            all_entities.extend(ents)
+                    except Exception:
+                        pass
+                ent_counts = Counter(all_entities)
+                top_games = [name for name, _ in ent_counts.most_common(10)]
+
+                # Aggregate viral triggers across cluster
+                all_triggers = []
+                for m in members:
+                    try:
+                        vd = m.get("viral_data") or "{}"
+                        vdata = json.loads(vd) if isinstance(vd, str) else vd
+                        if isinstance(vdata, list):
+                            all_triggers.extend(vdata)
+                        elif isinstance(vdata, dict):
+                            all_triggers.extend(vdata.get("triggers", []))
+                    except Exception:
+                        pass
+                trig_counts = Counter()
+                for t in all_triggers:
+                    label = t.get("trigger") or t.get("name") or (t if isinstance(t, str) else "")
+                    if label:
+                        trig_counts[label] += 1
+                top_triggers = [name for name, _ in trig_counts.most_common(5)]
+
                 storylines.append({
                     "count": count,
                     "phase": phase,
@@ -4645,6 +4679,8 @@ async function login() {
                     "sources": sources,
                     "avg_score": avg_score,
                     "max_viral": max_viral,
+                    "top_games": top_games,
+                    "top_triggers": top_triggers,
                     "members": [{
                         "id": m.get("id", ""),
                         "title": m.get("title", ""),
@@ -5178,6 +5214,11 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 .storyline-member .sm-source { color:#8899a6; min-width:80px; font-size:0.8em; }
 .storyline-member .sm-score { color:#1da1f2; font-weight:600; min-width:35px; text-align:right; }
 .storyline-stats { display:flex; gap:12px; font-size:0.82em; color:#8899a6; }
+.storyline-tags { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:8px; }
+.stl-label { font-size:0.8em; color:#8899a6; margin-right:2px; }
+.stl-tag { display:inline-block; padding:2px 10px; border-radius:12px; font-size:0.78em; font-weight:500; }
+.stl-tag.game { background:#1a3a2a; color:#17bf63; border:1px solid #22503a; }
+.stl-tag.trigger { background:#3a2a1a; color:#ffad1f; border:1px solid #504022; }
 
 /* Health plus */
 .health-rec { display:inline-block; padding:3px 8px; border-radius:6px; font-size:0.78em; margin:2px; }
@@ -10024,6 +10065,14 @@ async function loadStorylines() {
           '<span style="color:#8899a6;font-size:0.75em">' + fmtDate(m.published_at) + '</span>' +
         '</div>'
       ).join('');
+      const gamesHtml = (s.top_games||[]).length
+        ? '<div class="storyline-tags"><span class="stl-label">\uD83C\uDFAE Игры:</span>' +
+          s.top_games.map(g => '<span class="stl-tag game">' + esc(g) + '</span>').join('') + '</div>'
+        : '';
+      const triggersHtml = (s.top_triggers||[]).length
+        ? '<div class="storyline-tags"><span class="stl-label">\uD83D\uDD25 Триггеры:</span>' +
+          s.top_triggers.map(t => '<span class="stl-tag trigger">' + esc(t) + '</span>').join('') + '</div>'
+        : '';
       return '<div class="storyline-card">' +
         '<div class="storyline-header">' +
           '<div><span class="storyline-phase ' + phaseClass + '">' + phaseLabel + '</span> ' +
@@ -10035,6 +10084,7 @@ async function loadStorylines() {
           '</div>' +
         '</div>' +
         '<div style="font-size:0.8em;color:#8899a6;margin-bottom:6px">Источники: ' + s.sources.join(', ') + '</div>' +
+        gamesHtml + triggersHtml +
         '<div class="storyline-members">' + membersHtml + '</div>' +
       '</div>';
     }).join('');
