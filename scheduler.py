@@ -21,17 +21,29 @@ _pipeline_stop = False
 
 # Circuit breaker: consecutive API failures per service
 _api_failures = {}  # {service: consecutive_count}
+_api_failure_times = {}  # {service: timestamp of last failure}
 _API_FAILURE_THRESHOLD = 5  # after 5 consecutive failures, skip service
+_CIRCUIT_RESET_SECONDS = 300  # auto-reset after 5 minutes
 
 
 def _api_circuit_open(service: str) -> bool:
-    """Returns True if circuit is open (too many failures, should skip)."""
-    return _api_failures.get(service, 0) >= _API_FAILURE_THRESHOLD
+    """Returns True if circuit is open (too many failures, should skip).
+    Auto-resets after _CIRCUIT_RESET_SECONDS to avoid permanent deadlock."""
+    if _api_failures.get(service, 0) < _API_FAILURE_THRESHOLD:
+        return False
+    # Check timed auto-reset
+    last_failure = _api_failure_times.get(service, 0)
+    if time.time() - last_failure > _CIRCUIT_RESET_SECONDS:
+        _api_failures[service] = 0
+        logger.info("Circuit breaker AUTO-RESET for %s after %ds timeout", service, _CIRCUIT_RESET_SECONDS)
+        return False
+    return True
 
 
 def _api_record_failure(service: str):
     """Records an API failure."""
     _api_failures[service] = _api_failures.get(service, 0) + 1
+    _api_failure_times[service] = time.time()
     if _api_failures[service] == _API_FAILURE_THRESHOLD:
         logger.warning("Circuit breaker OPEN for %s after %d consecutive failures", service, _API_FAILURE_THRESHOLD)
 
@@ -707,6 +719,7 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
             )
             if not rewrite:
                 _update_task(task_id, "error", {"stage": "rewriting", "error": "Rewrite returned None"})
+                update_news_status(news_id, "in_review")  # Reset so it can be retried
                 continue
 
             # Save article to DB
@@ -714,15 +727,19 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
 
             # Stage 6: Export to Sheets/Ready
             _update_task(task_id, "running", {"stage": "exporting", "score": total_score, "final_score": final_score})
+            sheet_row = None
             try:
                 sheet_row = write_ready_row(news, analysis, rewrite)
             except Exception as sheets_err:
                 logger.error("Full-auto Sheets write failed for %s: %s", news_id, sheets_err)
-                sheet_row = None
                 # Article saved to DB already — not lost
                 time.sleep(10)  # Back off on Sheets error
 
-            update_news_status(news_id, "ready")
+            if sheet_row:
+                update_news_status(news_id, "ready")
+            else:
+                # Sheets failed — keep as approved so it can be retried
+                logger.warning("Sheets export failed for %s, keeping status 'approved'", news_id)
             _update_task(task_id, "done", {
                 "stage": "complete",
                 "score": total_score,

@@ -1461,16 +1461,18 @@ async function login() {
         task_ids = []
         cur2 = conn.cursor()
         ph = "%s" if _is_postgres() else "?"
-        for nid in news_ids:
-            try:
-                cur2.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
-                row = cur2.fetchone()
-                title = (row[0] if _is_postgres() else row["title"]) if row else ""
-            except Exception:
-                title = ""
-            tid = _create_task("sheets", nid, title)
-            task_ids.append(tid)
-        cur2.close()
+        try:
+            for nid in news_ids:
+                try:
+                    cur2.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
+                    row = cur2.fetchone()
+                    title = (row[0] if _is_postgres() else row["title"]) if row else ""
+                except Exception:
+                    title = ""
+                tid = _create_task("sheets", nid, title)
+                task_ids.append(tid)
+        finally:
+            cur2.close()
 
         # Process in background with rate limiting
         import threading
@@ -9477,6 +9479,7 @@ function setPipelineActive(type) {
   const btnNoLLM = document.getElementById('btn-no-llm');
   const btnStop = document.getElementById('btn-pipeline-stop');
   const statusEl = document.getElementById('pipeline-status');
+  if (!btnFull || !btnNoLLM || !btnStop || !statusEl) return;
 
   if (type) {
     btnFull.disabled = true;
@@ -9539,7 +9542,7 @@ async function pollPipelineStatus() {
       loadEditorial();
       setTimeout(() => { statusEl.style.display = 'none'; statusEl.innerHTML = ''; }, 3000);
     }
-  } catch(e) {}
+  } catch(e) { console.warn('Pipeline status poll error:', e); }
 }
 
 async function runFullAuto() {
@@ -9551,13 +9554,25 @@ async function runFullAuto() {
   } else {
     if (!confirm('Запустить полный автомат для ' + ids.length + ' новостей?\\n\\nПайплайн: Скор → >70 на LLM → Финальный скор → >60 на рерайт → Sheets/Ready')) return;
   }
+  const btnFull = document.getElementById('btn-full-auto');
+  const btnNoLLM = document.getElementById('btn-no-llm');
+  if (btnFull) btnFull.disabled = true;
+  if (btnNoLLM) btnNoLLM.disabled = true;
   toast('Запуск полного автомата...');
-  const r = await api('/api/pipeline/full_auto', {news_ids: ids, all_new: allNew});
-  if (r.status === 'ok') {
-    toast(r.queued + ' задач в очереди');
-    setPipelineActive('full_auto');
-  } else {
-    toast(r.message || 'Ошибка', true);
+  try {
+    const r = await api('/api/pipeline/full_auto', {news_ids: ids, all_new: allNew});
+    if (r.status === 'ok') {
+      toast(r.queued + ' задач в очереди');
+      setPipelineActive('full_auto');
+    } else {
+      toast(r.message || 'Ошибка', true);
+      if (btnFull) btnFull.disabled = false;
+      if (btnNoLLM) btnNoLLM.disabled = false;
+    }
+  } catch(e) {
+    toast('Ошибка: ' + (e.message||e), true);
+    if (btnFull) btnFull.disabled = false;
+    if (btnNoLLM) btnNoLLM.disabled = false;
   }
 }
 
@@ -9570,13 +9585,25 @@ async function runNoLLM() {
   } else {
     if (!confirm('Запустить "Без LLM" для ' + ids.length + ' новостей? Только локальный анализ + Sheets NotReady.')) return;
   }
+  const btnFull = document.getElementById('btn-full-auto');
+  const btnNoLLM = document.getElementById('btn-no-llm');
+  if (btnFull) btnFull.disabled = true;
+  if (btnNoLLM) btnNoLLM.disabled = true;
   toast('Запуск анализа без LLM...');
-  const r = await api('/api/pipeline/no_llm', {news_ids: ids, all_new: allNew});
-  if (r.status === 'ok') {
-    toast(r.queued + ' задач в очереди');
-    setPipelineActive('no_llm');
-  } else {
-    toast(r.message || 'Ошибка', true);
+  try {
+    const r = await api('/api/pipeline/no_llm', {news_ids: ids, all_new: allNew});
+    if (r.status === 'ok') {
+      toast(r.queued + ' задач в очереди');
+      setPipelineActive('no_llm');
+    } else {
+      toast(r.message || 'Ошибка', true);
+      if (btnFull) btnFull.disabled = false;
+      if (btnNoLLM) btnNoLLM.disabled = false;
+    }
+  } catch(e) {
+    toast('Ошибка: ' + (e.message||e), true);
+    if (btnFull) btnFull.disabled = false;
+    if (btnNoLLM) btnNoLLM.disabled = false;
   }
 }
 
