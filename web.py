@@ -2333,36 +2333,8 @@ async function login() {
             self._json({"status": "error", "message": str(e)})
 
     def _rewrite_news(self, body):
-        news_id = body.get("news_id")
-        style = body.get("style", "news")
-        language = body.get("language", "русский")
-        try:
-            conn = get_connection()
-            cur = conn.cursor()
-            try:
-                ph = "%s" if _is_postgres() else "?"
-                cur.execute(f"SELECT title, plain_text, description FROM news WHERE id = {ph}", (news_id,))
-                row = cur.fetchone()
-                if not row:
-                    self._json({"status": "error", "message": "News not found"})
-                    return
-                if _is_postgres():
-                    columns = [desc[0] for desc in cur.description]
-                    news = dict(zip(columns, row))
-                else:
-                    news = dict(row)
-                title = news.get("title", "")
-                text = news.get("plain_text", "") or news.get("description", "")
-                from apis.llm import rewrite_news
-                result = rewrite_news(title, text, style, language)
-                if result:
-                    self._json({"status": "ok", "result": result, "original_title": title})
-                else:
-                    self._json({"status": "error", "message": "LLM returned no result"})
-            finally:
-                cur.close()
-        except Exception as e:
-            self._json({"status": "error", "message": str(e)})
+        from api.articles import rewrite_news_handler
+        self._json(rewrite_news_handler(body))
 
     def _merge_news(self, body):
         news_ids = body.get("news_ids", [])
@@ -2502,64 +2474,8 @@ async function login() {
         finally:
             cur.close()
     def _batch_rewrite(self, body):
-        """Батч-переписка новостей: создаёт статьи из списка news_ids."""
-        news_ids = body.get("news_ids", [])
-        style = body.get("style", "news")
-        language = body.get("language", "русский")
-        if not news_ids:
-            self._json({"status": "error", "message": "news_ids required"})
-            return
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            from apis.llm import rewrite_news
-            import uuid, json
-            from datetime import datetime, timezone
-
-            results = []
-            for nid in news_ids:
-                try:
-                    cur.execute(f"SELECT id, title, plain_text, description, url, source FROM news WHERE id = {ph}", (nid,))
-                    row = cur.fetchone()
-                    if not row:
-                        results.append({"news_id": nid, "ok": False, "error": "not found"})
-                        continue
-                    if _is_postgres():
-                        columns = [desc[0] for desc in cur.description]
-                        news = dict(zip(columns, row))
-                    else:
-                        news = dict(row)
-                    title = news.get("title", "")
-                    text = news.get("plain_text", "") or news.get("description", "")
-                    result = rewrite_news(title, text, style, language)
-                    if not result:
-                        results.append({"news_id": nid, "ok": False, "error": "LLM failed"})
-                        continue
-                    # Save as article
-                    aid = str(uuid.uuid4())[:12]
-                    now = datetime.now(timezone.utc).isoformat()
-                    tags = json.dumps(result.get("tags", []), ensure_ascii=False)
-                    cur.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
-                        style, language, original_title, original_text, source_url, status, created_at, updated_at)
-                        VALUES ({','.join([ph]*15)})""",
-                        (aid, nid, result.get("title", ""), result.get("text", ""),
-                         result.get("seo_title", ""), result.get("seo_description", ""), tags,
-                         style, language, title, text[:5000],
-                         news.get("url", ""), "draft", now, now))
-                    if not _is_postgres():
-                        conn.commit()
-                    results.append({"news_id": nid, "ok": True, "article_id": aid, "title": result.get("title", "")})
-                except Exception as e:
-                    logger.warning("Batch rewrite error for %s: %s", nid, e)
-                    results.append({"news_id": nid, "ok": False, "error": str(e)})
-
-            ok_count = sum(1 for r in results if r.get("ok"))
-            self._json({"status": "ok", "total": len(news_ids), "success": ok_count,
-                         "failed": len(news_ids) - ok_count, "results": results})
-
-        finally:
-            cur.close()
+        from api.articles import batch_rewrite
+        self._json(batch_rewrite(body))
     # ---- Analytics methods ----
 
     def _get_analytics(self):
@@ -2807,439 +2723,45 @@ async function login() {
     # ---- Queue methods ----
 
     def _get_queue(self):
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            q = "SELECT * FROM task_queue ORDER BY created_at DESC LIMIT 200"
-            cur.execute(q)
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-            else:
-                rows = [dict(row) for row in cur.fetchall()]
-            return {"status": "ok", "tasks": rows}
+        from api.queue import get_queue
+        return get_queue()
 
-        finally:
-            cur.close()
     def _cancel_queue_task(self, body):
-        task_id = body.get("task_id")
-        if not task_id:
-            self._json({"status": "error", "message": "task_id required"})
-            return
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
-            cur.execute(f"UPDATE task_queue SET status = 'cancelled', updated_at = {ph} WHERE id = {ph} AND status = 'pending'", (now, task_id))
-            if not _is_postgres():
-                conn.commit()
-            self._json({"status": "ok"})
+        from api.queue import cancel_queue_task
+        self._json(cancel_queue_task(body))
 
-        finally:
-            cur.close()
     def _cancel_all_queue(self, body):
-        task_type = body.get("task_type", "")
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
-            if task_type:
-                cur.execute(f"UPDATE task_queue SET status = 'cancelled', updated_at = {ph} WHERE status = 'pending' AND task_type = {ph}", (now, task_type))
-            else:
-                cur.execute(f"UPDATE task_queue SET status = 'cancelled', updated_at = {ph} WHERE status = 'pending'", (now,))
-            if not _is_postgres():
-                conn.commit()
-            self._json({"status": "ok"})
+        from api.queue import cancel_all_queue
+        self._json(cancel_all_queue(body))
 
-        finally:
-            cur.close()
     def _clear_done_queue(self, body):
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute("DELETE FROM task_queue WHERE status IN ('done', 'cancelled', 'skipped', 'error')")
-            if not _is_postgres():
-                conn.commit()
-            self._json({"status": "ok"})
+        from api.queue import clear_done_queue
+        self._json(clear_done_queue(body))
 
-        finally:
-            cur.close()
     def _retry_queue_tasks(self, body):
-        """Повторяет выбранные задачи из очереди (error → pending)."""
-        task_ids = body.get("task_ids", [])
-        if not task_ids:
-            self._json({"status": "error", "message": "task_ids required"})
-            return
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            from datetime import datetime, timezone
-            now = datetime.now(timezone.utc).isoformat()
-            count = 0
-            for tid in task_ids:
-                cur.execute(f"UPDATE task_queue SET status = 'pending', result = '', updated_at = {ph} WHERE id = {ph} AND status IN ('error', 'cancelled', 'skipped', 'done')", (now, tid))
-                count += cur.rowcount if hasattr(cur, 'rowcount') else 1
-            if not _is_postgres():
-                conn.commit()
-
-            # Re-run pending tasks in background
-            cur.execute("SELECT id, task_type, news_id, news_title, style FROM task_queue WHERE status = 'pending' ORDER BY created_at")
-            if _is_postgres():
-                cols = [d[0] for d in cur.description]
-                pending = [dict(zip(cols, r)) for r in cur.fetchall()]
-            else:
-                pending = [dict(r) for r in cur.fetchall()]
-
-            if pending:
-                import threading
-                no_llm_tasks = [t for t in pending if t["task_type"] == "no_llm"]
-                full_auto_tasks = [t for t in pending if t["task_type"] == "full_auto"]
-
-                if no_llm_tasks:
-                    nids = [t["news_id"] for t in no_llm_tasks]
-                    tids = [t["id"] for t in no_llm_tasks]
-                    from scheduler import run_no_llm_pipeline
-                    threading.Thread(target=run_no_llm_pipeline, args=(nids, tids), daemon=True).start()
-                if full_auto_tasks:
-                    nids = [t["news_id"] for t in full_auto_tasks]
-                    tids = [t["id"] for t in full_auto_tasks]
-                    from scheduler import run_full_auto_pipeline
-                    threading.Thread(target=run_full_auto_pipeline, args=(nids, tids), daemon=True).start()
-
-            self._json({"status": "ok", "retried": count})
-        finally:
-            cur.close()
+        from api.queue import retry_queue_tasks
+        self._json(retry_queue_tasks(body))
 
     def _get_viral_triggers(self):
-        """Возвращает все триггеры виральности (дефолтные + кастомные из БД)."""
-        from checks.viral_score import VIRAL_TRIGGERS
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            # Load DB overrides
-            db_triggers = {}
-            try:
-                cur.execute("SELECT trigger_id, label, weight, keywords, is_active, is_custom FROM viral_triggers_config")
-                for row in cur.fetchall():
-                    if _is_postgres():
-                        tid, label, weight, kw_json, active, custom = row
-                    else:
-                        tid, label, weight, kw_json, active, custom = row["trigger_id"], row["label"], row["weight"], row["keywords"], row["is_active"], row["is_custom"]
-                    import json as _j
-                    kws = _j.loads(kw_json) if isinstance(kw_json, str) else (kw_json or [])
-                    db_triggers[tid] = {"label": label, "weight": weight, "keywords": kws, "is_active": bool(active), "is_custom": bool(custom)}
-            except Exception:
-                pass
-
-            result = []
-            # Default triggers
-            for tid, tdata in VIRAL_TRIGGERS.items():
-                if tid in db_triggers:
-                    dt = db_triggers[tid]
-                    result.append({"id": tid, "label": dt["label"], "weight": dt["weight"], "keywords": dt["keywords"], "is_active": dt["is_active"], "is_custom": False, "modified": True})
-                else:
-                    result.append({"id": tid, "label": tdata["label"], "weight": tdata["weight"], "keywords": tdata["keywords"], "is_active": True, "is_custom": False, "modified": False})
-
-            # Custom-only triggers (not in defaults)
-            for tid, dt in db_triggers.items():
-                if tid not in VIRAL_TRIGGERS:
-                    result.append({"id": tid, "label": dt["label"], "weight": dt["weight"], "keywords": dt["keywords"], "is_active": dt["is_active"], "is_custom": True, "modified": False})
-
-            result.sort(key=lambda x: (-x["weight"], x["label"]))
-            return {"triggers": result, "total": len(result)}
-        finally:
-            cur.close()
+        from api.viral import get_viral_triggers
+        return get_viral_triggers()
 
     def _save_viral_trigger(self, body):
-        """Сохраняет/обновляет триггер виральности."""
-        trigger_id = body.get("trigger_id", "").strip()
-        label = body.get("label", "").strip()
-        weight = int(body.get("weight", 0))
-        keywords = body.get("keywords", [])
-        is_active = bool(body.get("is_active", True))
-        is_custom = bool(body.get("is_custom", False))
-
-        if not trigger_id or not label:
-            self._json({"status": "error", "message": "trigger_id and label required"})
-            return
-
-        if isinstance(keywords, str):
-            keywords = [k.strip() for k in keywords.split(",") if k.strip()]
-
-        import json as _j
-        from datetime import datetime, timezone
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            now = datetime.now(timezone.utc).isoformat()
-            kw_json = _j.dumps(keywords, ensure_ascii=False)
-
-            if _is_postgres():
-                cur.execute(f"""
-                    INSERT INTO viral_triggers_config (trigger_id, label, weight, keywords, is_active, is_custom, updated_at)
-                    VALUES ({','.join([ph]*7)})
-                    ON CONFLICT (trigger_id) DO UPDATE SET label={ph}, weight={ph}, keywords={ph}, is_active={ph}, updated_at={ph}
-                """, (trigger_id, label, weight, kw_json, 1 if is_active else 0, 1 if is_custom else 0, now,
-                      label, weight, kw_json, 1 if is_active else 0, now))
-            else:
-                cur.execute(f"INSERT OR REPLACE INTO viral_triggers_config (trigger_id, label, weight, keywords, is_active, is_custom, updated_at) VALUES ({','.join([ph]*7)})",
-                            (trigger_id, label, weight, kw_json, 1 if is_active else 0, 1 if is_custom else 0, now))
-                conn.commit()
-
-            # Rebuild index
-            from checks.viral_score import reload_viral_triggers
-            reload_viral_triggers()
-
-            self._json({"status": "ok", "trigger_id": trigger_id})
-        finally:
-            cur.close()
+        from api.viral import save_viral_trigger
+        self._json(save_viral_trigger(body))
 
     def _delete_viral_trigger(self, body):
-        """Удаляет кастомный триггер или сбрасывает изменённый дефолтный."""
-        trigger_id = body.get("trigger_id", "")
-        if not trigger_id:
-            self._json({"status": "error", "message": "trigger_id required"})
-            return
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"DELETE FROM viral_triggers_config WHERE trigger_id = {ph}", (trigger_id,))
-            if not _is_postgres():
-                conn.commit()
-            from checks.viral_score import reload_viral_triggers
-            reload_viral_triggers()
-            self._json({"status": "ok"})
-        finally:
-            cur.close()
+        from api.viral import delete_viral_trigger
+        self._json(delete_viral_trigger(body))
 
     def _queue_batch_rewrite(self, body):
-        """Ставит новости в очередь на переписку и запускает обработку в фоне."""
-        news_ids = body.get("news_ids", [])
-        style = body.get("style", "news")
-        language = body.get("language", "русский")
-        if not news_ids:
-            self._json({"status": "error", "message": "news_ids required"})
-            return
+        from api.queue import queue_batch_rewrite
+        self._json(queue_batch_rewrite(body))
 
-        import uuid
-        from datetime import datetime, timezone
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            now = datetime.now(timezone.utc).isoformat()
-            created = []
-
-            for nid in news_ids:
-                cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
-                row = cur.fetchone()
-                title = ""
-                if row:
-                    title = row[0] if _is_postgres() else row["title"]
-                tid = str(uuid.uuid4())[:12]
-                cur.execute(f"""INSERT INTO task_queue (id, task_type, news_id, news_title, style, status, created_at, updated_at)
-                    VALUES ({','.join([ph]*8)})""",
-                    (tid, "rewrite", nid, title[:200], style, "pending", now, now))
-                created.append(tid)
-
-            if not _is_postgres():
-                conn.commit()
-
-            # Process in background thread
-            def _process_rewrite_queue():
-                import json as _json
-                from apis.llm import rewrite_news
-                conn2 = get_connection()
-                cur2 = conn2.cursor()
-                try:
-                    for tid in created:
-                        cur2.execute(f"SELECT * FROM task_queue WHERE id = {ph}", (tid,))
-                        if _is_postgres():
-                            cols = [d[0] for d in cur2.description]
-                            task = dict(zip(cols, cur2.fetchone()))
-                        else:
-                            task = dict(cur2.fetchone())
-                        if task["status"] != "pending":
-                            continue
-                        nid = task["news_id"]
-                        _now = datetime.now(timezone.utc).isoformat()
-                        cur2.execute(f"UPDATE task_queue SET status = 'processing', updated_at = {ph} WHERE id = {ph}", (_now, tid))
-                        if not _is_postgres():
-                            conn2.commit()
-                        try:
-                            cur2.execute(f"SELECT id, title, plain_text, description, url, source FROM news WHERE id = {ph}", (nid,))
-                            row = cur2.fetchone()
-                            if not row:
-                                raise Exception("news not found")
-                            if _is_postgres():
-                                cols = [d[0] for d in cur2.description]
-                                news = dict(zip(cols, row))
-                            else:
-                                news = dict(row)
-                            ntitle = news.get("title", "")
-                            ntext = news.get("plain_text", "") or news.get("description", "")
-                            result = rewrite_news(ntitle, ntext, style, language)
-                            if not result:
-                                raise Exception("LLM failed")
-                            aid = str(uuid.uuid4())[:12]
-                            tags = _json.dumps(result.get("tags", []), ensure_ascii=False)
-                            cur2.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
-                                style, language, original_title, original_text, source_url, status, created_at, updated_at)
-                                VALUES ({','.join([ph]*15)})""",
-                                (aid, nid, result.get("title", ""), result.get("text", ""),
-                                 result.get("seo_title", ""), result.get("seo_description", ""), tags,
-                                 style, language, ntitle, ntext[:5000],
-                                 news.get("url", ""), "draft", _now, _now))
-                            if not _is_postgres():
-                                conn2.commit()
-
-                            # Export to Sheets/Ready
-                            try:
-                                from storage.sheets import write_ready_row
-                                # Fetch full news + analysis for Sheets
-                                cur2.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
-                                if _is_postgres():
-                                    nc = [d[0] for d in cur2.description]
-                                    full_news = dict(zip(nc, cur2.fetchone()))
-                                else:
-                                    full_news = dict(cur2.fetchone())
-                                cur2.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (nid,))
-                                arow = cur2.fetchone()
-                                analysis = None
-                                if arow:
-                                    if _is_postgres():
-                                        ac = [d[0] for d in cur2.description]
-                                        analysis = dict(zip(ac, arow))
-                                    else:
-                                        analysis = dict(arow)
-                                write_ready_row(full_news, analysis, result)
-                            except Exception as sheets_err:
-                                logger.warning("Sheets Ready export failed for %s: %s", nid, sheets_err)
-
-                            _now2 = datetime.now(timezone.utc).isoformat()
-                            res_data = _json.dumps({"article_id": aid, "title": result.get("title", "")}, ensure_ascii=False)
-                            cur2.execute(f"UPDATE task_queue SET status = 'done', result = {ph}, updated_at = {ph} WHERE id = {ph}", (res_data, _now2, tid))
-                            if not _is_postgres():
-                                conn2.commit()
-                        except Exception as e:
-                            logger.warning("Queue rewrite error %s: %s", tid, e)
-                            _now2 = datetime.now(timezone.utc).isoformat()
-                            cur2.execute(f"UPDATE task_queue SET status = 'error', result = {ph}, updated_at = {ph} WHERE id = {ph}", (str(e), _now2, tid))
-                            if not _is_postgres():
-                                conn2.commit()
-
-                finally:
-                    cur2.close()
-            t = threading.Thread(target=_process_rewrite_queue, daemon=True)
-            t.start()
-            self._json({"status": "ok", "queued": len(created), "task_ids": created})
-
-        finally:
-            cur.close()
     def _queue_sheets_export(self, body):
-        """Ставит новости в очередь на экспорт в Sheets и запускает обработку в фоне."""
-        news_ids = body.get("news_ids", [])
-        if not news_ids:
-            self._json({"status": "error", "message": "news_ids required"})
-            return
+        from api.queue import queue_sheets_export
+        self._json(queue_sheets_export(body))
 
-        import uuid
-        from datetime import datetime, timezone
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            now = datetime.now(timezone.utc).isoformat()
-            created = []
-
-            for nid in news_ids:
-                cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
-                row = cur.fetchone()
-                title = ""
-                if row:
-                    title = row[0] if _is_postgres() else row["title"]
-                tid = str(uuid.uuid4())[:12]
-                cur.execute(f"""INSERT INTO task_queue (id, task_type, news_id, news_title, style, status, created_at, updated_at)
-                    VALUES ({','.join([ph]*8)})""",
-                    (tid, "sheets", nid, title[:200], "", "pending", now, now))
-                created.append(tid)
-
-            if not _is_postgres():
-                conn.commit()
-
-            # Process in background
-            def _process_sheets_queue():
-                import json as _json
-                from storage.sheets import write_news_row
-                conn2 = get_connection()
-                cur2 = conn2.cursor()
-                try:
-                    for tid in created:
-                        cur2.execute(f"SELECT * FROM task_queue WHERE id = {ph}", (tid,))
-                        if _is_postgres():
-                            cols = [d[0] for d in cur2.description]
-                            task = dict(zip(cols, cur2.fetchone()))
-                        else:
-                            task = dict(cur2.fetchone())
-                        if task["status"] != "pending":
-                            continue
-                        nid = task["news_id"]
-                        _now = datetime.now(timezone.utc).isoformat()
-                        cur2.execute(f"UPDATE task_queue SET status = 'processing', updated_at = {ph} WHERE id = {ph}", (_now, tid))
-                        if not _is_postgres():
-                            conn2.commit()
-                        try:
-                            cur2.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
-                            row = cur2.fetchone()
-                            if not row:
-                                raise Exception("news not found")
-                            if _is_postgres():
-                                cols = [d[0] for d in cur2.description]
-                                news = dict(zip(cols, row))
-                            else:
-                                news = dict(row)
-                            cur2.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (nid,))
-                            arow = cur2.fetchone()
-                            if arow:
-                                if _is_postgres():
-                                    cols = [d[0] for d in cur2.description]
-                                    analysis = dict(zip(cols, arow))
-                                else:
-                                    analysis = dict(arow)
-                            else:
-                                analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
-                                           "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
-                            sheet_row = write_news_row(news, analysis)
-                            _now2 = datetime.now(timezone.utc).isoformat()
-                            if sheet_row and sheet_row > 0:
-                                res_data = _json.dumps({"row": sheet_row}, ensure_ascii=False)
-                                cur2.execute(f"UPDATE task_queue SET status = 'done', result = {ph}, updated_at = {ph} WHERE id = {ph}", (res_data, _now2, tid))
-                            elif sheet_row == -1:
-                                cur2.execute(f"UPDATE task_queue SET status = 'skipped', result = 'duplicate', updated_at = {ph} WHERE id = {ph}", (_now2, tid))
-                            else:
-                                cur2.execute(f"UPDATE task_queue SET status = 'error', result = 'no row', updated_at = {ph} WHERE id = {ph}", (_now2, tid))
-                            if not _is_postgres():
-                                conn2.commit()
-                        except Exception as e:
-                            logger.warning("Queue sheets error %s: %s", tid, e)
-                            _now2 = datetime.now(timezone.utc).isoformat()
-                            cur2.execute(f"UPDATE task_queue SET status = 'error', result = {ph}, updated_at = {ph} WHERE id = {ph}", (str(e), _now2, tid))
-                            if not _is_postgres():
-                                conn2.commit()
-
-                finally:
-                    cur2.close()
-            t = threading.Thread(target=_process_sheets_queue, daemon=True)
-            t.start()
-            self._json({"status": "ok", "queued": len(created), "task_ids": created})
-
-        finally:
-            cur.close()
     def _serve_docx_bulk(self, article_ids):
         """Генерирует ZIP с несколькими DOCX файлами."""
         import io
@@ -3334,219 +2856,29 @@ async function login() {
             cur.close()
     # --- Articles ---
     def _get_articles(self):
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute("SELECT * FROM articles ORDER BY updated_at DESC")
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                return [dict(zip(columns, row)) for row in cur.fetchall()]
-            return [dict(row) for row in cur.fetchall()]
-
-        finally:
-            cur.close()
+        from api.articles import get_articles
+        return get_articles()
     def _save_article(self, body):
-        import uuid
-        from datetime import datetime, timezone
-        aid = str(uuid.uuid4())[:12]
-        now = datetime.now(timezone.utc).isoformat()
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            import json
-            tags = json.dumps(body.get("tags", []), ensure_ascii=False)
-            cur.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
-                style, language, original_title, original_text, source_url, status, created_at, updated_at)
-                VALUES ({','.join([ph]*15)})""",
-                (aid, body.get("news_id", ""), body.get("title", ""), body.get("text", ""),
-                 body.get("seo_title", ""), body.get("seo_description", ""), tags,
-                 body.get("style", ""), body.get("language", "русский"),
-                 body.get("original_title", ""), body.get("original_text", ""),
-                 body.get("source_url", ""), "draft", now, now))
-            if not _is_postgres():
-                conn.commit()
-            self._json({"status": "ok", "id": aid})
-
-        finally:
-            cur.close()
+        from api.articles import save_article
+        self._json(save_article(body))
     def _update_article(self, body):
-        from datetime import datetime, timezone
-        aid = body.get("id")
-        if not aid:
-            self._json({"status": "error", "message": "id required"})
-            return
-
-        # Save version snapshot before update (Phase 2)
-        try:
-            self._save_article_version(aid, body, change_type="manual",
-                                        changed_by=self._get_session_user() or "admin")
-        except Exception:
-            pass
-
-        now = datetime.now(timezone.utc).isoformat()
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            import json
-            tags = json.dumps(body.get("tags", []), ensure_ascii=False)
-            cur.execute(f"""UPDATE articles SET title={ph}, text={ph}, seo_title={ph},
-                seo_description={ph}, tags={ph}, status={ph}, updated_at={ph} WHERE id={ph}""",
-                (body.get("title", ""), body.get("text", ""), body.get("seo_title", ""),
-                 body.get("seo_description", ""), tags, body.get("status", "draft"), now, aid))
-            if not _is_postgres():
-                conn.commit()
-            self._json({"status": "ok"})
-
-        finally:
-            cur.close()
+        from api.articles import update_article
+        self._json(update_article(body, changed_by=self._get_session_user() or "admin"))
     def _delete_article(self, body):
-        aid = body.get("id")
-        if not aid:
-            self._json({"status": "error", "message": "id required"})
-            return
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"DELETE FROM articles WHERE id = {ph}", (aid,))
-            if not _is_postgres():
-                conn.commit()
-            self._json({"status": "ok"})
-
-        finally:
-            cur.close()
+        from api.articles import delete_article
+        self._json(delete_article(body))
     def _article_detail(self, body):
-        aid = body.get("id")
-        if not aid:
-            self._json({"status": "error", "message": "id required"})
-            return
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"SELECT * FROM articles WHERE id = {ph}", (aid,))
-            row = cur.fetchone()
-            if not row:
-                self._json({"status": "error", "message": "Not found"})
-                return
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                article = dict(zip(columns, row))
-            else:
-                article = dict(row)
-            self._json({"status": "ok", "article": article})
-
-        finally:
-            cur.close()
+        from api.articles import article_detail
+        self._json(article_detail(body))
     def _schedule_article(self, body):
-        """Запланировать публикацию статьи на указанное время."""
-        from datetime import datetime, timezone
-        aid = body.get("article_id") or body.get("id")
-        scheduled_at = body.get("scheduled_at")
-        if not aid:
-            self._json({"status": "error", "message": "article_id required"})
-            return
-        if not scheduled_at:
-            self._json({"status": "error", "message": "scheduled_at required"})
-            return
-        now = datetime.now(timezone.utc).isoformat()
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"UPDATE articles SET scheduled_at={ph}, status='scheduled', updated_at={ph} WHERE id={ph}",
-                        (scheduled_at, now, aid))
-            if not _is_postgres():
-                conn.commit()
-            self._json({"status": "ok", "scheduled_at": scheduled_at})
-        finally:
-            cur.close()
+        from api.articles import schedule_article
+        self._json(schedule_article(body))
     def _rewrite_article(self, body):
-        """Переписать существующую статью в другом стиле."""
-        aid = body.get("id")
-        style = body.get("style", "news")
-        language = body.get("language", "русский")
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"SELECT title, text, original_title, original_text FROM articles WHERE id = {ph}", (aid,))
-            row = cur.fetchone()
-            if not row:
-                self._json({"status": "error", "message": "Article not found"})
-                return
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                article = dict(zip(columns, row))
-            else:
-                article = dict(row)
-            # Use original text for rewriting to avoid degradation
-            src_title = article.get("original_title") or article.get("title", "")
-            src_text = article.get("original_text") or article.get("text", "")
-            from apis.llm import rewrite_news
-            result = rewrite_news(src_title, src_text, style, language)
-            if result:
-                self._json({"status": "ok", "result": result})
-            else:
-                self._json({"status": "error", "message": "LLM returned no result"})
-
-        finally:
-            cur.close()
+        from api.articles import rewrite_article
+        self._json(rewrite_article(body))
     def _improve_article(self, body):
-        """Улучшить текст статьи через LLM (грамматика, стиль, SEO)."""
-        aid = body.get("id")
-        action = body.get("action", "improve")  # improve, expand, shorten, fix_grammar, add_seo
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"SELECT title, text FROM articles WHERE id = {ph}", (aid,))
-            row = cur.fetchone()
-            if not row:
-                self._json({"status": "error", "message": "Article not found"})
-                return
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                article = dict(zip(columns, row))
-            else:
-                article = dict(row)
-
-            actions_map = {
-                "improve": "Улучши текст: исправь стилистические ошибки, сделай более профессиональным, сохрани факты.",
-                "expand": "Расширь текст: добавь подробностей, контекста, аналитики. Увеличь объём в 1.5-2 раза, не добавляя вымышленных фактов.",
-                "shorten": "Сократи текст в 2 раза, оставив только ключевые факты. Убери воду и повторы.",
-                "fix_grammar": "Исправь все грамматические, пунктуационные и стилистические ошибки. Не меняй смысл и структуру.",
-                "add_seo": "Добавь SEO-оптимизацию: включи ключевые слова естественно, добавь подзаголовки (## H2), улучши мета-описание.",
-                "make_engaging": "Сделай текст более вовлекающим: добавь интригу, живые примеры, вопросы к читателю. Сохрани факты.",
-            }
-            instruction = actions_map.get(action, actions_map["improve"])
-
-            from apis.llm import _call_llm
-            prompt = f"""Ты — профессиональный редактор игровых новостей.
-    
-    Задача: {instruction}
-    
-    Заголовок: {article['title']}
-    Текст: {article['text'][:4000]}
-    
-    Верни строго JSON (без markdown):
-    {{
-      "title": "обновлённый заголовок",
-      "text": "обновлённый текст",
-      "seo_title": "SEO title до 60 символов",
-      "seo_description": "meta description до 155 символов",
-      "changes_summary": "что было изменено (1-2 предложения)"
-    }}"""
-            result = _call_llm(prompt)
-            if result:
-                self._json({"status": "ok", "result": result})
-            else:
-                self._json({"status": "error", "message": "LLM returned no result"})
-
-        finally:
-            cur.close()
+        from api.articles import improve_article
+        self._json(improve_article(body))
     def _serve_docx(self, article_id):
         """Генерация и отдача DOCX файла."""
         conn = get_connection()
@@ -3664,174 +2996,10 @@ async function login() {
     # --- Logs, Cache, Rate, Translate, AI ---
 
     def _get_viral(self):
-        """Анализ виральности: прогоняет все новости через viral_score + sentiment + momentum."""
-        from checks.viral_score import viral_score, VIRAL_TRIGGERS, get_calendar_boost
-        from checks.sentiment import analyze_sentiment
-        from checks.tags import auto_tag
-        from apis.cache import cache_get, cache_set, cache_key
-
+        from api.viral import get_viral
         qs = parse_qs(urlparse(self.path).query)
-        limit = int(qs.get("limit", [200])[0])
-        level_filter = qs.get("level", [None])[0]
-        category_filter = qs.get("category", [None])[0]
-        sentiment_filter = qs.get("sentiment", [None])[0]
-        source_filter = qs.get("source", [None])[0]
-        date_from = qs.get("date_from", [None])[0]
-        date_to = qs.get("date_to", [None])[0]
-        trigger_filter = qs.get("trigger", [None])[0]
-        min_score = int(qs.get("min_score", [0])[0])
+        return get_viral(qs)
 
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-
-            conditions = []
-            params = []
-            if source_filter:
-                conditions.append(f"n.source = {ph}")
-                params.append(source_filter)
-            if date_from:
-                conditions.append(f"n.parsed_at >= {ph}")
-                params.append(date_from)
-            if date_to:
-                conditions.append(f"n.parsed_at <= {ph}")
-                params.append(date_to + "T23:59:59")
-            where = "WHERE " + " AND ".join(conditions) if conditions else ""
-
-            cur.execute(f"""
-                SELECT n.id, n.source, n.title, n.url, n.description, n.plain_text,
-                       n.published_at, n.parsed_at, n.status
-                FROM news n {where}
-                ORDER BY n.parsed_at DESC LIMIT {ph}
-            """, params + [limit])
-
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-            else:
-                rows = [dict(row) for row in cur.fetchall()]
-
-            items = []
-            stats = {"total": 0, "high": 0, "medium": 0, "low": 0, "none": 0}
-            trigger_counts = {}
-            category_counts = {}
-            sentiment_counts = {"positive": 0, "negative": 0, "neutral": 0}
-            source_scores = {}
-
-            # Category mapping from trigger_id prefix
-            CATEGORY_MAP = {
-                "scandal": "Скандалы", "leak": "Утечки", "shadow": "Shadow Drops",
-                "bad": "Плохие релизы", "ai": "AI", "major_event": "Ивенты",
-                "event": "Ивенты", "money": "Деньги", "culture": "Культура",
-                "person": "Персоны", "speed": "Скорость",
-                "sequel": "Базовые", "free_content": "Базовые", "delay": "Базовые",
-                "canceled": "Базовые", "award": "Базовые", "next_gen": "Базовые",
-                "big_update": "Базовые", "release_date": "Базовые",
-                "trailer": "Базовые", "record": "Базовые", "digest": "Базовые",
-            }
-
-            for row in rows:
-                ck = cache_key("viral_tab", row["id"])
-                cached = cache_get(ck)
-                if cached:
-                    vr = cached["viral"]
-                    sent = cached["sentiment"]
-                    tags = cached["tags"]
-                else:
-                    vr = viral_score(row)
-                    sent = analyze_sentiment(row)
-                    tags = auto_tag(row)
-                    cache_set(ck, {"viral": vr, "sentiment": sent, "tags": tags}, ttl=3600)
-
-                # Determine categories of triggers
-                trigger_categories = set()
-                for t in vr["triggers"]:
-                    tid = t["id"]
-                    prefix = tid.split("_")[0]
-                    cat = CATEGORY_MAP.get(tid, CATEGORY_MAP.get(prefix, "Прочее"))
-                    trigger_categories.add(cat)
-
-                # Apply filters
-                if level_filter and vr["level"] != level_filter:
-                    continue
-                if min_score and vr["score"] < min_score:
-                    continue
-                if sentiment_filter and sent["label"] != sentiment_filter:
-                    continue
-                if trigger_filter:
-                    if not any(t["id"] == trigger_filter for t in vr["triggers"]):
-                        continue
-                if category_filter:
-                    if category_filter not in trigger_categories:
-                        continue
-
-                item = {
-                    "id": row["id"],
-                    "source": row["source"],
-                    "title": row["title"],
-                    "url": row["url"],
-                    "published_at": row["published_at"],
-                    "parsed_at": row["parsed_at"],
-                    "status": row["status"],
-                    "viral_score": vr["score"],
-                    "viral_level": vr["level"],
-                    "triggers": vr["triggers"],
-                    "sentiment": sent["label"],
-                    "sentiment_score": sent["score"],
-                    "tags": [{"id": t["id"], "label": t["label"]} for t in tags[:3]],
-                }
-                items.append(item)
-
-                # Aggregate stats
-                stats["total"] += 1
-                stats[vr["level"]] = stats.get(vr["level"], 0) + 1
-                sentiment_counts[sent["label"]] = sentiment_counts.get(sent["label"], 0) + 1
-                for t in vr["triggers"]:
-                    trigger_counts[t["label"]] = trigger_counts.get(t["label"], 0) + 1
-                    prefix = t["id"].split("_")[0]
-                    cat = CATEGORY_MAP.get(t["id"], CATEGORY_MAP.get(prefix, "Прочее"))
-                    category_counts[cat] = category_counts.get(cat, 0) + 1
-                src = row["source"]
-                if src not in source_scores:
-                    source_scores[src] = {"total": 0, "sum": 0}
-                source_scores[src]["total"] += 1
-                source_scores[src]["sum"] += vr["score"]
-
-            # Sort by viral_score desc
-            items.sort(key=lambda x: x["viral_score"], reverse=True)
-
-            # Top triggers sorted
-            top_triggers = sorted(trigger_counts.items(), key=lambda x: x[1], reverse=True)[:20]
-
-            # Top categories sorted
-            top_categories = sorted(category_counts.items(), key=lambda x: x[1], reverse=True)
-
-            # Source avg scores
-            source_avg = []
-            for src, data in source_scores.items():
-                source_avg.append({"source": src, "avg": round(data["sum"] / data["total"], 1), "count": data["total"]})
-            source_avg.sort(key=lambda x: x["avg"], reverse=True)
-
-            # Calendar event
-            cal_boost, cal_event = get_calendar_boost()
-
-            # Available triggers for filter
-            all_triggers = [{"id": k, "label": v["label"], "category": CATEGORY_MAP.get(k, CATEGORY_MAP.get(k.split("_")[0], "Прочее"))} for k, v in VIRAL_TRIGGERS.items()]
-
-            return {
-                "items": items,
-                "stats": stats,
-                "sentiment": sentiment_counts,
-                "top_triggers": top_triggers,
-                "top_categories": top_categories,
-                "source_avg": source_avg[:15],
-                "calendar": {"boost": cal_boost, "event": cal_event},
-                "all_triggers": all_triggers,
-            }
-
-        finally:
-            cur.close()
     def _get_logs(self):
         qs = parse_qs(urlparse(self.path).query)
         limit = int(qs.get("limit", [100])[0])
@@ -3947,144 +3115,20 @@ async function login() {
     # --- Phase 2: Content Versioning & Multi-Output ---
 
     def _get_article_versions(self, body):
-        """Get version history for an article."""
-        article_id = body.get("article_id", "")
-        if not article_id:
-            self._json({"error": "article_id required"}, 400)
-            return
-        conn = get_connection()
-        cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        try:
-            cur.execute(f"""
-                SELECT * FROM article_versions
-                WHERE article_id = {ph}
-                ORDER BY version DESC
-            """, (article_id,))
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                rows = [dict(zip(columns, r)) for r in cur.fetchall()]
-            else:
-                rows = [dict(r) for r in cur.fetchall()]
-            self._json({"versions": rows})
-        except Exception as e:
-            self._json({"versions": [], "error": str(e)})
-        finally:
-            cur.close()
+        from api.articles import get_article_versions
+        self._json(get_article_versions(body))
 
     def _save_article_version(self, article_id, article_data, change_type="manual", changed_by="system"):
-        """Save a version snapshot before modification (internal helper)."""
-        try:
-            from core.feature_flags import is_enabled
-            if not is_enabled("content_versions_v1"):
-                return
-        except Exception:
-            return
-
-        import uuid
-        from datetime import datetime, timezone
-        conn = get_connection()
-        cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        try:
-            # Get current max version
-            cur.execute(f"SELECT COALESCE(MAX(version), 0) FROM article_versions WHERE article_id = {ph}", (article_id,))
-            max_ver = cur.fetchone()[0]
-            now = datetime.now(timezone.utc).isoformat()
-            ver_id = uuid.uuid4().hex[:12]
-
-            import json
-            cur.execute(f"""
-                INSERT INTO article_versions (id, article_id, version, title, text, seo_title, seo_description, tags, change_type, changed_by, created_at)
-                VALUES ({','.join([ph]*11)})
-            """, (ver_id, article_id, max_ver + 1,
-                  article_data.get("title", "")[:500],
-                  article_data.get("text", "")[:5000],
-                  article_data.get("seo_title", "")[:500],
-                  article_data.get("seo_description", "")[:1000],
-                  json.dumps(article_data.get("tags", []), ensure_ascii=False),
-                  change_type, changed_by, now))
-            if not _is_postgres():
-                conn.commit()
-        except Exception as e:
-            logger.debug("Failed to save article version: %s", e)
-        finally:
-            cur.close()
+        from api.articles import save_article_version
+        save_article_version(article_id, article_data, change_type=change_type, changed_by=changed_by)
 
     def _generate_multi_output(self, body):
-        """Generate multiple output formats from one article."""
-        article_id = body.get("article_id", "")
-        formats = body.get("formats", ["social", "short"])
-        if not article_id:
-            self._json({"error": "article_id required"}, 400)
-            return
-
-        conn = get_connection()
-        cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        try:
-            cur.execute(f"SELECT title, text FROM articles WHERE id = {ph}", (article_id,))
-            row = cur.fetchone()
-            if not row:
-                self._json({"error": "article not found"}, 404)
-                return
-            if _is_postgres():
-                title, text = row[0], row[1]
-            else:
-                title, text = row["title"], row["text"]
-
-            from apis.llm import rewrite_news
-            results = {}
-            for fmt in formats[:3]:  # Max 3 formats at once
-                result = rewrite_news(title=title, text=text, style=fmt, language="русский")
-                if result:
-                    results[fmt] = result
-
-            self._json({"article_id": article_id, "outputs": results})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
-        finally:
-            cur.close()
+        from api.articles import generate_multi_output
+        self._json(generate_multi_output(body))
 
     def _regenerate_field(self, body):
-        """Regenerate a single field (title, seo_title, seo_description, tags) via LLM."""
-        article_id = body.get("article_id", "")
-        field = body.get("field", "")
-        if not article_id or field not in ("title", "seo_title", "seo_description", "tags"):
-            self._json({"error": "article_id and valid field required"}, 400)
-            return
-
-        conn = get_connection()
-        cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        try:
-            cur.execute(f"SELECT title, text FROM articles WHERE id = {ph}", (article_id,))
-            row = cur.fetchone()
-            if not row:
-                self._json({"error": "article not found"}, 404)
-                return
-            if _is_postgres():
-                title, text = row[0], row[1]
-            else:
-                title, text = row["title"], row["text"]
-
-            from apis.llm import _call_llm
-            prompts = {
-                "title": f"Придумай новый заголовок для игровой новости. Текст:\n{text[:1500]}\n\nОтветь JSON: {{\"title\": \"новый заголовок\"}}",
-                "seo_title": f"Придумай SEO-заголовок до 60 символов для:\n{title}\n\nОтветь JSON: {{\"seo_title\": \"SEO заголовок\"}}",
-                "seo_description": f"Придумай meta description до 155 символов для:\n{title}\n{text[:500]}\n\nОтветь JSON: {{\"seo_description\": \"описание\"}}",
-                "tags": f"Предложи 5 тегов для игровой новости:\n{title}\n\nОтветь JSON: {{\"tags\": [\"тег1\", \"тег2\", \"тег3\", \"тег4\", \"тег5\"]}}",
-            }
-
-            result = _call_llm(prompts[field])
-            if result and field in result:
-                self._json({"field": field, "value": result[field]})
-            else:
-                self._json({"error": "LLM returned no result"}, 500)
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
-        finally:
-            cur.close()
+        from api.articles import regenerate_field
+        self._json(regenerate_field(body))
 
     # --- Phase 0: Feature Flags & Observability API ---
 
