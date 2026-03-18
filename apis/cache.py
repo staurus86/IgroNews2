@@ -178,7 +178,7 @@ def get_logs(limit: int = 100, level: str = "") -> list[dict]:
         logs = list(_log_buffer)
     if level:
         level_upper = level.upper()
-        logs = [l for l in logs if l["level"] == level_upper]
+        logs = [entry for entry in logs if entry["level"] == level_upper]
     return logs[-limit:]
 
 
