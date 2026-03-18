@@ -933,21 +933,29 @@ def generate_auto_digest():
         logger.error("Auto-digest error: %s", e)
 
 
+PUBLISH_SPACING_MINUTES = 15  # Minimum minutes between auto-publications
+
+
 def publish_scheduled_articles():
-    """Check scheduled articles and publish those whose time has come."""
+    """Check scheduled articles and publish those whose time has come.
+
+    Auto-spacing: if last publication was less than PUBLISH_SPACING_MINUTES ago,
+    postpone remaining articles to maintain a steady feed.
+    """
     try:
         from storage.database import get_connection, _is_postgres
-        from datetime import datetime, timezone
+        from datetime import datetime, timezone, timedelta
 
         conn = get_connection()
         cur = conn.cursor()
         ph = "%s" if _is_postgres() else "?"
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
 
         try:
             cur.execute(
-                f"SELECT id, title FROM articles WHERE status = 'scheduled' AND scheduled_at <= {ph}",
-                (now,)
+                f"SELECT id, title, scheduled_at FROM articles WHERE status = 'scheduled' AND scheduled_at <= {ph} ORDER BY scheduled_at",
+                (now_iso,)
             )
             if _is_postgres():
                 columns = [desc[0] for desc in cur.description]
@@ -958,18 +966,52 @@ def publish_scheduled_articles():
             if not due_articles:
                 return
 
+            # Find last published article time for spacing
+            cur.execute(
+                f"SELECT updated_at FROM articles WHERE status = 'published' ORDER BY updated_at DESC LIMIT 1"
+            )
+            last_row = cur.fetchone()
+            if last_row:
+                last_pub_str = last_row[0] if _is_postgres() else last_row["updated_at"]
+                try:
+                    last_pub = datetime.fromisoformat(last_pub_str.replace("Z", "+00:00"))
+                    if last_pub.tzinfo is None:
+                        last_pub = last_pub.replace(tzinfo=timezone.utc)
+                except (ValueError, TypeError):
+                    last_pub = None
+            else:
+                last_pub = None
+
+            published = 0
             for article in due_articles:
                 aid = article["id"]
+
+                # Auto-spacing: if last publication was too recent, reschedule
+                if last_pub and (now - last_pub).total_seconds() < PUBLISH_SPACING_MINUTES * 60:
+                    next_slot = last_pub + timedelta(minutes=PUBLISH_SPACING_MINUTES)
+                    next_iso = next_slot.isoformat()
+                    cur.execute(
+                        f"UPDATE articles SET scheduled_at = {ph} WHERE id = {ph}",
+                        (next_iso, aid)
+                    )
+                    logger.info("Auto-spacing: postponed %s to %s (+%d min)",
+                                article.get("title", "")[:40], next_iso[:19], PUBLISH_SPACING_MINUTES)
+                    last_pub = next_slot  # Next article will be spaced from this one
+                    continue
+
                 cur.execute(
                     f"UPDATE articles SET status = 'published', updated_at = {ph} WHERE id = {ph}",
-                    (now, aid)
+                    (now_iso, aid)
                 )
                 logger.info("Auto-published scheduled article: %s", article.get("title", "")[:60])
+                last_pub = now
+                published += 1
 
             if not _is_postgres():
                 conn.commit()
 
-            logger.info("Published %d scheduled articles", len(due_articles))
+            if published:
+                logger.info("Published %d scheduled articles", published)
         finally:
             cur.close()
 

@@ -5,21 +5,23 @@ VIRAL_TRIGGERS = {
     # === СКАНДАЛЫ И ДРАМА ===
     "scandal_layoffs": {
         "label": "Layoffs",
-        "weight": 40,
+        "weight": 50,
         "keywords": [
             "уволили", "увольнения", "сокращения", "layoff", "layoffs",
             "закрыли студию", "студия закрыта", "распустили команду",
             "массовые увольнения", "fired", "studio closed", "studio shutdown",
             "job cuts", "redundancies", "team disbanded",
+            "hundreds laid off", "сотни уволены",
         ],
     },
     "scandal_devs_vs_players": {
         "label": "Dev vs Players",
-        "weight": 45,
+        "weight": 55,
         "keywords": [
             "игроки против", "бойкот", "игроки недовольны", "возмущение",
             "петиция", "скандал", "backlash", "outrage", "community angry",
             "boycott", "petition", "controversy", "players furious",
+            "разгневанные фанаты", "массовое недовольство", "community backlash",
         ],
     },
     "scandal_publisher": {
@@ -33,12 +35,14 @@ VIRAL_TRIGGERS = {
     },
     "scandal_ceo_toxic": {
         "label": "Toxic CEO",
-        "weight": 50,
+        "weight": 65,
         "keywords": [
             "ceo заявил", "глава компании раскритиковал", "bobby kotick",
             "бобби котик", "neil druckmann", "нил дракманн", "ceo criticized",
             "ceo slams", "глава студии обвинил", "founder controversy",
             "руководитель против игроков", "ceo backlash",
+            "сатанист", "сатанизм", "культист", "секта", "скандальное заявление",
+            "controversial statement", "шокирующее признание",
         ],
     },
     "scandal_lawsuit": {

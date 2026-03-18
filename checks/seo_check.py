@@ -129,15 +129,14 @@ def analyze_seo(title: str, seo_title: str, seo_description: str, text: str, tag
         checks.append({"name": "Лид (первый абзац)", "status": "fail",
                         "message": "Нет точки в тексте — проверьте структуру"})
 
-    # 9. Subheadings for long articles
-    if wcount > 500:
-        has_headings = bool(re.search(r'(^|\n)#{2,}\s|<h[23][^>]*>', text))
-        if has_headings:
-            checks.append({"name": "Подзаголовки", "status": "pass",
-                            "message": "Найдены подзаголовки (## / h2 / h3)"})
-        else:
-            checks.append({"name": "Подзаголовки", "status": "warn",
-                            "message": "Статья >500 слов без подзаголовков — добавьте ## или <h2>"})
+    # 9. Subheadings — required for all articles (H2 mandatory per editorial policy)
+    has_headings = bool(re.search(r'(^|\n)#{2,}\s|<h[23][^>]*>', text))
+    if has_headings:
+        checks.append({"name": "Подзаголовки (H2)", "status": "pass",
+                        "message": "Найдены подзаголовки (## / h2 / h3)"})
+    else:
+        checks.append({"name": "Подзаголовки (H2)", "status": "fail",
+                        "message": "Нет подзаголовков — обязателен минимум один <h2>"})
 
     # --- SEO 2.0 extended checks ---
 
