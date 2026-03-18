@@ -2,7 +2,7 @@ feedparser==6.0.11
 beautifulsoup4==4.12.3
 requests==2.32.3
 httpx==0.28.1
-openai==1.30.0
+openai==1.82.0
 pytrends==4.9.2
 gspread==6.0.2
 google-auth==2.29.0
