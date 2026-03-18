@@ -288,6 +288,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/simulate_thresholds": lambda: self._simulate_thresholds(body),
             "/api/rescore": lambda: self._rescore_news(body),
             "/api/health/heal": lambda: self._heal_source(body),
+            "/api/storylines/export": lambda: self._export_storylines(body),
         }
         handler = routes.get(path)
         if handler:
@@ -1390,6 +1391,10 @@ async function login() {
     def _simulate_thresholds(self, body):
         from api.dashboard import simulate_thresholds
         self._json(simulate_thresholds(body))
+
+    def _export_storylines(self, body):
+        from api.dashboard import export_storylines_to_sheets
+        self._json(export_storylines_to_sheets())
 
     def _rescore_news(self, body):
         if not self._require_perm("pipeline"):

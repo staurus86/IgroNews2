@@ -1011,6 +1011,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <div>
         <span id="storylines-count" style="color:#8899a6;font-size:0.85em;margin-right:12px"></span>
         <button class="btn btn-sm btn-secondary" onclick="loadStorylines()">Обновить</button>
+        <button class="btn btn-sm btn-success" onclick="exportStorylinesToSheets()" title="Экспорт сюжетов в Google Sheets (вкладка Сюжеты)">&#9776; В Sheets</button>
       </div>
     </div>
     <div id="storylines-list"></div>
@@ -5184,6 +5185,19 @@ async function loadPromptInsights() {
 // ═══════════════════════════════════════════
 // Phase 4: Storylines
 // ═══════════════════════════════════════════
+async function exportStorylinesToSheets() {
+  if (!confirm('Экспортировать текущие сюжеты в Google Sheets (вкладка «Сюжеты»)?\n\nСтарые данные будут заменены.')) return;
+  toast('Экспорт сюжетов в Sheets...');
+  try {
+    const r = await api('/api/storylines/export', {});
+    if (r.status === 'ok') {
+      toast('Экспортировано: ' + r.storylines + ' сюжетов, ' + r.written + ' строк');
+    } else {
+      toast(r.message || 'Ошибка экспорта', true);
+    }
+  } catch(e) { toast('Ошибка: ' + (e.message||e), true); }
+}
+
 async function loadStorylines() {
   const el = document.getElementById('storylines-list');
   const countEl = document.getElementById('storylines-count');

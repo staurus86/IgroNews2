@@ -431,3 +431,17 @@ def simulate_thresholds(body):
         return {"status": "error", "message": str(e), "total": 0}
     finally:
         cur.close()
+
+
+def export_storylines_to_sheets():
+    """Fetch current storylines and export them to Google Sheets 'Сюжеты' tab."""
+    data = get_storylines()
+    storylines = data.get("storylines", [])
+    if not storylines:
+        return {"status": "error", "message": "Нет сюжетов для экспорта (нужно минимум 2 связанные новости)"}
+
+    from storage.sheets import write_storylines
+    result = write_storylines(storylines)
+    result["total_storylines"] = len(storylines)
+    result["total_news"] = data.get("total_news", 0)
+    return result

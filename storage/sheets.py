@@ -244,6 +244,11 @@ HEADERS_NOT_READY = [
     "Headline скор", "Momentum", "URL", "Описание",
 ]
 
+HEADERS_STORYLINES = [
+    "Сюжет", "Фаза", "Кол-во новостей", "Источники", "Ср. скор", "Макс. вирал",
+    "Игры", "Виральные триггеры", "Новость", "Источник новости", "Скор новости", "Дата", "URL",
+]
+
 
 # ─── Public API ──────────────────────────────────────────────────────
 
@@ -549,3 +554,76 @@ def write_not_ready_batch(items: list[tuple[dict, dict]]) -> dict:
     logger.info("NotReady batch complete: %d written, %d skipped, %d errors",
                 written, skipped, errors)
     return {"written": written, "skipped": skipped, "errors": errors}
+
+
+def write_storylines(storylines: list[dict]) -> dict:
+    """Export storylines to 'Сюжеты' tab in Google Sheets.
+
+    Each storyline is expanded: one header row per cluster + one row per member news.
+    Returns {"written": int, "storylines": int}.
+    """
+    tab_name = "Сюжеты"
+    ws = _get_worksheet(tab_name, HEADERS_STORYLINES)
+    if not ws:
+        return {"status": "error", "message": "Sheets не доступен"}
+
+    # Clear old data (keep headers)
+    try:
+        _retry_api(lambda: ws.clear())
+        _retry_api(lambda: ws.insert_row(HEADERS_STORYLINES, index=1, value_input_option="USER_ENTERED"))
+    except Exception as e:
+        logger.error("Storylines: failed to clear tab: %s", e)
+        return {"status": "error", "message": str(e)}
+
+    rows = []
+    phase_labels = {"trending": "Тренд", "developing": "Развивается", "emerging": "Зарождается"}
+
+    for idx, s in enumerate(storylines, 1):
+        cluster_name = f"Сюжет #{idx}"
+        phase = phase_labels.get(s.get("phase", ""), s.get("phase", ""))
+        sources = ", ".join(s.get("sources", []))
+        games = ", ".join(s.get("top_games", []))
+        triggers = ", ".join(s.get("top_triggers", []))
+        count = s.get("count", 0)
+        avg_score = s.get("avg_score", 0)
+        max_viral = s.get("max_viral", 0)
+
+        members = s.get("members", [])
+        if not members:
+            # Storyline without members — single summary row
+            rows.append([
+                cluster_name, phase, count, sources, avg_score, max_viral,
+                games, triggers, "", "", "", "", "",
+            ])
+        else:
+            # First member row includes cluster info
+            m = members[0]
+            rows.append([
+                cluster_name, phase, count, sources, avg_score, max_viral,
+                games, triggers,
+                m.get("title", ""), m.get("source", ""), m.get("total_score", 0),
+                m.get("published_at", "")[:16], f'https://{m.get("source", "").lower().replace(" ", "")}.com',
+            ])
+            # Remaining members — only news columns
+            for m in members[1:]:
+                rows.append([
+                    "", "", "", "", "", "", "", "",
+                    m.get("title", ""), m.get("source", ""), m.get("total_score", 0),
+                    m.get("published_at", "")[:16], "",
+                ])
+
+    # Write in batches
+    written = 0
+    BATCH = 50
+    for start in range(0, len(rows), BATCH):
+        chunk = rows[start:start + BATCH]
+        try:
+            _append_rows_batch(ws, chunk, tab_name)
+            written += len(chunk)
+            if start + BATCH < len(rows):
+                time.sleep(3)
+        except Exception as e:
+            logger.error("Storylines batch write error: %s", e)
+
+    logger.info("Storylines export: %d rows written, %d storylines", written, len(storylines))
+    return {"status": "ok", "written": written, "storylines": len(storylines)}
