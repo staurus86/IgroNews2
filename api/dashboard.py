@@ -440,7 +440,7 @@ def simulate_thresholds(body):
         cur.close()
 
 
-def export_storylines_to_sheets(days: int = 3):
+def export_storylines_to_sheets(days: int = 3, trigger: str = "manual"):
     """Fetch current storylines and export them to Google Sheets 'Сюжеты' tab."""
     data = get_storylines(days=days)
     storylines = data.get("storylines", [])
@@ -451,7 +451,58 @@ def export_storylines_to_sheets(days: int = 3):
     result = write_storylines(storylines)
     result["total_storylines"] = len(storylines)
     result["total_news"] = data.get("total_news", 0)
+
+    # Log export to DB for tracking
+    _log_storylines_export(result, days, trigger)
     return result
+
+
+def _log_storylines_export(result: dict, days: int, trigger: str):
+    """Save export record to decision_trace for history tracking."""
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        ph = "%s" if _is_postgres() else "?"
+        import uuid, json
+        now = dt_mod.now(timezone.utc).isoformat()
+        details = json.dumps({
+            "written": result.get("written", 0),
+            "storylines": result.get("total_storylines", 0),
+            "news": result.get("total_news", 0),
+            "days": days,
+            "status": result.get("status", ""),
+        }, ensure_ascii=False)
+        try:
+            cur.execute(f"""INSERT INTO decision_trace (id, news_id, step, decision, reason, details, correlation_id, created_at)
+                VALUES ({','.join([ph]*8)})""",
+                (str(uuid.uuid4())[:12], "", "storylines_export", result.get("status", "error"),
+                 f"{trigger}: {result.get('total_storylines', 0)} сюжетов, {result.get('written', 0)} строк",
+                 details, trigger, now))
+            if not _is_postgres():
+                conn.commit()
+        finally:
+            cur.close()
+    except Exception as e:
+        logger.debug("Storylines export log failed: %s", e)
+
+
+def get_storylines_export_history(limit: int = 20) -> list[dict]:
+    """Get recent storylines export history from decision_trace."""
+    conn = get_connection()
+    cur = conn.cursor()
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        cur.execute(f"""SELECT id, decision, reason, details, correlation_id as trigger, created_at
+            FROM decision_trace WHERE step = 'storylines_export'
+            ORDER BY created_at DESC LIMIT {ph}""", (limit,))
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            return [dict(zip(columns, r)) for r in cur.fetchall()]
+        return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return []
+    finally:
+        cur.close()
 
 
 def get_storylines_settings() -> dict:

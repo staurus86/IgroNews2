@@ -88,7 +88,7 @@ def start_scheduler():
         if sl_cfg.get("enabled"):
             sl_days = sl_cfg.get("days", 3)
             scheduler.add_job(
-                lambda: export_storylines_to_sheets(days=sl_days),
+                lambda: export_storylines_to_sheets(days=sl_days, trigger="auto"),
                 "cron", hour=sl_cfg.get("hour", 9), minute=sl_cfg.get("minute", 0),
                 id="storylines_auto_export", replace_existing=True,
             )

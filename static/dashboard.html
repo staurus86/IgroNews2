@@ -1050,6 +1050,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <button class="btn btn-sm btn-primary" onclick="saveSlSettings()">Сохранить</button>
         <span id="sl-settings-status" style="color:#8899a6;font-size:0.85em"></span>
       </div>
+      <div id="sl-export-history" style="margin-top:12px;font-size:0.85em;color:#8899a6"></div>
     </div>
     <div id="storylines-list"></div>
   </div>
@@ -5245,6 +5246,21 @@ async function loadSlSettings() {
     document.getElementById('sl-auto-hour').value = r.hour ?? 9;
     document.getElementById('sl-auto-minute').value = r.minute ?? 0;
     document.getElementById('sl-auto-days').value = r.days ?? 3;
+  } catch(e) {}
+  // Load export history
+  try {
+    const history = await api('/api/storylines/history');
+    const el = document.getElementById('sl-export-history');
+    if (!el || !Array.isArray(history) || !history.length) {
+      if (el) el.innerHTML = '<span style="opacity:0.5">Экспортов пока не было</span>';
+      return;
+    }
+    el.innerHTML = '<b>История экспортов:</b><br>' + history.slice(0, 10).map(h => {
+      const d = h.created_at ? new Date(h.created_at).toLocaleString('ru-RU') : '?';
+      const icon = h.decision === 'ok' ? '&#9989;' : '&#10060;';
+      const trigger = h.trigger === 'auto' ? '&#9202; авто' : '&#9997; ручной';
+      return `<div style="padding:2px 0">${icon} ${d} — ${trigger} — ${h.reason || ''}</div>`;
+    }).join('');
   } catch(e) {}
 }
 

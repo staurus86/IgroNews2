@@ -164,6 +164,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/storylines": lambda: self._json(self._get_storylines()),
             "/api/source_health_plus": lambda: self._json(self._get_source_health_plus()),
             "/api/storylines/settings": lambda: self._json(self._get_storylines_settings()),
+            "/api/storylines/history": lambda: self._json(self._get_storylines_history()),
         }
 
         # DOCX download (GET with query param)
@@ -1404,6 +1405,10 @@ async function login() {
     def _get_storylines_settings(self):
         from api.dashboard import get_storylines_settings
         return get_storylines_settings()
+
+    def _get_storylines_history(self):
+        from api.dashboard import get_storylines_export_history
+        return get_storylines_export_history()
 
     def _save_storylines_settings(self, body):
         from api.dashboard import save_storylines_settings
