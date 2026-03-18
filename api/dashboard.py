@@ -461,7 +461,7 @@ def get_storylines_settings() -> dict:
     ph = "%s" if _is_postgres() else "?"
     defaults = {"enabled": False, "hour": 9, "minute": 0, "days": 3}
     try:
-        cur.execute(f"SELECT flag_name, description FROM feature_flags WHERE flag_name = {ph}",
+        cur.execute(f"SELECT flag_id, description FROM feature_flags WHERE flag_id = {ph}",
                     ("storylines_auto_export",))
         row = cur.fetchone()
         if row:
@@ -502,12 +502,12 @@ def save_storylines_settings(body: dict) -> dict:
     ph = "%s" if _is_postgres() else "?"
     try:
         if _is_postgres():
-            cur.execute(f"""INSERT INTO feature_flags (flag_name, enabled, description)
+            cur.execute(f"""INSERT INTO feature_flags (flag_id, enabled, description)
                 VALUES ({ph}, {ph}, {ph})
-                ON CONFLICT (flag_name) DO UPDATE SET enabled = EXCLUDED.enabled, description = EXCLUDED.description""",
+                ON CONFLICT (flag_id) DO UPDATE SET enabled = EXCLUDED.enabled, description = EXCLUDED.description""",
                 ("storylines_auto_export", 1 if enabled else 0, settings_json))
         else:
-            cur.execute(f"INSERT OR REPLACE INTO feature_flags (flag_name, enabled, description) VALUES ({ph}, {ph}, {ph})",
+            cur.execute(f"INSERT OR REPLACE INTO feature_flags (flag_id, enabled, description) VALUES ({ph}, {ph}, {ph})",
                 ("storylines_auto_export", 1 if enabled else 0, settings_json))
             conn.commit()
 
