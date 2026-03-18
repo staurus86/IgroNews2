@@ -261,6 +261,12 @@ class TestPipelineButtonDoubleClick(unittest.TestCase):
     """JS pipeline buttons must be disabled immediately on click."""
 
     def _get_web_source(self):
+        # Dashboard HTML is now in static/dashboard.html
+        html_path = os.path.join(PROJECT_ROOT, "static", "dashboard.html")
+        if os.path.exists(html_path):
+            with open(html_path, "r", encoding="utf-8") as f:
+                return f.read()
+        # Fallback: inline HTML in web.py (legacy)
         web_path = os.path.join(PROJECT_ROOT, "web.py")
         with open(web_path, "r", encoding="utf-8") as f:
             return f.read()
