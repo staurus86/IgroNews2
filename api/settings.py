@@ -1,0 +1,750 @@
+"""Settings and tools API functions extracted from web.py."""
+
+import logging
+
+from storage.database import get_connection, _is_postgres
+
+logger = logging.getLogger(__name__)
+
+
+# --------------- GET endpoints (return dicts) ---------------
+
+def get_sources():
+    import config
+    return config.SOURCES
+
+
+def get_prompts():
+    from apis.llm import PROMPT_TREND_FORECAST, PROMPT_MERGE_ANALYSIS, PROMPT_KEYSO_QUERIES
+    return {
+        "trend_forecast": PROMPT_TREND_FORECAST,
+        "merge_analysis": PROMPT_MERGE_ANALYSIS,
+        "keyso_queries": PROMPT_KEYSO_QUERIES,
+    }
+
+
+def get_settings():
+    import config
+    return {
+        "llm_model": config.LLM_MODEL,
+        "keyso_region": getattr(config, "KEYSO_REGION", "ru"),
+        "regions": config.REGIONS,
+        "sheets_id": config.GOOGLE_SHEETS_ID,
+        "sheets_tab": config.SHEETS_TAB,
+        "openai_key_set": bool(config.OPENAI_API_KEY),
+        "keyso_key_set": bool(config.KEYSO_API_KEY),
+        "google_sa_set": bool(config.GOOGLE_SERVICE_ACCOUNT_JSON),
+        "auto_approve_threshold": getattr(config, "AUTO_APPROVE_THRESHOLD", 70),
+        "auto_rewrite_on_publish_now": getattr(config, "AUTO_REWRITE_ON_PUBLISH_NOW", True),
+        "auto_rewrite_style": getattr(config, "AUTO_REWRITE_STYLE", "news"),
+    }
+
+
+def get_sources_stats():
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT source, COUNT(*) as cnt, MAX(parsed_at) as last_parsed FROM news GROUP BY source ORDER BY cnt DESC")
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            return [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        cur.close()
+
+
+def get_db_info():
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        info = {"type": "PostgreSQL" if _is_postgres() else "SQLite"}
+        cur.execute("SELECT COUNT(*) FROM news")
+        info["total_news"] = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM news_analysis")
+        info["total_analyzed"] = cur.fetchone()[0]
+        for status in ["new", "in_review", "approved", "processed", "rejected", "duplicate"]:
+            ph = "%s" if _is_postgres() else "?"
+            cur.execute(f"SELECT COUNT(*) FROM news WHERE status = {ph}", (status,))
+            info[f"status_{status}"] = cur.fetchone()[0]
+        cur.execute("SELECT MIN(parsed_at), MAX(parsed_at) FROM news")
+        row = cur.fetchone()
+        info["oldest"] = str(row[0]) if row[0] else "-"
+        info["newest"] = str(row[1]) if row[1] else "-"
+        return info
+    finally:
+        cur.close()
+
+
+def get_prompt_versions():
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM prompt_versions ORDER BY prompt_name, version DESC")
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            rows = [dict(row) for row in cur.fetchall()]
+        return {"status": "ok", "versions": rows}
+    finally:
+        cur.close()
+
+
+def get_digests():
+    """Returns last 10 saved digests."""
+    from storage.database import get_digests as _get_digests
+    digests = _get_digests(limit=10)
+    return {"status": "ok", "digests": digests}
+
+
+def get_feature_flags():
+    try:
+        from core.feature_flags import get_all_flags
+        return {"flags": get_all_flags()}
+    except Exception as e:
+        return {"flags": [], "error": str(e)}
+
+
+def get_config_audit():
+    try:
+        from core.observability import get_config_audit
+        return {"audit": get_config_audit(limit=50)}
+    except Exception as e:
+        return {"audit": [], "error": str(e)}
+
+
+def get_logs(query_params=None):
+    """Get logs. query_params is a dict from parse_qs (values are lists)."""
+    if query_params is None:
+        query_params = {}
+    limit = int(query_params.get("limit", [100])[0])
+    level = query_params.get("level", [""])[0]
+    from apis.cache import get_logs
+    return {"logs": get_logs(limit=limit, level=level)}
+
+
+def get_rate_stats():
+    from apis.cache import get_rate_stats
+    return get_rate_stats()
+
+
+def get_cache_stats():
+    from apis.cache import get_cache_stats
+    return get_cache_stats()
+
+
+# --------------- POST endpoints (return dicts) ---------------
+
+def add_source(body):
+    import config
+    source = {
+        "name": body.get("name", ""),
+        "type": body.get("type", "rss"),
+        "url": body.get("url", ""),
+        "interval": int(body.get("interval", 15)),
+    }
+    if body.get("selector"):
+        source["selector"] = body["selector"]
+    config.SOURCES.append(source)
+    return {"status": "ok", "sources": config.SOURCES}
+
+
+def edit_source(body):
+    import config
+    old_name = body.get("old_name", "")
+    for s in config.SOURCES:
+        if s["name"] == old_name:
+            s["name"] = body.get("name", s["name"])
+            s["type"] = body.get("type", s["type"])
+            s["url"] = body.get("url", s["url"])
+            s["interval"] = int(body.get("interval", s["interval"]))
+            if body.get("selector"):
+                s["selector"] = body["selector"]
+            elif "selector" in s and body.get("type") == "rss":
+                del s["selector"]
+            break
+    return {"status": "ok", "sources": config.SOURCES}
+
+
+def delete_source(body):
+    import config
+    name = body.get("name")
+    config.SOURCES[:] = [s for s in config.SOURCES if s["name"] != name]
+    return {"status": "ok", "sources": config.SOURCES}
+
+
+def save_prompts(body):
+    import apis.llm as llm
+    if "trend_forecast" in body:
+        llm.PROMPT_TREND_FORECAST = body["trend_forecast"]
+    if "merge_analysis" in body:
+        llm.PROMPT_MERGE_ANALYSIS = body["merge_analysis"]
+    if "keyso_queries" in body:
+        llm.PROMPT_KEYSO_QUERIES = body["keyso_queries"]
+    return {"status": "ok"}
+
+
+def save_settings(body, user="admin"):
+    """Save settings. Caller must check permissions before calling.
+
+    Args:
+        body: dict with setting values
+        user: username for audit logging
+    """
+    import config
+    changes = []
+    if "llm_model" in body and body["llm_model"] != config.LLM_MODEL:
+        changes.append(("llm_model", config.LLM_MODEL, body["llm_model"]))
+        config.LLM_MODEL = body["llm_model"]
+    if "keyso_region" in body and body["keyso_region"] != config.KEYSO_REGION:
+        changes.append(("keyso_region", config.KEYSO_REGION, body["keyso_region"]))
+        config.KEYSO_REGION = body["keyso_region"]
+    if "sheets_tab" in body and body["sheets_tab"] != config.SHEETS_TAB:
+        changes.append(("sheets_tab", config.SHEETS_TAB, body["sheets_tab"]))
+        config.SHEETS_TAB = body["sheets_tab"]
+    if "auto_approve_threshold" in body:
+        try:
+            new_val = int(body["auto_approve_threshold"])
+            if new_val != config.AUTO_APPROVE_THRESHOLD:
+                changes.append(("auto_approve_threshold", str(config.AUTO_APPROVE_THRESHOLD), str(new_val)))
+                config.AUTO_APPROVE_THRESHOLD = new_val
+        except (ValueError, TypeError):
+            pass
+    if "auto_rewrite_on_publish_now" in body:
+        new_val = bool(body["auto_rewrite_on_publish_now"])
+        if new_val != config.AUTO_REWRITE_ON_PUBLISH_NOW:
+            changes.append(("auto_rewrite_on_publish_now", str(config.AUTO_REWRITE_ON_PUBLISH_NOW), str(new_val)))
+            config.AUTO_REWRITE_ON_PUBLISH_NOW = new_val
+    if "auto_rewrite_style" in body and body["auto_rewrite_style"] != config.AUTO_REWRITE_STYLE:
+        changes.append(("auto_rewrite_style", config.AUTO_REWRITE_STYLE, body["auto_rewrite_style"]))
+        config.AUTO_REWRITE_STYLE = body["auto_rewrite_style"]
+
+    # Audit log config changes
+    for setting_name, old_val, new_val in changes:
+        try:
+            from core.observability import log_config_change
+            log_config_change(setting_name, old_val, new_val, changed_by=user)
+        except Exception:
+            pass
+
+    return {"status": "ok"}
+
+
+def test_llm(body):
+    try:
+        import config
+        from openai import OpenAI
+        import json as _json
+        prompt = body.get("prompt", "Ответь JSON: {\"test\": \"ok\"}")
+        client = OpenAI(api_key=config.OPENAI_API_KEY, base_url=config.OPENAI_BASE_URL)
+        response = client.chat.completions.create(
+            model=config.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+        text = response.choices[0].message.content
+        # Try parse JSON
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = "\n".join(cleaned.split("\n")[1:])
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+        try:
+            parsed = _json.loads(cleaned)
+        except Exception:
+            parsed = None
+        return {"status": "ok", "model": config.LLM_MODEL, "base_url": config.OPENAI_BASE_URL, "raw": text, "result": parsed}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "type": type(e).__name__}
+
+
+def test_keyso(body):
+    try:
+        import config
+        import requests as _req
+        keyword = body.get("keyword", "gta 6")
+        # Raw request for debugging
+        url = f"{config.KEYSO_BASE_URL}/report/simple/keyword_dashboard"
+        params = {"auth-token": config.KEYSO_API_KEY, "base": config.KEYSO_REGION, "keyword": keyword}
+        resp = _req.get(url, params=params, timeout=15)
+        raw = resp.json()
+        return {"status": "ok", "http_code": resp.status_code, "raw_response": raw}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "type": type(e).__name__}
+
+
+def test_sheets(body):
+    try:
+        import config
+        from storage.sheets import _get_client
+        client = _get_client()
+        if not client:
+            return {"status": "error", "message": "Google client init failed. Check GOOGLE_SERVICE_ACCOUNT_JSON"}
+        sheet = client.open_by_key(config.GOOGLE_SHEETS_ID)
+        worksheets = [ws.title for ws in sheet.worksheets()]
+        tab = sheet.worksheet(config.SHEETS_TAB)
+        rows = len(tab.get_all_values())
+        return {"status": "ok", "sheets_id": config.GOOGLE_SHEETS_ID, "tabs": worksheets, "active_tab": config.SHEETS_TAB, "rows": rows}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "type": type(e).__name__}
+
+
+def test_parse(body):
+    url = body.get("url", "")
+    if not url:
+        return {"status": "error", "message": "URL required"}
+    try:
+        from parsers.html_parser import _fetch_article
+        h1, description, plain_text = _fetch_article(url)
+        return {
+            "status": "ok",
+            "h1": h1,
+            "description": description[:500],
+            "plain_text": plain_text[:1000],
+            "text_length": len(plain_text),
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def setup_headers(body):
+    try:
+        from storage.sheets import setup_headers
+        setup_headers()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def reparse_source(body):
+    name = body.get("name")
+    import config
+    source = next((s for s in config.SOURCES if s["name"] == name), None)
+    if not source:
+        return {"status": "error", "message": "Source not found"}
+    try:
+        if source["type"] == "rss":
+            from parsers.rss_parser import parse_rss_source
+            count = parse_rss_source(source)
+        elif source["type"] == "sitemap":
+            from parsers.html_parser import parse_sitemap_source
+            count = parse_sitemap_source(source)
+        else:
+            from parsers.html_parser import parse_html_source
+            count = parse_html_source(source)
+        return {"status": "ok", "new_articles": count}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def reparse_all(body):
+    try:
+        import config
+        from parsers.rss_parser import parse_rss_source
+        from parsers.html_parser import parse_html_source, parse_sitemap_source
+        total = 0
+        for source in config.SOURCES:
+            try:
+                if source["type"] == "rss":
+                    total += parse_rss_source(source)
+                elif source["type"] == "sitemap":
+                    total += parse_sitemap_source(source)
+                else:
+                    total += parse_html_source(source)
+            except Exception as e:
+                logger.error("Reparse %s error: %s", source["name"], e)
+        return {"status": "ok", "new_articles": total}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def heal_source(body):
+    """Diagnostics and auto-healing of a problematic source."""
+    name = body.get("name")
+    if not name:
+        return {"status": "error", "message": "name required"}
+    import config
+    source = next((s for s in config.SOURCES if s["name"] == name), None)
+    if not source:
+        return {"status": "error", "message": "Source not found"}
+
+    steps = []
+    healed = False
+    new_articles = 0
+
+    # Step 1: Reset circuit breaker for this domain
+    from parsers.proxy import _circuit_breaker, _get_domain
+    domain = _get_domain(source["url"])
+    if domain in _circuit_breaker:
+        del _circuit_breaker[domain]
+        steps.append({"action": "circuit_breaker_reset", "status": "ok", "detail": f"Сброшен circuit breaker для {domain}"})
+    else:
+        steps.append({"action": "circuit_breaker_check", "status": "skip", "detail": "Circuit breaker не активен"})
+
+    # Step 2: Test URL accessibility with fresh UA
+    from parsers.proxy import _get_random_ua
+    import requests
+    test_ok = False
+    test_status = 0
+    test_error = ""
+    try:
+        headers = {"User-Agent": _get_random_ua()}
+        resp = requests.get(source["url"], headers=headers, timeout=15, allow_redirects=True)
+        test_status = resp.status_code
+        test_ok = resp.status_code == 200
+        content_len = len(resp.text)
+        steps.append({"action": "url_test", "status": "ok" if test_ok else "fail",
+                      "detail": f"HTTP {test_status}, {content_len} байт" + (", Cloudflare?" if resp.status_code == 403 else "")})
+    except Exception as e:
+        test_error = str(e)
+        steps.append({"action": "url_test", "status": "fail", "detail": f"Ошибка: {test_error[:200]}"})
+
+    # Step 3: Try alternative strategies based on source type
+    if test_ok:
+        # Step 3a: Try reparse with current config
+        try:
+            if source["type"] == "rss":
+                from parsers.rss_parser import parse_rss_source
+                new_articles = parse_rss_source(source)
+            elif source["type"] == "sitemap":
+                from parsers.html_parser import parse_sitemap_source
+                new_articles = parse_sitemap_source(source)
+            else:
+                from parsers.html_parser import parse_html_source
+                new_articles = parse_html_source(source)
+            steps.append({"action": "reparse", "status": "ok", "detail": f"Получено {new_articles} новых статей"})
+            if new_articles > 0:
+                healed = True
+        except Exception as e:
+            steps.append({"action": "reparse", "status": "fail", "detail": str(e)[:200]})
+
+        # Step 3b: If HTML source failed — try alternative selectors
+        if not healed and source["type"] in ("html", "dtf"):
+            alt_selectors = ["article", "div.article", ".news-item", ".post", "a[href*='news']", "a[href*='article']",
+                             ".card", ".feed-item", "h2 a", "h3 a"]
+            original_sel = source.get("selector", "article")
+            for alt_sel in alt_selectors:
+                if alt_sel == original_sel:
+                    continue
+                try:
+                    from bs4 import BeautifulSoup
+                    soup = BeautifulSoup(resp.text, "lxml")
+                    found = soup.select(alt_sel)
+                    links_found = sum(1 for el in found if el.find("a", href=True) or el.name == "a")
+                    if links_found >= 3:
+                        steps.append({"action": "alt_selector", "status": "found",
+                                      "detail": f"Селектор '{alt_sel}' нашёл {links_found} элементов (текущий: '{original_sel}')",
+                                      "selector": alt_sel, "links_count": links_found})
+                        break
+                except Exception:
+                    pass
+            else:
+                steps.append({"action": "alt_selector", "status": "skip", "detail": "Альтернативные селекторы не помогли"})
+
+        # Step 3c: If RSS source got 0 articles — check feed validity
+        if not healed and source["type"] == "rss":
+            try:
+                import feedparser
+                feed = feedparser.parse(resp.content)
+                n_entries = len(feed.entries)
+                is_bozo = feed.bozo
+                if n_entries > 0:
+                    steps.append({"action": "feed_check", "status": "ok",
+                                  "detail": f"RSS валидный: {n_entries} записей" + (" (bozo)" if is_bozo else "")})
+                    # All entries might be existing (already parsed)
+                    if new_articles == 0:
+                        steps.append({"action": "feed_check", "status": "info",
+                                      "detail": "Все записи уже в БД — источник работает, новых нет"})
+                        healed = True
+                else:
+                    steps.append({"action": "feed_check", "status": "fail",
+                                  "detail": f"RSS пустой или невалидный" + (f": {feed.bozo_exception}" if is_bozo else "")})
+                    # Try common alternative RSS URLs
+                    alt_urls = []
+                    base = source["url"].rstrip("/")
+                    if "/feed/" not in base:
+                        alt_urls.append(base + "/feed/")
+                    if "/rss" not in base:
+                        alt_urls.append(base.rsplit("/", 1)[0] + "/rss/")
+                        alt_urls.append(base.rsplit("/", 1)[0] + "/feed.xml")
+                    for alt_url in alt_urls:
+                        try:
+                            alt_resp = requests.get(alt_url, headers=headers, timeout=10)
+                            if alt_resp.status_code == 200:
+                                alt_feed = feedparser.parse(alt_resp.content)
+                                if len(alt_feed.entries) > 0:
+                                    steps.append({"action": "alt_rss_url", "status": "found",
+                                                  "detail": f"Найден рабочий RSS: {alt_url} ({len(alt_feed.entries)} записей)",
+                                                  "url": alt_url, "entries": len(alt_feed.entries)})
+                                    break
+                        except Exception:
+                            pass
+            except Exception as e:
+                steps.append({"action": "feed_check", "status": "fail", "detail": str(e)[:200]})
+    else:
+        # URL not accessible — suggest solutions
+        if test_status == 403:
+            steps.append({"action": "diagnosis", "status": "info", "detail": "403 Forbidden — вероятно Cloudflare/WAF. Рекомендация: прокси или рендер-сервис"})
+        elif test_status == 404:
+            steps.append({"action": "diagnosis", "status": "info", "detail": "404 Not Found — URL изменился. Проверьте актуальный адрес RSS/страницы"})
+        elif test_status == 429:
+            steps.append({"action": "diagnosis", "status": "info", "detail": "429 Too Many Requests — увеличьте интервал парсинга"})
+        elif test_status >= 500:
+            steps.append({"action": "diagnosis", "status": "info", "detail": f"Сервер {test_status} — временная проблема, повторите позже"})
+        elif test_error:
+            if "timeout" in test_error.lower():
+                steps.append({"action": "diagnosis", "status": "info", "detail": "Таймаут — сервер не отвечает. Попробуйте прокси"})
+            elif "ssl" in test_error.lower():
+                steps.append({"action": "diagnosis", "status": "info", "detail": "Ошибка SSL — проблема с сертификатом"})
+            else:
+                steps.append({"action": "diagnosis", "status": "info", "detail": f"Сетевая ошибка: {test_error[:150]}"})
+
+    # Step 4: Recommendation
+    recommendations = []
+    for step in steps:
+        if step["status"] == "found" and step["action"] == "alt_selector":
+            recommendations.append(f"Сменить селектор на '{step['selector']}' ({step['links_count']} элементов)")
+        if step["status"] == "found" and step["action"] == "alt_rss_url":
+            recommendations.append(f"Сменить URL на {step['url']}")
+    if test_status == 403:
+        recommendations.append("Включить прокси-ротацию (PROXY_LIST)")
+        recommendations.append("Увеличить интервал парсинга")
+    if test_status == 429:
+        recommendations.append("Увеличить интервал парсинга до 30+ мин")
+    if not healed and not recommendations:
+        recommendations.append("Попробуйте парсинг вручную позже")
+
+    return {
+        "status": "ok",
+        "healed": healed,
+        "new_articles": new_articles,
+        "steps": steps,
+        "recommendations": recommendations,
+        "source": name,
+    }
+
+
+def save_prompt_version(body):
+    import uuid
+    from datetime import datetime, timezone
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        ph = "%s" if _is_postgres() else "?"
+        name = body.get("prompt_name", "")
+        content = body.get("content", "")
+        notes = body.get("notes", "")
+        if not name or not content:
+            return {"status": "error", "message": "name and content required"}
+        # Get next version
+        cur.execute(f"SELECT MAX(version) as mv FROM prompt_versions WHERE prompt_name = {ph}", (name,))
+        row = cur.fetchone()
+        if _is_postgres():
+            max_v = row[0] if row and row[0] else 0
+        else:
+            max_v = row["mv"] if row and row["mv"] else 0
+        if max_v is None:
+            max_v = 0
+        version = max_v + 1
+        vid = str(uuid.uuid4())[:12]
+        now = datetime.now(timezone.utc).isoformat()
+        cur.execute(f"""INSERT INTO prompt_versions (id, prompt_name, version, content, is_active, created_at, notes)
+            VALUES ({','.join([ph]*7)})""", (vid, name, version, content, 0, now, notes))
+        if not _is_postgres():
+            conn.commit()
+        return {"status": "ok", "id": vid, "version": version}
+    finally:
+        cur.close()
+
+
+def activate_prompt_version(body):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        ph = "%s" if _is_postgres() else "?"
+        vid = body.get("id", "")
+        if not vid:
+            return {"status": "error", "message": "id required"}
+        # Get prompt name and content
+        cur.execute(f"SELECT prompt_name, content FROM prompt_versions WHERE id = {ph}", (vid,))
+        row = cur.fetchone()
+        if not row:
+            return {"status": "error", "message": "not found"}
+        if _is_postgres():
+            name, content = row[0], row[1]
+        else:
+            name, content = row["prompt_name"], row["content"]
+        # Deactivate all for this name
+        cur.execute(f"UPDATE prompt_versions SET is_active = 0 WHERE prompt_name = {ph}", (name,))
+        # Activate this one
+        cur.execute(f"UPDATE prompt_versions SET is_active = 1 WHERE id = {ph}", (vid,))
+        if not _is_postgres():
+            conn.commit()
+        # Apply to live prompts
+        import apis.llm as llm
+        prompt_map = {
+            "trend_forecast": "PROMPT_TREND_FORECAST",
+            "merge_analysis": "PROMPT_MERGE_ANALYSIS",
+            "keyso_queries": "PROMPT_KEYSO_QUERIES",
+            "rewrite": "PROMPT_REWRITE",
+        }
+        attr = prompt_map.get(name)
+        if attr and hasattr(llm, attr):
+            setattr(llm, attr, content)
+            logger.info("Activated prompt version %s for %s", vid, name)
+        return {"status": "ok", "prompt_name": name, "applied": bool(attr)}
+    finally:
+        cur.close()
+
+
+def generate_digest(body):
+    """Generate a digest for the given period."""
+    period = body.get("period", "today")  # today, week
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        ph = "%s" if _is_postgres() else "?"
+        if period == "week":
+            interval = "7 days"
+        else:
+            interval = "1 day"
+        if _is_postgres():
+            cur.execute(f"SELECT id, title, source, url FROM news WHERE status IN ('approved', 'processed') AND parsed_at::timestamptz > (NOW() - INTERVAL '{interval}') ORDER BY parsed_at DESC LIMIT 30")
+            columns = [desc[0] for desc in cur.description]
+            news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            cur.execute(f"SELECT id, title, source, url FROM news WHERE status IN ('approved', 'processed') AND parsed_at > datetime('now', '-{interval}') ORDER BY parsed_at DESC LIMIT 30")
+            news_list = [dict(row) for row in cur.fetchall()]
+
+        if not news_list:
+            return {"status": "ok", "digest": {"title": "Нет данных", "summary": "Нет одобренных новостей за выбранный период.", "top_news": [], "trends": []}, "news_count": 0}
+
+        from apis.llm import _call_llm
+        news_text = "\n".join(f"- [{n['source']}] {n['title']}" for n in news_list)
+        period_label = 'неделю' if period == 'week' else 'день'
+        prompt = f"""Ты — главный редактор крупного игрового портала. Составь профессиональный дайджест «Главное за {period_label}» из новостей ниже.
+
+    ## Новости ({len(news_list)} шт.):
+    {news_text}
+
+    ## Правила:
+    1. title — яркий заголовок дайджеста (напр. «Игровой дайджест: GTA 6, новый патч Elden Ring и скандал вокруг Ubisoft»)
+    2. summary — связный текст на 4-6 предложений, охватывающий самые значимые события, не простое перечисление
+    3. top_news — 3-5 самых важных новостей, одной фразой каждая (не копируй заголовки дословно, перефразируй)
+    4. trends — 2-3 тенденции, которые прослеживаются в потоке новостей (напр. «Рост интереса к ретро-играм», «Волна переносов релизов»)
+    5. Язык: русский
+
+    Ответь строго JSON без markdown:
+    {{
+      "title": "Заголовок дайджеста",
+      "summary": "Связный обзорный текст",
+      "top_news": ["Ключевая новость 1", "Ключевая новость 2", "Ключевая новость 3"],
+      "trends": ["Тенденция 1", "Тенденция 2"]
+    }}"""
+        result = _call_llm(prompt)
+        if result:
+            return {"status": "ok", "digest": result, "news_count": len(news_list)}
+        else:
+            return {"status": "error", "message": "LLM failed"}
+    finally:
+        cur.close()
+
+
+def generate_and_save_digest(body):
+    """Manual digest generation with DB save."""
+    style = body.get("style", "brief")
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        ph = "%s" if _is_postgres() else "?"
+        if _is_postgres():
+            cur.execute("""
+                SELECT n.id, n.title, n.source, n.url,
+                       COALESCE(a.total_score, 0) as total_score
+                FROM news n
+                LEFT JOIN news_analysis a ON a.news_id = n.id
+                WHERE n.status IN ('approved', 'processed', 'in_review', 'ready')
+                  AND n.parsed_at::timestamptz > (NOW() - INTERVAL '24 hours')
+                ORDER BY COALESCE(a.total_score, 0) DESC
+                LIMIT 20
+            """)
+            columns = [desc[0] for desc in cur.description]
+            news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            cur.execute("""
+                SELECT n.id, n.title, n.source, n.url,
+                       COALESCE(a.total_score, 0) as total_score
+                FROM news n
+                LEFT JOIN news_analysis a ON a.news_id = n.id
+                WHERE n.status IN ('approved', 'processed', 'in_review', 'ready')
+                  AND n.parsed_at > datetime('now', '-1 day')
+                ORDER BY COALESCE(a.total_score, 0) DESC
+                LIMIT 20
+            """)
+            news_list = [dict(row) for row in cur.fetchall()]
+
+        if not news_list:
+            return {"status": "ok", "digest": {"title": "Нет данных", "text": "Нет новостей за последние 24 часа.", "news_count": 0}}
+
+        from apis.digest import generate_daily_digest
+        result = generate_daily_digest(news_list, style=style)
+
+        # Save to DB
+        import uuid
+        from datetime import datetime, timezone
+        from storage.database import save_digest
+        digest_id = str(uuid.uuid4())[:12]
+        digest_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        save_digest(
+            digest_id=digest_id,
+            digest_date=digest_date,
+            style=style,
+            title=result.get("title", ""),
+            text=result.get("text", ""),
+            news_count=result.get("news_count", 0),
+        )
+
+        return {"status": "ok", "digest": result}
+    except Exception as e:
+        return {"status": "error", "message": str(e)[:500]}
+    finally:
+        cur.close()
+
+
+def toggle_feature_flag(body, user="admin"):
+    """Toggle a feature flag. Caller must check permissions before calling.
+
+    Args:
+        body: dict with flag_id and enabled
+        user: username for audit logging
+    """
+    flag_id = body.get("flag_id", "")
+    enabled = body.get("enabled", False)
+    if not flag_id:
+        return {"error": "flag_id required"}
+    try:
+        from core.feature_flags import set_flag
+        set_flag(flag_id, bool(enabled), updated_by=user)
+        return {"status": "ok", "flag_id": flag_id, "enabled": enabled}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def get_decision_trace(body):
+    news_id = body.get("news_id", "")
+    if not news_id:
+        return {"error": "news_id required"}
+    try:
+        from core.observability import get_decision_trace
+        trace = get_decision_trace(news_id)
+        return {"news_id": news_id, "trace": trace}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def clear_cache(body):
+    from apis.cache import clear_cache
+    clear_cache()
+    return {"status": "ok"}

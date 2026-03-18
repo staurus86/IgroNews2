@@ -224,18 +224,19 @@ class TestCursorLeakExportProcessed(unittest.TestCase):
 
     def test_cursor_closed_on_exception(self):
         """Verify cur2 is properly wrapped in try/finally."""
-        web_path = os.path.join(PROJECT_ROOT, "web.py")
-        with open(web_path, "r", encoding="utf-8") as f:
+        # Logic moved from web.py to api/news.py
+        news_path = os.path.join(PROJECT_ROOT, "api", "news.py")
+        with open(news_path, "r", encoding="utf-8") as f:
             source = f.read()
 
-        func_start = source.find("def _export_all_processed")
-        self.assertNotEqual(func_start, -1, "_export_all_processed must exist")
+        func_start = source.find("def export_all_processed")
+        self.assertNotEqual(func_start, -1, "export_all_processed must exist in api/news.py")
 
-        next_def = source.find("\n    def ", func_start + 1)
+        next_def = source.find("\ndef ", func_start + 1)
         func_body = source[func_start:next_def] if next_def != -1 else source[func_start:]
 
         cur2_pos = func_body.find("cur2")
-        self.assertNotEqual(cur2_pos, -1, "cur2 should exist in _export_all_processed")
+        self.assertNotEqual(cur2_pos, -1, "cur2 should exist in export_all_processed")
 
         after_cur2 = func_body[cur2_pos:]
         finally_pos = after_cur2.find("finally:")

@@ -575,329 +575,35 @@ async function login() {
             cur.close()
 
     def _get_news(self):
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            return self._get_news_impl(cur)
-        finally:
-            cur.close()
-
-    def _get_news_impl(self, cur):
+        from api.news import get_news
         qs = parse_qs(urlparse(self.path).query)
-        limit = int(qs.get("limit", [100])[0])
-        offset = int(qs.get("offset", [0])[0])
-        status_filter = qs.get("status", [None])[0]
-        source_filter = qs.get("source", [None])[0]
-        date_from = qs.get("date_from", [None])[0]
-        date_to = qs.get("date_to", [None])[0]
-        llm_filter = qs.get("llm", [None])[0]
-
-        ph = "%s" if _is_postgres() else "?"
-        conditions = []
-        params = []
-        # Need LEFT JOIN for LLM filter on count query too
-        need_join_for_count = False
-        if status_filter:
-            conditions.append(f"n.status = {ph}")
-            params.append(status_filter)
-        else:
-            # Default: show only enrichment-relevant statuses
-            conditions.append("n.status IN ('approved', 'processed', 'ready')")
-        if source_filter:
-            conditions.append(f"n.source = {ph}")
-            params.append(source_filter)
-        if date_from:
-            conditions.append(f"n.parsed_at >= {ph}")
-            params.append(date_from)
-        if date_to:
-            conditions.append(f"n.parsed_at <= {ph}")
-            params.append(date_to + "T23:59:59")
-        if llm_filter:
-            need_join_for_count = True
-            if llm_filter == "has_rec":
-                conditions.append("a.llm_recommendation IS NOT NULL AND a.llm_recommendation != ''")
-            elif llm_filter == "no_rec":
-                conditions.append("(a.llm_recommendation IS NULL OR a.llm_recommendation = '')")
-            else:
-                conditions.append(f"LOWER(a.llm_recommendation) LIKE {ph}")
-                params.append(f"%{llm_filter.lower()}%")
-
-        where = "WHERE " + " AND ".join(conditions) if conditions else ""
-
-        # Count total matching
-        count_join = "LEFT JOIN news_analysis a ON n.id = a.news_id" if need_join_for_count else ""
-        cur.execute(f"SELECT COUNT(*) FROM news n {count_join} {where}", params[:])
-        total_count = cur.fetchone()[0]
-
-        query = f"""
-            SELECT n.id, n.source, n.title, n.url, n.h1, n.description,
-                   n.published_at, n.parsed_at, n.status,
-                   a.bigrams, a.trigrams, a.trends_data, a.keyso_data,
-                   a.llm_recommendation, a.llm_trend_forecast, a.sheets_row, a.processed_at,
-                   a.viral_score, a.viral_level, a.viral_data,
-                   a.sentiment_label, a.sentiment_score,
-                   a.freshness_status, a.freshness_hours,
-                   a.tags_data, a.momentum_score, a.headline_score, a.total_score
-            FROM news n
-            LEFT JOIN news_analysis a ON n.id = a.news_id
-            {where}
-            ORDER BY n.parsed_at DESC LIMIT {ph} OFFSET {ph}
-        """
-        params.append(limit)
-        params.append(offset)
-        cur.execute(query, params)
-
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-        else:
-            rows = [dict(row) for row in cur.fetchall()]
-
-        return {"news": rows, "total": total_count, "limit": limit, "offset": offset}
+        return get_news(qs)
 
     def _get_final(self):
-        """Финальная подборка: только publish_now с финальным скором."""
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            return self._get_final_impl(cur)
-        finally:
-            cur.close()
-
-    def _get_final_impl(self, cur):
+        from api.news import get_final
         qs = parse_qs(urlparse(self.path).query)
-        limit = int(qs.get("limit", [100])[0])
-        offset = int(qs.get("offset", [0])[0])
-        source_filter = qs.get("source", [None])[0]
-        sort_field = qs.get("sort", ["final_score"])[0]
-        sort_dir = qs.get("dir", ["desc"])[0]
-
-        ph = "%s" if _is_postgres() else "?"
-        conditions = [
-            "n.status IN ('processed', 'ready')",
-            "LOWER(a.llm_recommendation) = 'publish_now'",
-        ]
-        params = []
-
-        if source_filter:
-            conditions.append(f"n.source = {ph}")
-            params.append(source_filter)
-
-        where = "WHERE " + " AND ".join(conditions)
-
-        cur.execute(f"SELECT COUNT(*) FROM news n JOIN news_analysis a ON n.id = a.news_id {where}", params[:])
-        total_count = cur.fetchone()[0]
-
-        # Финальный скор: внутренний (40%) + viral (15%) + keyso freq бонус (15%) + trends бонус (15%) + headline (15%)
-        # keyso/trends бонусы вычисляются в JS, здесь берём raw данные
-        allowed_sorts = {
-            "final_score": "a.total_score",
-            "total_score": "a.total_score",
-            "viral_score": "a.viral_score",
-            "freshness_hours": "a.freshness_hours",
-            "source": "n.source",
-            "parsed_at": "n.parsed_at",
-        }
-        order_col = allowed_sorts.get(sort_field, "a.total_score")
-        order_dir = "ASC" if sort_dir == "asc" else "DESC"
-
-        query = f"""
-            SELECT n.id, n.source, n.title, n.url, n.h1,
-                   n.published_at, n.parsed_at, n.status,
-                   a.bigrams, a.trigrams, a.trends_data, a.keyso_data,
-                   a.llm_recommendation, a.llm_trend_forecast,
-                   a.viral_score, a.viral_level, a.viral_data,
-                   a.sentiment_label, a.sentiment_score,
-                   a.freshness_status, a.freshness_hours,
-                   a.tags_data, a.momentum_score, a.headline_score,
-                   a.total_score, a.quality_score, a.relevance_score,
-                   a.entity_names, a.entity_best_tier, a.processed_at
-            FROM news n
-            JOIN news_analysis a ON n.id = a.news_id
-            {where}
-            ORDER BY {order_col} {order_dir} LIMIT {ph} OFFSET {ph}
-        """
-        params.append(limit)
-        params.append(offset)
-        cur.execute(query, params)
-
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-        else:
-            rows = [dict(row) for row in cur.fetchall()]
-
-        return {"news": rows, "total": total_count}
+        return get_final(qs)
 
     def _get_editorial(self):
-        """Единый endpoint для вкладки Редакция — все данные в одном запросе."""
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            return self._get_editorial_impl(cur)
-        finally:
-            cur.close()
-
-    def _get_editorial_impl(self, cur):
+        from api.news import get_editorial
         qs = parse_qs(urlparse(self.path).query)
-        limit = int(qs.get("limit", [100])[0])
-        offset = int(qs.get("offset", [0])[0])
-        status_filter = qs.get("status", [None])[0]
-        source_filter = qs.get("source", [None])[0]
-        min_score = int(qs.get("min_score", [0])[0])
-        max_score = int(qs.get("max_score", [0])[0])
-        score_filter = qs.get("score_filter", [None])[0]  # "zero" or "nonzero"
-        viral_level = qs.get("viral_level", [None])[0]
-        tier_filter = qs.get("tier", [None])[0]
-        search = qs.get("q", [None])[0]
-
-        ph = "%s" if _is_postgres() else "?"
-        conditions = []
-        params = []
-
-        # Исключаем дубликаты и отклонённые по умолчанию (если не запрошены)
-        if status_filter:
-            conditions.append(f"n.status = {ph}")
-            params.append(status_filter)
-        else:
-            conditions.append(f"n.status NOT IN ('duplicate', 'rejected')")
-
-        if source_filter:
-            conditions.append(f"n.source = {ph}")
-            params.append(source_filter)
-        if min_score > 0:
-            conditions.append(f"COALESCE(a.total_score, 0) >= {ph}")
-            params.append(min_score)
-        if max_score > 0:
-            conditions.append(f"COALESCE(a.total_score, 0) <= {ph}")
-            params.append(max_score)
-        if score_filter == "zero":
-            conditions.append("COALESCE(a.total_score, 0) = 0")
-        elif score_filter == "nonzero":
-            conditions.append("COALESCE(a.total_score, 0) > 0")
-        if viral_level:
-            conditions.append(f"a.viral_level = {ph}")
-            params.append(viral_level)
-        if tier_filter:
-            conditions.append(f"a.entity_best_tier = {ph}")
-            params.append(tier_filter)
-        if search:
-            conditions.append(f"LOWER(n.title) LIKE {ph}")
-            params.append(f"%{search.lower()}%")
-
-        where = "WHERE " + " AND ".join(conditions) if conditions else ""
-
-        # Count
-        cur.execute(f"SELECT COUNT(*) FROM news n LEFT JOIN news_analysis a ON n.id = a.news_id {where}", params[:])
-        total_count = cur.fetchone()[0]
-
-        # Stats (counts by status)
-        stat_params = []
-        cur.execute("SELECT status, COUNT(*) FROM news GROUP BY status")
-        status_counts = {}
-        for row in cur.fetchall():
-            if _is_postgres():
-                status_counts[row[0]] = row[1]
-            else:
-                status_counts[row[0]] = row[1]
-
-        query = f"""
-            SELECT n.id, n.source, n.title, n.description, n.url, n.published_at, n.parsed_at, n.status,
-                   COALESCE(a.total_score, 0) as total_score,
-                   COALESCE(a.quality_score, 0) as quality_score,
-                   COALESCE(a.relevance_score, 0) as relevance_score,
-                   COALESCE(a.viral_score, 0) as viral_score,
-                   COALESCE(a.viral_level, '') as viral_level,
-                   COALESCE(a.viral_data, '[]') as viral_data,
-                   COALESCE(a.sentiment_label, '') as sentiment_label,
-                   COALESCE(a.sentiment_score, 0) as sentiment_score,
-                   COALESCE(a.freshness_status, '') as freshness_status,
-                   COALESCE(a.freshness_hours, -1) as freshness_hours,
-                   COALESCE(a.tags_data, '[]') as tags_data,
-                   COALESCE(a.momentum_score, 0) as momentum_score,
-                   COALESCE(a.headline_score, 0) as headline_score,
-                   COALESCE(a.all_checks_pass, 0) as all_checks_pass,
-                   COALESCE(a.entity_names, '[]') as entity_names,
-                   COALESCE(a.entity_best_tier, '') as entity_best_tier,
-                   COALESCE(a.reviewed_at, '') as reviewed_at,
-                   COALESCE(a.score_breakdown, '{{}}') as score_breakdown,
-                   a.bigrams, a.llm_recommendation, a.llm_trend_forecast,
-                   a.keyso_data, a.trends_data
-            FROM news n
-            LEFT JOIN news_analysis a ON n.id = a.news_id
-            {where}
-            ORDER BY n.parsed_at DESC
-            LIMIT {ph} OFFSET {ph}
-        """
-        params.append(limit)
-        params.append(offset)
-        cur.execute(query, params)
-
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-        else:
-            rows = [dict(row) for row in cur.fetchall()]
-
-        return {
-            "news": rows,
-            "total": total_count,
-            "limit": limit,
-            "offset": offset,
-            "stats": status_counts,
-        }
+        return get_editorial(qs)
 
     def _get_event_chain_by_id(self, news_id):
-        """Возвращает цепочку событий для указанной новости (GET endpoint)."""
-        try:
-            conn = get_connection()
-            cur = conn.cursor()
-            ph = "%s" if _is_postgres() else "?"
-            try:
-                cur.execute(f"SELECT id, source, title, published_at, status FROM news WHERE id = {ph}", (news_id,))
-                row = cur.fetchone()
-                if not row:
-                    return {"error": "news not found"}
-                if _is_postgres():
-                    columns = [desc[0] for desc in cur.description]
-                    news = dict(zip(columns, row))
-                else:
-                    news = dict(row)
-            finally:
-                cur.close()
-            from checks.temporal_clusters import get_event_chain
-            return get_event_chain(news)
-        except Exception as e:
-            logger.error(f"Event chain error: {e}")
-            return {"chain": [], "chain_length": 0, "days_span": 0, "phase": "single", "error": str(e)}
+        from api.news import get_event_chain_by_id
+        return get_event_chain_by_id(news_id)
 
     def _get_sources(self):
-        import config
-        return config.SOURCES
+        from api.settings import get_sources
+        return get_sources()
 
     def _get_prompts(self):
-        from apis.llm import PROMPT_TREND_FORECAST, PROMPT_MERGE_ANALYSIS, PROMPT_KEYSO_QUERIES
-        return {
-            "trend_forecast": PROMPT_TREND_FORECAST,
-            "merge_analysis": PROMPT_MERGE_ANALYSIS,
-            "keyso_queries": PROMPT_KEYSO_QUERIES,
-        }
+        from api.settings import get_prompts
+        return get_prompts()
 
     def _get_settings(self):
-        import config
-        return {
-            "llm_model": config.LLM_MODEL,
-            "keyso_region": getattr(config, "KEYSO_REGION", "ru"),
-            "regions": config.REGIONS,
-            "sheets_id": config.GOOGLE_SHEETS_ID,
-            "sheets_tab": config.SHEETS_TAB,
-            "openai_key_set": bool(config.OPENAI_API_KEY),
-            "keyso_key_set": bool(config.KEYSO_API_KEY),
-            "google_sa_set": bool(config.GOOGLE_SERVICE_ACCOUNT_JSON),
-            "auto_approve_threshold": getattr(config, "AUTO_APPROVE_THRESHOLD", 70),
-            "auto_rewrite_on_publish_now": getattr(config, "AUTO_REWRITE_ON_PUBLISH_NOW", True),
-            "auto_rewrite_style": getattr(config, "AUTO_REWRITE_STYLE", "news"),
-        }
+        from api.settings import get_settings
+        return get_settings()
 
     # --- Actions ---
     def _run_process(self):
@@ -921,678 +627,76 @@ async function login() {
             self._json({"status": "error", "message": str(e)})
 
     def _export_sheets(self, body):
-        news_id = body.get("news_id")
-        try:
-            from storage.sheets import write_news_row
-            conn = get_connection()
-            cur = conn.cursor()
-            try:
-                ph = "%s" if _is_postgres() else "?"
-                cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
-                if _is_postgres():
-                    columns = [desc[0] for desc in cur.description]
-                    news = dict(zip(columns, cur.fetchone()))
-                else:
-                    news = dict(cur.fetchone())
-
-                cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (news_id,))
-                row = cur.fetchone()
-                if row:
-                    if _is_postgres():
-                        columns = [desc[0] for desc in cur.description]
-                        analysis = dict(zip(columns, row))
-                    else:
-                        analysis = dict(row)
-                else:
-                    analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
-                               "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
-
-                sheet_row = write_news_row(news, analysis)
-                self._json({"status": "ok", "row": sheet_row})
-            finally:
-                cur.close()
-        except Exception as e:
-            self._json({"status": "error", "message": str(e)})
+        from api.news import export_sheets
+        self._json(export_sheets(body))
 
     def _add_source(self, body):
-        import config
-        source = {
-            "name": body.get("name", ""),
-            "type": body.get("type", "rss"),
-            "url": body.get("url", ""),
-            "interval": int(body.get("interval", 15)),
-        }
-        if body.get("selector"):
-            source["selector"] = body["selector"]
-        config.SOURCES.append(source)
-        self._json({"status": "ok", "sources": config.SOURCES})
+        from api.settings import add_source
+        self._json(add_source(body))
 
     def _edit_source(self, body):
-        import config
-        old_name = body.get("old_name", "")
-        for s in config.SOURCES:
-            if s["name"] == old_name:
-                s["name"] = body.get("name", s["name"])
-                s["type"] = body.get("type", s["type"])
-                s["url"] = body.get("url", s["url"])
-                s["interval"] = int(body.get("interval", s["interval"]))
-                if body.get("selector"):
-                    s["selector"] = body["selector"]
-                elif "selector" in s and body.get("type") == "rss":
-                    del s["selector"]
-                break
-        self._json({"status": "ok", "sources": config.SOURCES})
+        from api.settings import edit_source
+        self._json(edit_source(body))
 
     def _delete_source(self, body):
-        import config
-        name = body.get("name")
-        config.SOURCES[:] = [s for s in config.SOURCES if s["name"] != name]
-        self._json({"status": "ok", "sources": config.SOURCES})
+        from api.settings import delete_source
+        self._json(delete_source(body))
 
     def _save_prompts(self, body):
-        import apis.llm as llm
-        if "trend_forecast" in body:
-            llm.PROMPT_TREND_FORECAST = body["trend_forecast"]
-        if "merge_analysis" in body:
-            llm.PROMPT_MERGE_ANALYSIS = body["merge_analysis"]
-        if "keyso_queries" in body:
-            llm.PROMPT_KEYSO_QUERIES = body["keyso_queries"]
-        self._json({"status": "ok"})
+        from api.settings import save_prompts
+        self._json(save_prompts(body))
 
     def _save_settings(self, body):
         if not self._require_perm("settings"):
             return
-        import config
+        from api.settings import save_settings
         user = self._get_session_user() or "admin"
-        changes = []
-        if "llm_model" in body and body["llm_model"] != config.LLM_MODEL:
-            changes.append(("llm_model", config.LLM_MODEL, body["llm_model"]))
-            config.LLM_MODEL = body["llm_model"]
-        if "keyso_region" in body and body["keyso_region"] != config.KEYSO_REGION:
-            changes.append(("keyso_region", config.KEYSO_REGION, body["keyso_region"]))
-            config.KEYSO_REGION = body["keyso_region"]
-        if "sheets_tab" in body and body["sheets_tab"] != config.SHEETS_TAB:
-            changes.append(("sheets_tab", config.SHEETS_TAB, body["sheets_tab"]))
-            config.SHEETS_TAB = body["sheets_tab"]
-        if "auto_approve_threshold" in body:
-            try:
-                new_val = int(body["auto_approve_threshold"])
-                if new_val != config.AUTO_APPROVE_THRESHOLD:
-                    changes.append(("auto_approve_threshold", str(config.AUTO_APPROVE_THRESHOLD), str(new_val)))
-                    config.AUTO_APPROVE_THRESHOLD = new_val
-            except (ValueError, TypeError):
-                pass
-        if "auto_rewrite_on_publish_now" in body:
-            new_val = bool(body["auto_rewrite_on_publish_now"])
-            if new_val != config.AUTO_REWRITE_ON_PUBLISH_NOW:
-                changes.append(("auto_rewrite_on_publish_now", str(config.AUTO_REWRITE_ON_PUBLISH_NOW), str(new_val)))
-                config.AUTO_REWRITE_ON_PUBLISH_NOW = new_val
-        if "auto_rewrite_style" in body and body["auto_rewrite_style"] != config.AUTO_REWRITE_STYLE:
-            changes.append(("auto_rewrite_style", config.AUTO_REWRITE_STYLE, body["auto_rewrite_style"]))
-            config.AUTO_REWRITE_STYLE = body["auto_rewrite_style"]
-
-        # Audit log config changes
-        for setting_name, old_val, new_val in changes:
-            try:
-                from core.observability import log_config_change
-                log_config_change(setting_name, old_val, new_val, changed_by=user)
-            except Exception:
-                pass
-
-        self._json({"status": "ok"})
+        self._json(save_settings(body, user=user))
 
     def _test_llm(self, body):
-        try:
-            import config
-            from openai import OpenAI
-            import json as _json
-            prompt = body.get("prompt", "Ответь JSON: {\"test\": \"ok\"}")
-            client = OpenAI(api_key=config.OPENAI_API_KEY, base_url=config.OPENAI_BASE_URL)
-            response = client.chat.completions.create(
-                model=config.LLM_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-            )
-            text = response.choices[0].message.content
-            # Try parse JSON
-            cleaned = text.strip()
-            if cleaned.startswith("```"):
-                cleaned = "\n".join(cleaned.split("\n")[1:])
-                if cleaned.endswith("```"):
-                    cleaned = cleaned[:-3]
-                cleaned = cleaned.strip()
-            try:
-                parsed = _json.loads(cleaned)
-            except Exception:
-                parsed = None
-            self._json({"status": "ok", "model": config.LLM_MODEL, "base_url": config.OPENAI_BASE_URL, "raw": text, "result": parsed})
-        except Exception as e:
-            self._json({"status": "error", "message": str(e), "type": type(e).__name__})
+        from api.settings import test_llm
+        self._json(test_llm(body))
 
     def _test_keyso(self, body):
-        try:
-            import config
-            import requests as _req
-            keyword = body.get("keyword", "gta 6")
-            # Raw request for debugging
-            url = f"{config.KEYSO_BASE_URL}/report/simple/keyword_dashboard"
-            params = {"auth-token": config.KEYSO_API_KEY, "base": config.KEYSO_REGION, "keyword": keyword}
-            resp = _req.get(url, params=params, timeout=15)
-            raw = resp.json()
-            self._json({"status": "ok", "http_code": resp.status_code, "raw_response": raw})
-        except Exception as e:
-            self._json({"status": "error", "message": str(e), "type": type(e).__name__})
+        from api.settings import test_keyso
+        self._json(test_keyso(body))
 
     def _quick_tags(self, body):
-        """Быстрый расчёт тегов по заголовкам (без полного review)."""
-        news_ids = body.get("news_ids", [])
-        if not news_ids:
-            self._json({"status": "error", "message": "No news_ids"})
-            return
-        try:
-            conn = get_connection()
-            cur = conn.cursor()
-            try:
-                ph = "%s" if _is_postgres() else "?"
-                placeholders = ",".join([ph] * len(news_ids))
-                cur.execute(f"SELECT id, title, description FROM news WHERE id IN ({placeholders})", news_ids)
-                if _is_postgres():
-                    columns = [desc[0] for desc in cur.description]
-                    rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-                else:
-                    rows = [dict(row) for row in cur.fetchall()]
-
-                from checks.tags import auto_tag
-                from checks.deduplication import tfidf_similarity
-
-                # Tags per news
-                tags_map = {}
-                for r in rows:
-                    tags = auto_tag(r)
-                    tags_map[r["id"]] = [{"id": t["id"], "label": t["label"], "hits": t["hits"]} for t in tags[:3]]
-
-                # Similarity groups
-                titles = [r.get("title", "") for r in rows]
-                ids_ordered = [r["id"] for r in rows]
-                pairs = tfidf_similarity(titles)
-
-                # Build groups from pairs
-                from collections import defaultdict
-                graph = defaultdict(set)
-                for i, j, score in pairs:
-                    graph[i].add(j)
-                    graph[j].add(i)
-                visited = set()
-                groups = []
-                group_idx = 0
-                id_to_group = {}
-                for idx in range(len(rows)):
-                    if idx in visited:
-                        continue
-                    cluster = set()
-                    stack = [idx]
-                    while stack:
-                        node = stack.pop()
-                        if node in visited:
-                            continue
-                        visited.add(node)
-                        cluster.add(node)
-                        stack.extend(graph[node] - visited)
-                    if len(cluster) >= 2:
-                        group_idx += 1
-                        member_ids = [ids_ordered[i] for i in sorted(cluster)]
-                        member_titles = [titles[i] for i in sorted(cluster)]
-                        for mid in member_ids:
-                            id_to_group[mid] = group_idx
-                        groups.append({
-                            "group": group_idx,
-                            "count": len(member_ids),
-                            "ids": member_ids,
-                            "titles": member_titles,
-                        })
-
-                self._json({"status": "ok", "tags": tags_map, "groups": groups, "id_to_group": id_to_group})
-            finally:
-                cur.close()
-        except Exception as e:
-            self._json({"status": "error", "message": str(e), "type": type(e).__name__})
+        from api.news import quick_tags
+        self._json(quick_tags(body))
 
     def _dashboard_groups(self):
-        """Возвращает теги и группы для новостей (учитывает фильтр статуса)."""
-        try:
-            conn = get_connection()
-            cur = conn.cursor()
-            try:
-                ph = "%s" if _is_postgres() else "?"
-                qs = parse_qs(urlparse(self.path).query)
-                status_filter = qs.get("status", [None])[0]
-                if status_filter:
-                    cur.execute(f"SELECT id, title, description FROM news WHERE status = {ph} ORDER BY parsed_at DESC LIMIT 100", (status_filter,))
-                else:
-                    cur.execute("SELECT id, title, description FROM news ORDER BY parsed_at DESC LIMIT 100")
-                if _is_postgres():
-                    columns = [desc[0] for desc in cur.description]
-                    rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-                else:
-                    rows = [dict(row) for row in cur.fetchall()]
-
-                if not rows:
-                    self._json({"status": "ok", "tags": {}, "groups": [], "id_to_group": {}})
-                    return
-
-                from checks.tags import auto_tag
-                from checks.deduplication import tfidf_similarity
-                from collections import defaultdict
-
-                tags_map = {}
-                for r in rows:
-                    tags = auto_tag(r)
-                    tags_map[r["id"]] = [{"id": t["id"], "label": t["label"], "hits": t["hits"]} for t in tags[:3]]
-
-                titles = [r.get("title", "") for r in rows]
-                ids_ordered = [r["id"] for r in rows]
-                pairs = tfidf_similarity(titles)
-
-                graph = defaultdict(set)
-                for i, j, score in pairs:
-                    graph[i].add(j)
-                    graph[j].add(i)
-                visited = set()
-                groups = []
-                group_idx = 0
-                id_to_group = {}
-                for idx in range(len(rows)):
-                    if idx in visited:
-                        continue
-                    cluster = set()
-                    stack = [idx]
-                    while stack:
-                        node = stack.pop()
-                        if node in visited:
-                            continue
-                        visited.add(node)
-                        cluster.add(node)
-                        stack.extend(graph[node] - visited)
-                    if len(cluster) >= 2:
-                        group_idx += 1
-                        member_ids = [ids_ordered[i] for i in sorted(cluster)]
-                        member_titles = [titles[i] for i in sorted(cluster)]
-                        for mid in member_ids:
-                            id_to_group[mid] = group_idx
-                        groups.append({
-                            "group": group_idx,
-                            "count": len(member_ids),
-                            "ids": member_ids,
-                            "titles": member_titles,
-                        })
-
-                self._json({"status": "ok", "tags": tags_map, "groups": groups, "id_to_group": id_to_group})
-            finally:
-                cur.close()
-        except Exception as e:
-            self._json({"status": "error", "message": str(e), "type": type(e).__name__})
+        from api.news import dashboard_groups
+        qs = parse_qs(urlparse(self.path).query)
+        self._json(dashboard_groups(qs))
 
     def _run_review(self, body):
-        """Запускает pipeline проверки для выбранных новостей."""
-        news_ids = body.get("news_ids", [])
-        if not news_ids:
-            self._json({"status": "error", "message": "No news selected"})
-            return
-        try:
-            conn = get_connection()
-            cur = conn.cursor()
-            try:
-                ph = "%s" if _is_postgres() else "?"
-                placeholders = ",".join([ph] * len(news_ids))
-                cur.execute(f"SELECT id, source, url, title, h1, description, plain_text, published_at, parsed_at, status FROM news WHERE id IN ({placeholders})", news_ids)
-                if _is_postgres():
-                    columns = [desc[0] for desc in cur.description]
-                    news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
-                else:
-                    news_list = [dict(row) for row in cur.fetchall()]
-
-                from checks.pipeline import run_review_pipeline
-                result = run_review_pipeline(news_list)
-                self._json({"status": "ok", **result})
-            finally:
-                cur.close()
-        except Exception as e:
-            self._json({"status": "error", "message": str(e), "type": type(e).__name__})
+        from api.news import run_review
+        self._json(run_review(body))
 
     def _review_batch(self, body):
-        """Проверяет новости по статусу (batch, без изменения статуса)."""
-        status = body.get("status", "new")
-        limit = int(body.get("limit", 50))
-        try:
-            conn = get_connection()
-            cur = conn.cursor()
-            try:
-                ph = "%s" if _is_postgres() else "?"
-                if status:
-                    cur.execute(f"SELECT id, source, url, title, h1, description, plain_text, published_at, parsed_at, status FROM news WHERE status = {ph} ORDER BY parsed_at DESC LIMIT {ph}", (status, limit))
-                else:
-                    cur.execute(f"SELECT id, source, url, title, h1, description, plain_text, published_at, parsed_at, status FROM news ORDER BY parsed_at DESC LIMIT {ph}", (limit,))
-                if _is_postgres():
-                    columns = [desc[0] for desc in cur.description]
-                    news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
-                else:
-                    news_list = [dict(row) for row in cur.fetchall()]
-
-                if not news_list:
-                    self._json({"status": "ok", "results": [], "groups": []})
-                    return
-
-                from checks.pipeline import run_review_pipeline
-                # Прогоняем pipeline но НЕ меняем статусы
-                from checks.deduplication import tfidf_similarity, build_groups
-                from checks.quality import check_quality
-                from checks.relevance import check_relevance
-                from checks.freshness import check_freshness
-                from checks.viral_score import viral_score
-                from checks.tags import auto_tag
-                from checks.sentiment import analyze_sentiment
-                from checks.momentum import get_momentum
-
-                results = []
-                for news in news_list:
-                    result = {
-                        "id": news["id"],
-                        "title": news.get("title", ""),
-                        "source": news.get("source", ""),
-                        "url": news.get("url", ""),
-                        "published_at": news.get("published_at", ""),
-                        "status": news.get("status", ""),
-                        "checks": {},
-                    }
-                    result["checks"]["quality"] = check_quality(news)
-                    result["checks"]["relevance"] = check_relevance(news)
-                    result["checks"]["freshness"] = check_freshness(news)
-                    result["checks"]["viral"] = viral_score(news)
-                    result["tags"] = auto_tag(news)
-                    result["sentiment"] = analyze_sentiment(news)
-                    result["momentum"] = get_momentum(news)
-
-                    all_pass = all(c["pass"] for c in result["checks"].values())
-                    total_score = sum(c["score"] for c in result["checks"].values()) // 4
-                    momentum_bonus = result["momentum"]["score"] // 5
-                    total_score = min(100, total_score + momentum_bonus)
-                    result["overall_pass"] = all_pass
-                    result["total_score"] = total_score
-                    results.append(result)
-
-                # Dedup
-                titles = [r["title"] for r in results]
-                pairs = tfidf_similarity(titles)
-                groups = build_groups(results, pairs)
-                for group in groups:
-                    for idx in group.get("duplicate_indices", []):
-                        if idx < len(results):
-                            results[idx]["overall_pass"] = False
-                            results[idx]["is_duplicate"] = True
-                    for member in group["members"]:
-                        member["dedup_status"] = group["status"]
-
-                self._json({"status": "ok", "results": results, "groups": groups})
-            finally:
-                cur.close()
-        except Exception as e:
-            self._json({"status": "error", "message": str(e), "type": type(e).__name__})
+        from api.news import review_batch
+        self._json(review_batch(body))
 
     def _run_auto_review(self, body):
-        """Запускает авто-ревью батчами по 20 (сохраняет результаты в БД)."""
-        try:
-            conn = get_connection()
-            cur = conn.cursor()
-            try:
-                ph = "%s" if _is_postgres() else "?"
-                BATCH_SIZE = 20
-
-                # Считаем сколько всего непроверенных (только new)
-                cur.execute("SELECT COUNT(*) FROM news WHERE status = 'new'")
-                total_pending = cur.fetchone()[0]
-
-                if total_pending == 0:
-                    self._json({"status": "ok", "reviewed": 0, "message": "Нет новых для проверки", "remaining": 0})
-                    return
-
-                # Берём один батч
-                cur.execute(f"""
-                    SELECT id, source, url, title, h1, description, plain_text, published_at, parsed_at, status
-                    FROM news WHERE status = 'new'
-                    ORDER BY parsed_at DESC LIMIT {ph}
-                """, (BATCH_SIZE,))
-                if _is_postgres():
-                    columns = [desc[0] for desc in cur.description]
-                    news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
-                else:
-                    news_list = [dict(row) for row in cur.fetchall()]
-
-                from checks.pipeline import run_review_pipeline
-                result = run_review_pipeline(news_list, update_status=True)
-                reviewed = len(result.get("results", []))
-                dupes = sum(1 for r in result.get("results", []) if r.get("is_duplicate"))
-                rejected = sum(1 for r in result.get("results", []) if r.get("auto_rejected"))
-                remaining = total_pending - reviewed
-                self._json({
-                    "status": "ok",
-                    "reviewed": reviewed,
-                    "duplicates": dupes,
-                    "auto_rejected": rejected,
-                    "remaining": remaining,
-                    "message": f"Проверено: {reviewed}, дубликатов: {dupes}, отклонено: {rejected}" +
-                               (f". Осталось: {remaining}" if remaining > 0 else "")
-                })
-            finally:
-                cur.close()
-        except Exception as e:
-            self._json({"status": "error", "message": str(e)})
+        from api.news import run_auto_review
+        self._json(run_auto_review(body))
 
     def _approve_news(self, body):
-        """Одобряет новости и запускает обогащение в фоне."""
-        news_ids = body.get("news_ids", [])
-        if not news_ids:
-            self._json({"status": "error", "message": "No news selected"})
-            return
-        try:
-            from checks.pipeline import approve_for_enrichment
-            from checks.feedback import record_decision
-            approve_for_enrichment(news_ids)
-            for nid in news_ids:
-                try:
-                    record_decision(nid, "approved")
-                except Exception:
-                    pass
-
-            # Auto-enrich: запускаем обогащение в фоновом потоке
-            import threading
-            def _bg_enrich(ids):
-                from scheduler import _process_single_news
-                for nid in ids:
-                    try:
-                        _process_single_news(nid)
-                    except Exception as e:
-                        logger.warning("Background enrich failed for %s: %s", nid, e)
-            threading.Thread(target=_bg_enrich, args=(list(news_ids),), daemon=True).start()
-
-            self._json({"status": "ok", "approved": len(news_ids), "enriching": True})
-        except Exception as e:
-            self._json({"status": "error", "message": str(e)})
+        from api.news import approve_news
+        self._json(approve_news(body))
 
     def _reject_news(self, body):
-        """Отклоняет новости (одну или массив)."""
-        news_ids = body.get("news_ids", [])
-        news_id = body.get("news_id")
-        if news_id and not news_ids:
-            news_ids = [news_id]
-        if not news_ids:
-            self._json({"status": "error", "message": "news_ids required"})
-            return
-        try:
-            from checks.feedback import record_decision
-            for nid in news_ids:
-                update_news_status(nid, "rejected")
-                try:
-                    record_decision(nid, "rejected")
-                except Exception:
-                    pass
-            self._json({"status": "ok", "rejected": len(news_ids)})
-        except Exception as e:
-            self._json({"status": "error", "message": str(e)})
+        from api.news import reject_news
+        self._json(reject_news(body))
 
     def _export_all_processed(self, body):
-        """Экспортирует все обработанные новости (processed) в Sheets/Лист1."""
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute("SELECT id FROM news WHERE status IN ('processed', 'ready') ORDER BY parsed_at DESC")
-            if _is_postgres():
-                news_ids = [r[0] for r in cur.fetchall()]
-            else:
-                news_ids = [r["id"] for r in cur.fetchall()]
-        finally:
-            cur.close()
-
-        if not news_ids:
-            self._json({"status": "error", "message": "Нет обработанных новостей"})
-            return
-
-        # Queue sheets export for all
-        from scheduler import _create_task
-        task_ids = []
-        cur2 = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        try:
-            for nid in news_ids:
-                try:
-                    cur2.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
-                    row = cur2.fetchone()
-                    title = (row[0] if _is_postgres() else row["title"]) if row else ""
-                except Exception:
-                    title = ""
-                tid = _create_task("sheets", nid, title)
-                task_ids.append(tid)
-        finally:
-            cur2.close()
-
-        # Process in background with rate limiting
-        import threading
-        import time as _time
-        def _bg_export(ids, tids):
-            from storage.sheets import write_news_row
-            from scheduler import _update_task, _fetch_news_by_id, _fetch_analysis_by_id
-            ok_count = 0
-            skip_count = 0
-            err_count = 0
-            for i, (nid, tid) in enumerate(zip(ids, tids)):
-                try:
-                    _update_task(tid, "running", {"stage": "exporting", "progress": f"{i+1}/{len(ids)}"})
-                    news = _fetch_news_by_id(nid)
-                    analysis = _fetch_analysis_by_id(nid)
-                    if not news:
-                        _update_task(tid, "error", {"error": "News not found"})
-                        err_count += 1
-                        continue
-                    sheet_row = write_news_row(news, analysis or {})
-                    if sheet_row and sheet_row > 0:
-                        _update_task(tid, "done", {"sheet_row": sheet_row})
-                        ok_count += 1
-                    elif sheet_row == -1:
-                        _update_task(tid, "skipped", {"reason": "duplicate in Sheets"})
-                        skip_count += 1
-                    else:
-                        _update_task(tid, "error", {"error": "Sheets write returned None"})
-                        err_count += 1
-                except Exception as e:
-                    _update_task(tid, "error", {"error": str(e)[:500]})
-                    err_count += 1
-                # Rate limit: ~1.5 sec between writes to stay under Google Sheets 60 req/min
-                _time.sleep(1.5)
-            logger.info("Mass export done: %d ok, %d skipped, %d errors out of %d", ok_count, skip_count, err_count, len(ids))
-
-        threading.Thread(target=_bg_export, args=(list(news_ids), list(task_ids)), daemon=True).start()
-        self._json({"status": "ok", "queued": len(news_ids), "task_ids": task_ids})
+        from api.news import export_all_processed
+        self._json(export_all_processed(body))
 
     def _export_ready_all(self, body):
-        """Экспортирует ВСЕ переписанные статьи (articles) в Sheets/Ready."""
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            # Get all articles with their news data
-            cur.execute("""
-                SELECT a.id, a.news_id, a.title, a.text, a.seo_title, a.seo_description,
-                       a.tags, a.style, a.original_title, a.source_url, a.created_at,
-                       n.source, n.parsed_at, n.url, n.title as news_title
-                FROM articles a
-                LEFT JOIN news n ON n.id = a.news_id
-                ORDER BY a.created_at DESC
-            """)
-            if _is_postgres():
-                columns = [d[0] for d in cur.description]
-                articles = [dict(zip(columns, r)) for r in cur.fetchall()]
-            else:
-                articles = [dict(r) for r in cur.fetchall()]
-        finally:
-            cur.close()
-
-        if not articles:
-            self._json({"status": "error", "message": "Нет переписанных статей"})
-            return
-
-        import threading
-        import time as _time
-
-        def _bg_export_ready(arts):
-            from storage.sheets import write_ready_row
-            from scheduler import _fetch_analysis_by_id
-            import json as _json
-            ok = 0
-            skip = 0
-            err = 0
-            for art in arts:
-                try:
-                    news_id = art.get("news_id", "")
-                    analysis = _fetch_analysis_by_id(news_id) if news_id else None
-
-                    # Build news dict
-                    news = {
-                        "parsed_at": art.get("parsed_at", art.get("created_at", "")),
-                        "source": art.get("source", ""),
-                        "title": art.get("original_title") or art.get("news_title", ""),
-                        "url": art.get("source_url") or art.get("url", ""),
-                    }
-
-                    # Build rewrite dict
-                    tags_raw = art.get("tags", "[]")
-                    try:
-                        tags_list = _json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw if isinstance(tags_raw, list) else [])
-                    except Exception:
-                        tags_list = []
-
-                    rewrite = {
-                        "title": art.get("title", ""),
-                        "text": art.get("text", ""),
-                        "seo_title": art.get("seo_title", ""),
-                        "seo_description": art.get("seo_description", ""),
-                        "tags": tags_list,
-                    }
-
-                    row = write_ready_row(news, analysis, rewrite)
-                    if row and row > 0:
-                        ok += 1
-                    elif row == -1:
-                        skip += 1
-                    else:
-                        err += 1
-                except Exception as e:
-                    logger.error("Ready export error for article %s: %s", art.get("id"), e)
-                    err += 1
-                _time.sleep(1.5)  # Rate limit
-            logger.info("Ready export done: %d ok, %d skipped, %d errors out of %d", ok, skip, err, len(arts))
-
-        threading.Thread(target=_bg_export_ready, args=(list(articles),), daemon=True).start()
-        self._json({"status": "ok", "queued": len(articles), "message": f"Экспорт {len(articles)} статей в Ready запущен"})
-
-    # ─── Pipeline endpoints ───
+        from api.news import export_ready_all
+        self._json(export_ready_all(body))
 
     def _pipeline_full_auto(self, body):
         """Режим 1: Полный автомат — score → >70 на LLM → финальный скор → >60 на рерайт → Sheets/Ready."""
@@ -1787,377 +891,33 @@ async function login() {
             cur.close()
 
     def _get_moderation_list(self):
-        """Возвращает новости со статусом moderation (с данными локального анализа)."""
-        from urllib.parse import parse_qs
+        from api.news import get_moderation_list
         qs = parse_qs(urlparse(self.path).query)
-        limit = int(qs.get("limit", ["100"])[0])
-        offset = int(qs.get("offset", ["0"])[0])
-        source = qs.get("source", [""])[0]
-        min_score = int(qs.get("min_score", ["0"])[0])
-        q = qs.get("q", [""])[0]
-
-        conn = get_connection()
-        cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-
-        conditions = ["n.status = 'moderation'"]
-        params = []
-
-        if source:
-            conditions.append(f"n.source = {ph}")
-            params.append(source)
-        if min_score > 0:
-            conditions.append(f"COALESCE(na.total_score, 0) >= {ph}")
-            params.append(min_score)
-        if q:
-            conditions.append(f"LOWER(n.title) LIKE {ph}")
-            params.append(f"%{q.lower()}%")
-
-        where = " AND ".join(conditions)
-
-        try:
-            cur.execute(f"""
-                SELECT n.id, n.source, n.title, n.url, n.published_at, n.parsed_at, n.status,
-                       n.description,
-                       na.total_score, na.quality_score, na.relevance_score,
-                       na.freshness_hours, na.viral_score, na.viral_data,
-                       na.sentiment_label,
-                       na.tags_data as tags, na.entity_names as entities, na.headline_score, na.momentum_score
-                FROM news n
-                LEFT JOIN news_analysis na ON na.news_id = n.id
-                WHERE {where}
-                ORDER BY n.parsed_at DESC
-                LIMIT {ph} OFFSET {ph}
-            """, (*params, limit, offset))
-
-            if _is_postgres():
-                columns = [d[0] for d in cur.description]
-                rows = [dict(zip(columns, r)) for r in cur.fetchall()]
-            else:
-                rows = [dict(r) for r in cur.fetchall()]
-
-            # Count total + avg score
-            cur.execute(f"SELECT COUNT(*), COALESCE(AVG(na.total_score), 0) FROM news n LEFT JOIN news_analysis na ON na.news_id = n.id WHERE {where}", tuple(params))
-            row = cur.fetchone()
-            total = row[0]
-            avg_score = round(row[1], 1) if row[1] else 0
-        finally:
-            cur.close()
-
-        return {"status": "ok", "news": rows, "total": total, "avg_score": avg_score}
+        return get_moderation_list(qs)
 
     def _get_moderation(self, body):
-        """POST версия для совместимости."""
-        self._json(self._get_moderation_list())
+        from api.news import get_moderation_list
+        self._json(get_moderation_list({}))
 
     def _seo_check(self, body):
-        """SEO-анализ статьи."""
-        from checks.seo_check import analyze_seo
-        title = body.get("title", "")
-        seo_title = body.get("seo_title", "")
-        seo_description = body.get("seo_description", "")
-        text = body.get("text", "")
-        tags = body.get("tags", [])
-        result = analyze_seo(title, seo_title, seo_description, text, tags)
-        self._json({"status": "ok", **result})
+        from api.news import seo_check
+        self._json(seo_check(body))
 
     def _moderation_rewrite(self, body):
-        """Отправляет новости из Модерации на рерайт (без API анализа, только LLM рерайт)."""
-        news_ids = body.get("news_ids", [])
-        style = body.get("style", "news")
-        if not news_ids:
-            self._json({"status": "error", "message": "news_ids required"})
-            return
-
-        from scheduler import _create_task
-        task_ids = []
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            for nid in news_ids:
-                try:
-                    cur.execute(f"SELECT title FROM news WHERE id = {ph}", (nid,))
-                    row = cur.fetchone()
-                    title = (row[0] if _is_postgres() else row["title"]) if row else ""
-                except Exception:
-                    title = ""
-                tid = _create_task("mod_rewrite", nid, title, style)
-                task_ids.append(tid)
-        finally:
-            cur.close()
-
-        # Process rewrites in background (no enrichment, just LLM rewrite)
-        import threading
-        def _bg_mod_rewrite(ids, tids, rewrite_style):
-            from apis.llm import rewrite_news
-            from scheduler import _update_task, _fetch_news_by_id, _fetch_analysis_by_id
-            from storage.sheets import write_ready_row
-            import uuid as _uuid
-            import json as _json2
-            for nid, tid in zip(ids, tids):
-                try:
-                    news = _fetch_news_by_id(nid)
-                    if not news:
-                        _update_task(tid, "error", {"error": "News not found"})
-                        continue
-                    _update_task(tid, "running", {"stage": "rewriting"})
-                    result = rewrite_news(
-                        title=news.get("title", ""),
-                        text=news.get("plain_text", ""),
-                        style=rewrite_style,
-                        language="русский",
-                    )
-                    if result:
-                        # Save article to DB
-                        conn2 = get_connection()
-                        cur2 = conn2.cursor()
-                        ph2 = "%s" if _is_postgres() else "?"
-                        _now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
-                        aid = str(_uuid.uuid4())[:12]
-                        tags_j = _json2.dumps(result.get("tags", []), ensure_ascii=False)
-                        try:
-                            cur2.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
-                                style, language, original_title, original_text, source_url, status, created_at, updated_at)
-                                VALUES ({','.join([ph2]*15)})""",
-                                (aid, nid, result.get("title", ""), result.get("text", ""),
-                                 result.get("seo_title", ""), result.get("seo_description", ""), tags_j,
-                                 rewrite_style, "русский", news.get("title", ""), (news.get("plain_text", "") or "")[:5000],
-                                 news.get("url", ""), "draft", _now, _now))
-                            if not _is_postgres():
-                                conn2.commit()
-                        finally:
-                            cur2.close()
-
-                        # Export to Sheets/Ready
-                        try:
-                            analysis = _fetch_analysis_by_id(nid)
-                            write_ready_row(news, analysis, result)
-                        except Exception as se:
-                            logger.warning("Sheets Ready export failed for %s: %s", nid, se)
-
-                        _update_task(tid, "done", {
-                            "stage": "complete",
-                            "rewrite_title": result.get("title", "")[:100],
-                            "article_id": aid,
-                        })
-                        update_news_status(nid, "processed")
-                    else:
-                        _update_task(tid, "error", {"stage": "rewriting", "error": "Rewrite returned None"})
-                except Exception as e:
-                    _update_task(tid, "error", {"error": str(e)[:500]})
-
-        threading.Thread(
-            target=_bg_mod_rewrite,
-            args=(list(news_ids), list(task_ids), style),
-            daemon=True
-        ).start()
-
-        self._json({"status": "ok", "queued": len(news_ids), "task_ids": task_ids})
+        from api.news import moderation_rewrite
+        self._json(moderation_rewrite(body))
 
     def _test_sheets(self, body):
-        try:
-            import config
-            from storage.sheets import _get_client
-            client = _get_client()
-            if not client:
-                self._json({"status": "error", "message": "Google client init failed. Check GOOGLE_SERVICE_ACCOUNT_JSON"})
-                return
-            sheet = client.open_by_key(config.GOOGLE_SHEETS_ID)
-            worksheets = [ws.title for ws in sheet.worksheets()]
-            tab = sheet.worksheet(config.SHEETS_TAB)
-            rows = len(tab.get_all_values())
-            self._json({"status": "ok", "sheets_id": config.GOOGLE_SHEETS_ID, "tabs": worksheets, "active_tab": config.SHEETS_TAB, "rows": rows})
-        except Exception as e:
-            self._json({"status": "error", "message": str(e), "type": type(e).__name__})
+        from api.settings import test_sheets
+        self._json(test_sheets(body))
 
     def _reparse_source(self, body):
-        name = body.get("name")
-        import config
-        source = next((s for s in config.SOURCES if s["name"] == name), None)
-        if not source:
-            self._json({"status": "error", "message": "Source not found"})
-            return
-        try:
-            if source["type"] == "rss":
-                from parsers.rss_parser import parse_rss_source
-                count = parse_rss_source(source)
-            elif source["type"] == "sitemap":
-                from parsers.html_parser import parse_sitemap_source
-                count = parse_sitemap_source(source)
-            else:
-                from parsers.html_parser import parse_html_source
-                count = parse_html_source(source)
-            self._json({"status": "ok", "new_articles": count})
-        except Exception as e:
-            self._json({"status": "error", "message": str(e)})
+        from api.settings import reparse_source
+        self._json(reparse_source(body))
 
     def _heal_source(self, body):
-        """Диагностика и автоматическое лечение проблемного источника."""
-        name = body.get("name")
-        if not name:
-            self._json({"status": "error", "message": "name required"})
-            return
-        import config
-        source = next((s for s in config.SOURCES if s["name"] == name), None)
-        if not source:
-            self._json({"status": "error", "message": "Source not found"})
-            return
-
-        steps = []
-        healed = False
-        new_articles = 0
-
-        # Step 1: Reset circuit breaker for this domain
-        from parsers.proxy import _circuit_breaker, _get_domain
-        domain = _get_domain(source["url"])
-        if domain in _circuit_breaker:
-            del _circuit_breaker[domain]
-            steps.append({"action": "circuit_breaker_reset", "status": "ok", "detail": f"Сброшен circuit breaker для {domain}"})
-        else:
-            steps.append({"action": "circuit_breaker_check", "status": "skip", "detail": "Circuit breaker не активен"})
-
-        # Step 2: Test URL accessibility with fresh UA
-        from parsers.proxy import _get_random_ua
-        import requests
-        test_ok = False
-        test_status = 0
-        test_error = ""
-        try:
-            headers = {"User-Agent": _get_random_ua()}
-            resp = requests.get(source["url"], headers=headers, timeout=15, allow_redirects=True)
-            test_status = resp.status_code
-            test_ok = resp.status_code == 200
-            content_len = len(resp.text)
-            steps.append({"action": "url_test", "status": "ok" if test_ok else "fail",
-                          "detail": f"HTTP {test_status}, {content_len} байт" + (", Cloudflare?" if resp.status_code == 403 else "")})
-        except Exception as e:
-            test_error = str(e)
-            steps.append({"action": "url_test", "status": "fail", "detail": f"Ошибка: {test_error[:200]}"})
-
-        # Step 3: Try alternative strategies based on source type
-        if test_ok:
-            # Step 3a: Try reparse with current config
-            try:
-                if source["type"] == "rss":
-                    from parsers.rss_parser import parse_rss_source
-                    new_articles = parse_rss_source(source)
-                elif source["type"] == "sitemap":
-                    from parsers.html_parser import parse_sitemap_source
-                    new_articles = parse_sitemap_source(source)
-                else:
-                    from parsers.html_parser import parse_html_source
-                    new_articles = parse_html_source(source)
-                steps.append({"action": "reparse", "status": "ok", "detail": f"Получено {new_articles} новых статей"})
-                if new_articles > 0:
-                    healed = True
-            except Exception as e:
-                steps.append({"action": "reparse", "status": "fail", "detail": str(e)[:200]})
-
-            # Step 3b: If HTML source failed — try alternative selectors
-            if not healed and source["type"] in ("html", "dtf"):
-                alt_selectors = ["article", "div.article", ".news-item", ".post", "a[href*='news']", "a[href*='article']",
-                                 ".card", ".feed-item", "h2 a", "h3 a"]
-                original_sel = source.get("selector", "article")
-                for alt_sel in alt_selectors:
-                    if alt_sel == original_sel:
-                        continue
-                    try:
-                        from bs4 import BeautifulSoup
-                        soup = BeautifulSoup(resp.text, "lxml")
-                        found = soup.select(alt_sel)
-                        links_found = sum(1 for el in found if el.find("a", href=True) or el.name == "a")
-                        if links_found >= 3:
-                            steps.append({"action": "alt_selector", "status": "found",
-                                          "detail": f"Селектор '{alt_sel}' нашёл {links_found} элементов (текущий: '{original_sel}')",
-                                          "selector": alt_sel, "links_count": links_found})
-                            break
-                    except Exception:
-                        pass
-                else:
-                    steps.append({"action": "alt_selector", "status": "skip", "detail": "Альтернативные селекторы не помогли"})
-
-            # Step 3c: If RSS source got 0 articles — check feed validity
-            if not healed and source["type"] == "rss":
-                try:
-                    import feedparser
-                    feed = feedparser.parse(resp.content)
-                    n_entries = len(feed.entries)
-                    is_bozo = feed.bozo
-                    if n_entries > 0:
-                        steps.append({"action": "feed_check", "status": "ok",
-                                      "detail": f"RSS валидный: {n_entries} записей" + (" (bozo)" if is_bozo else "")})
-                        # All entries might be existing (already parsed)
-                        if new_articles == 0:
-                            steps.append({"action": "feed_check", "status": "info",
-                                          "detail": "Все записи уже в БД — источник работает, новых нет"})
-                            healed = True
-                    else:
-                        steps.append({"action": "feed_check", "status": "fail",
-                                      "detail": f"RSS пустой или невалидный" + (f": {feed.bozo_exception}" if is_bozo else "")})
-                        # Try common alternative RSS URLs
-                        alt_urls = []
-                        base = source["url"].rstrip("/")
-                        if "/feed/" not in base:
-                            alt_urls.append(base + "/feed/")
-                        if "/rss" not in base:
-                            alt_urls.append(base.rsplit("/", 1)[0] + "/rss/")
-                            alt_urls.append(base.rsplit("/", 1)[0] + "/feed.xml")
-                        for alt_url in alt_urls:
-                            try:
-                                alt_resp = requests.get(alt_url, headers=headers, timeout=10)
-                                if alt_resp.status_code == 200:
-                                    alt_feed = feedparser.parse(alt_resp.content)
-                                    if len(alt_feed.entries) > 0:
-                                        steps.append({"action": "alt_rss_url", "status": "found",
-                                                      "detail": f"Найден рабочий RSS: {alt_url} ({len(alt_feed.entries)} записей)",
-                                                      "url": alt_url, "entries": len(alt_feed.entries)})
-                                        break
-                            except Exception:
-                                pass
-                except Exception as e:
-                    steps.append({"action": "feed_check", "status": "fail", "detail": str(e)[:200]})
-        else:
-            # URL not accessible — suggest solutions
-            if test_status == 403:
-                steps.append({"action": "diagnosis", "status": "info", "detail": "403 Forbidden — вероятно Cloudflare/WAF. Рекомендация: прокси или рендер-сервис"})
-            elif test_status == 404:
-                steps.append({"action": "diagnosis", "status": "info", "detail": "404 Not Found — URL изменился. Проверьте актуальный адрес RSS/страницы"})
-            elif test_status == 429:
-                steps.append({"action": "diagnosis", "status": "info", "detail": "429 Too Many Requests — увеличьте интервал парсинга"})
-            elif test_status >= 500:
-                steps.append({"action": "diagnosis", "status": "info", "detail": f"Сервер {test_status} — временная проблема, повторите позже"})
-            elif test_error:
-                if "timeout" in test_error.lower():
-                    steps.append({"action": "diagnosis", "status": "info", "detail": "Таймаут — сервер не отвечает. Попробуйте прокси"})
-                elif "ssl" in test_error.lower():
-                    steps.append({"action": "diagnosis", "status": "info", "detail": "Ошибка SSL — проблема с сертификатом"})
-                else:
-                    steps.append({"action": "diagnosis", "status": "info", "detail": f"Сетевая ошибка: {test_error[:150]}"})
-
-        # Step 4: Recommendation
-        recommendations = []
-        for step in steps:
-            if step["status"] == "found" and step["action"] == "alt_selector":
-                recommendations.append(f"Сменить селектор на '{step['selector']}' ({step['links_count']} элементов)")
-            if step["status"] == "found" and step["action"] == "alt_rss_url":
-                recommendations.append(f"Сменить URL на {step['url']}")
-        if test_status == 403:
-            recommendations.append("Включить прокси-ротацию (PROXY_LIST)")
-            recommendations.append("Увеличить интервал парсинга")
-        if test_status == 429:
-            recommendations.append("Увеличить интервал парсинга до 30+ мин")
-        if not healed and not recommendations:
-            recommendations.append("Попробуйте парсинг вручную позже")
-
-        self._json({
-            "status": "ok",
-            "healed": healed,
-            "new_articles": new_articles,
-            "steps": steps,
-            "recommendations": recommendations,
-            "source": name,
-        })
+        from api.settings import heal_source
+        self._json(heal_source(body))
 
     def _change_password(self, body):
         username = body.get("username", "")
@@ -2172,307 +932,53 @@ async function login() {
         self._json({"status": "ok"})
 
     def _bulk_status(self, body):
-        news_ids = body.get("news_ids", [])
-        new_status = body.get("status", "")
-        if not news_ids or not new_status:
-            self._json({"status": "error", "message": "news_ids and status required"})
-            return
-        for nid in news_ids:
-            update_news_status(nid, new_status)
-        self._json({"status": "ok", "updated": len(news_ids)})
+        from api.news import bulk_status
+        self._json(bulk_status(body))
 
     def _delete_news(self, body):
         if not self._require_perm("delete"):
             return
-        news_ids = body.get("news_ids", [])
-        if not news_ids:
-            self._json({"status": "error", "message": "news_ids required"})
-            return
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            if _is_postgres():
-                placeholders = ",".join(["%s"] * len(news_ids))
-            else:
-                placeholders = ",".join(["?"] * len(news_ids))
-            cur.execute(f"DELETE FROM news_analysis WHERE news_id IN ({placeholders})", tuple(news_ids))
-            cur.execute(f"DELETE FROM news WHERE id IN ({placeholders})", tuple(news_ids))
-            conn.commit()
-            self._json({"status": "ok", "deleted": len(news_ids)})
+        from api.news import delete_news
+        self._json(delete_news(body))
 
-        finally:
-            cur.close()
     def _test_parse(self, body):
-        url = body.get("url", "")
-        if not url:
-            self._json({"status": "error", "message": "URL required"})
-            return
-        try:
-            from parsers.html_parser import _fetch_article
-            h1, description, plain_text = _fetch_article(url)
-            self._json({
-                "status": "ok",
-                "h1": h1,
-                "description": description[:500],
-                "plain_text": plain_text[:1000],
-                "text_length": len(plain_text),
-            })
-        except Exception as e:
-            self._json({"status": "error", "message": str(e)})
+        from api.settings import test_parse
+        self._json(test_parse(body))
 
     def _setup_headers(self, body):
-        try:
-            from storage.sheets import setup_headers
-            setup_headers()
-            self._json({"status": "ok"})
-        except Exception as e:
-            self._json({"status": "error", "message": str(e)})
+        from api.settings import setup_headers
+        self._json(setup_headers(body))
 
     def _reparse_all(self, body):
-        try:
-            import config
-            from parsers.rss_parser import parse_rss_source
-            from parsers.html_parser import parse_html_source, parse_sitemap_source
-            total = 0
-            for source in config.SOURCES:
-                try:
-                    if source["type"] == "rss":
-                        total += parse_rss_source(source)
-                    elif source["type"] == "sitemap":
-                        total += parse_sitemap_source(source)
-                    else:
-                        total += parse_html_source(source)
-                except Exception as e:
-                    logger.error("Reparse %s error: %s", source["name"], e)
-            self._json({"status": "ok", "new_articles": total})
-        except Exception as e:
-            self._json({"status": "error", "message": str(e)})
+        from api.settings import reparse_all
+        self._json(reparse_all(body))
 
     def _get_sources_stats(self):
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute("SELECT source, COUNT(*) as cnt, MAX(parsed_at) as last_parsed FROM news GROUP BY source ORDER BY cnt DESC")
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                return [dict(zip(columns, row)) for row in cur.fetchall()]
-            else:
-                return [dict(row) for row in cur.fetchall()]
-
-        finally:
-            cur.close()
+        from api.settings import get_sources_stats
+        return get_sources_stats()
     def _get_db_info(self):
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            info = {"type": "PostgreSQL" if _is_postgres() else "SQLite"}
-            cur.execute("SELECT COUNT(*) FROM news")
-            info["total_news"] = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM news_analysis")
-            info["total_analyzed"] = cur.fetchone()[0]
-            for status in ["new", "in_review", "approved", "processed", "rejected", "duplicate"]:
-                ph = "%s" if _is_postgres() else "?"
-                cur.execute(f"SELECT COUNT(*) FROM news WHERE status = {ph}", (status,))
-                info[f"status_{status}"] = cur.fetchone()[0]
-            cur.execute("SELECT MIN(parsed_at), MAX(parsed_at) FROM news")
-            row = cur.fetchone()
-            info["oldest"] = str(row[0]) if row[0] else "-"
-            info["newest"] = str(row[1]) if row[1] else "-"
-            return info
-
-        finally:
-            cur.close()
+        from api.settings import get_db_info
+        return get_db_info()
     def _export_sheets_bulk(self, body):
-        news_ids = body.get("news_ids", [])
-        if not news_ids:
-            self._json({"status": "error", "message": "news_ids required"})
-            return
-        try:
-            from storage.sheets import write_news_row
-            conn = get_connection()
-            cur = conn.cursor()
-            try:
-                ph = "%s" if _is_postgres() else "?"
-                exported = 0
-                skipped = 0
-                errors = 0
-                for nid in news_ids:
-                    try:
-                        cur.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
-                        row = cur.fetchone()
-                        if not row:
-                            continue
-                        if _is_postgres():
-                            columns = [desc[0] for desc in cur.description]
-                            news = dict(zip(columns, row))
-                        else:
-                            news = dict(row)
-                        cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (nid,))
-                        arow = cur.fetchone()
-                        if arow:
-                            if _is_postgres():
-                                columns = [desc[0] for desc in cur.description]
-                                analysis = dict(zip(columns, arow))
-                            else:
-                                analysis = dict(arow)
-                        else:
-                            analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
-                                       "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
-                        sheet_row = write_news_row(news, analysis)
-                        if sheet_row and sheet_row > 0:
-                            exported += 1
-                        elif sheet_row == -1:
-                            skipped += 1
-                    except Exception as e:
-                        logger.warning("Bulk export error for %s: %s", nid, e)
-                        errors += 1
-                self._json({"status": "ok", "exported": exported, "skipped": skipped, "errors": errors})
-            finally:
-                cur.close()
-        except Exception as e:
-            self._json({"status": "error", "message": str(e)})
+        from api.news import export_sheets_bulk
+        self._json(export_sheets_bulk(body))
 
     def _rewrite_news(self, body):
         from api.articles import rewrite_news_handler
         self._json(rewrite_news_handler(body))
 
     def _merge_news(self, body):
-        news_ids = body.get("news_ids", [])
-        if len(news_ids) < 2:
-            self._json({"status": "error", "message": "Need at least 2 news to merge"})
-            return
-        try:
-            conn = get_connection()
-            cur = conn.cursor()
-            try:
-                ph = "%s" if _is_postgres() else "?"
-                placeholders = ",".join([ph] * len(news_ids))
-                cur.execute(f"SELECT id, source, title, plain_text FROM news WHERE id IN ({placeholders})", news_ids)
-                if _is_postgres():
-                    columns = [desc[0] for desc in cur.description]
-                    news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
-                else:
-                    news_list = [dict(row) for row in cur.fetchall()]
-                from apis.llm import merge_news
-                result = merge_news(news_list)
-                if result:
-                    self._json({"status": "ok", "result": result, "sources": [n["source"] for n in news_list]})
-                else:
-                    self._json({"status": "error", "message": "LLM returned no result"})
-            finally:
-                cur.close()
-        except Exception as e:
-            self._json({"status": "error", "message": str(e)})
+        from api.news import merge_news
+        self._json(merge_news(body))
 
     def _news_detail(self, body):
-        news_id = body.get("news_id")
-        if not news_id:
-            self._json({"status": "error", "message": "news_id required"})
-            return
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
-            row = cur.fetchone()
-            if not row:
-                self._json({"status": "error", "message": "Not found"})
-                return
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                news = dict(zip(columns, row))
-            else:
-                news = dict(row)
-            # Get analysis too
-            cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (news_id,))
-            arow = cur.fetchone()
-            analysis = None
-            if arow:
-                if _is_postgres():
-                    columns = [desc[0] for desc in cur.description]
-                    analysis = dict(zip(columns, arow))
-                else:
-                    analysis = dict(arow)
-            self._json({"status": "ok", "news": news, "analysis": analysis})
+        from api.news import news_detail
+        self._json(news_detail(body))
 
-        finally:
-            cur.close()
     def _analyze_news(self, body):
-        """Полный анализ одной новости: viral, freshness, quality, relevance, sentiment, tags, trends, keyso."""
-        news_id = body.get("news_id")
-        if not news_id:
-            self._json({"status": "error", "message": "news_id required"})
-            return
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
-            row = cur.fetchone()
-            if not row:
-                self._json({"status": "error", "message": "Not found"})
-                return
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                news = dict(zip(columns, row))
-            else:
-                news = dict(row)
+        from api.news import analyze_news
+        self._json(analyze_news(body))
 
-            from checks.viral_score import viral_score
-            from checks.freshness import check_freshness
-            from checks.quality import check_quality
-            from checks.relevance import check_relevance
-            from checks.sentiment import analyze_sentiment
-            from checks.tags import auto_tag
-            from checks.momentum import get_momentum
-
-            result = {
-                "viral": viral_score(news),
-                "freshness": check_freshness(news),
-                "quality": check_quality(news),
-                "relevance": check_relevance(news),
-                "sentiment": analyze_sentiment(news),
-                "tags": auto_tag(news),
-                "momentum": get_momentum(news),
-            }
-
-            # Get existing analysis data (trends, keyso, llm)
-            cur.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (news_id,))
-            arow = cur.fetchone()
-            if arow:
-                if _is_postgres():
-                    columns = [desc[0] for desc in cur.description]
-                    analysis = dict(zip(columns, arow))
-                else:
-                    analysis = dict(arow)
-                import json
-                try:
-                    result["trends_data"] = json.loads(analysis.get("trends_data", "{}"))
-                except Exception:
-                    result["trends_data"] = {}
-                try:
-                    result["keyso_data"] = json.loads(analysis.get("keyso_data", "{}"))
-                except Exception:
-                    result["keyso_data"] = {}
-                result["llm_recommendation"] = analysis.get("llm_recommendation", "")
-                result["llm_trend_forecast"] = analysis.get("llm_trend_forecast", "")
-                try:
-                    result["bigrams"] = json.loads(analysis.get("bigrams", "[]"))
-                except Exception:
-                    result["bigrams"] = []
-            else:
-                result["trends_data"] = {}
-                result["keyso_data"] = {}
-                result["llm_recommendation"] = ""
-                result["llm_trend_forecast"] = ""
-                result["bigrams"] = []
-
-            total = sum(result[k]["score"] for k in ("viral", "freshness", "quality", "relevance")) // 4
-            result["total_score"] = min(100, total + result["momentum"]["score"] // 5)
-            self._json({"status": "ok", "analysis": result})
-
-        finally:
-            cur.close()
     def _batch_rewrite(self, body):
         from api.articles import batch_rewrite
         self._json(batch_rewrite(body))
@@ -2482,245 +988,29 @@ async function login() {
         from api.analytics import get_analytics
         return get_analytics()
     def _get_prompt_versions(self):
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute("SELECT * FROM prompt_versions ORDER BY prompt_name, version DESC")
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                rows = [dict(zip(columns, row)) for row in cur.fetchall()]
-            else:
-                rows = [dict(row) for row in cur.fetchall()]
-            return {"status": "ok", "versions": rows}
-
-        finally:
-            cur.close()
+        from api.settings import get_prompt_versions
+        return get_prompt_versions()
     def _save_prompt_version(self, body):
-        import uuid
-        from datetime import datetime, timezone
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            name = body.get("prompt_name", "")
-            content = body.get("content", "")
-            notes = body.get("notes", "")
-            if not name or not content:
-                self._json({"status": "error", "message": "name and content required"})
-                return
-            # Get next version
-            cur.execute(f"SELECT MAX(version) as mv FROM prompt_versions WHERE prompt_name = {ph}", (name,))
-            row = cur.fetchone()
-            if _is_postgres():
-                max_v = row[0] if row and row[0] else 0
-            else:
-                max_v = row["mv"] if row and row["mv"] else 0
-            if max_v is None:
-                max_v = 0
-            version = max_v + 1
-            vid = str(uuid.uuid4())[:12]
-            now = datetime.now(timezone.utc).isoformat()
-            cur.execute(f"""INSERT INTO prompt_versions (id, prompt_name, version, content, is_active, created_at, notes)
-                VALUES ({','.join([ph]*7)})""", (vid, name, version, content, 0, now, notes))
-            if not _is_postgres():
-                conn.commit()
-            self._json({"status": "ok", "id": vid, "version": version})
-
-        finally:
-            cur.close()
+        from api.settings import save_prompt_version
+        self._json(save_prompt_version(body))
     def _activate_prompt_version(self, body):
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            vid = body.get("id", "")
-            if not vid:
-                self._json({"status": "error", "message": "id required"})
-                return
-            # Get prompt name and content
-            cur.execute(f"SELECT prompt_name, content FROM prompt_versions WHERE id = {ph}", (vid,))
-            row = cur.fetchone()
-            if not row:
-                self._json({"status": "error", "message": "not found"})
-                return
-            if _is_postgres():
-                name, content = row[0], row[1]
-            else:
-                name, content = row["prompt_name"], row["content"]
-            # Deactivate all for this name
-            cur.execute(f"UPDATE prompt_versions SET is_active = 0 WHERE prompt_name = {ph}", (name,))
-            # Activate this one
-            cur.execute(f"UPDATE prompt_versions SET is_active = 1 WHERE id = {ph}", (vid,))
-            if not _is_postgres():
-                conn.commit()
-            # Apply to live prompts
-            import apis.llm as llm
-            prompt_map = {
-                "trend_forecast": "PROMPT_TREND_FORECAST",
-                "merge_analysis": "PROMPT_MERGE_ANALYSIS",
-                "keyso_queries": "PROMPT_KEYSO_QUERIES",
-                "rewrite": "PROMPT_REWRITE",
-            }
-            attr = prompt_map.get(name)
-            if attr and hasattr(llm, attr):
-                setattr(llm, attr, content)
-                logger.info("Activated prompt version %s for %s", vid, name)
-            self._json({"status": "ok", "prompt_name": name, "applied": bool(attr)})
-
-        finally:
-            cur.close()
+        from api.settings import activate_prompt_version
+        self._json(activate_prompt_version(body))
     def _generate_digest(self, body):
-        """Генерирует дайджест за указанный период."""
-        period = body.get("period", "today")  # today, week
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            if period == "week":
-                interval = "7 days"
-            else:
-                interval = "1 day"
-            if _is_postgres():
-                cur.execute(f"SELECT id, title, source, url FROM news WHERE status IN ('approved', 'processed') AND parsed_at::timestamptz > (NOW() - INTERVAL '{interval}') ORDER BY parsed_at DESC LIMIT 30")
-                columns = [desc[0] for desc in cur.description]
-                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
-            else:
-                cur.execute(f"SELECT id, title, source, url FROM news WHERE status IN ('approved', 'processed') AND parsed_at > datetime('now', '-{interval}') ORDER BY parsed_at DESC LIMIT 30")
-                news_list = [dict(row) for row in cur.fetchall()]
-
-            if not news_list:
-                self._json({"status": "ok", "digest": {"title": "Нет данных", "summary": "Нет одобренных новостей за выбранный период.", "top_news": [], "trends": []}, "news_count": 0})
-                return
-
-            from apis.llm import _call_llm
-            news_text = "\n".join(f"- [{n['source']}] {n['title']}" for n in news_list)
-            period_label = 'неделю' if period == 'week' else 'день'
-            prompt = f"""Ты — главный редактор крупного игрового портала. Составь профессиональный дайджест «Главное за {period_label}» из новостей ниже.
-    
-    ## Новости ({len(news_list)} шт.):
-    {news_text}
-    
-    ## Правила:
-    1. title — яркий заголовок дайджеста (напр. «Игровой дайджест: GTA 6, новый патч Elden Ring и скандал вокруг Ubisoft»)
-    2. summary — связный текст на 4-6 предложений, охватывающий самые значимые события, не простое перечисление
-    3. top_news — 3-5 самых важных новостей, одной фразой каждая (не копируй заголовки дословно, перефразируй)
-    4. trends — 2-3 тенденции, которые прослеживаются в потоке новостей (напр. «Рост интереса к ретро-играм», «Волна переносов релизов»)
-    5. Язык: русский
-    
-    Ответь строго JSON без markdown:
-    {{
-      "title": "Заголовок дайджеста",
-      "summary": "Связный обзорный текст",
-      "top_news": ["Ключевая новость 1", "Ключевая новость 2", "Ключевая новость 3"],
-      "trends": ["Тенденция 1", "Тенденция 2"]
-    }}"""
-            result = _call_llm(prompt)
-            if result:
-                self._json({"status": "ok", "digest": result, "news_count": len(news_list)})
-            else:
-                self._json({"status": "error", "message": "LLM failed"})
-
-        finally:
-            cur.close()
+        from api.settings import generate_digest
+        self._json(generate_digest(body))
 
     def _get_digests(self):
-        """Возвращает последние 10 сохранённых дайджестов."""
-        from storage.database import get_digests
-        digests = get_digests(limit=10)
-        return {"status": "ok", "digests": digests}
+        from api.settings import get_digests
+        return get_digests()
 
     def _generate_and_save_digest(self, body):
-        """Ручная генерация дайджеста с сохранением в БД."""
-        style = body.get("style", "brief")
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            if _is_postgres():
-                cur.execute("""
-                    SELECT n.id, n.title, n.source, n.url,
-                           COALESCE(a.total_score, 0) as total_score
-                    FROM news n
-                    LEFT JOIN news_analysis a ON a.news_id = n.id
-                    WHERE n.status IN ('approved', 'processed', 'in_review', 'ready')
-                      AND n.parsed_at::timestamptz > (NOW() - INTERVAL '24 hours')
-                    ORDER BY COALESCE(a.total_score, 0) DESC
-                    LIMIT 20
-                """)
-                columns = [desc[0] for desc in cur.description]
-                news_list = [dict(zip(columns, row)) for row in cur.fetchall()]
-            else:
-                cur.execute("""
-                    SELECT n.id, n.title, n.source, n.url,
-                           COALESCE(a.total_score, 0) as total_score
-                    FROM news n
-                    LEFT JOIN news_analysis a ON a.news_id = n.id
-                    WHERE n.status IN ('approved', 'processed', 'in_review', 'ready')
-                      AND n.parsed_at > datetime('now', '-1 day')
-                    ORDER BY COALESCE(a.total_score, 0) DESC
-                    LIMIT 20
-                """)
-                news_list = [dict(row) for row in cur.fetchall()]
-
-            if not news_list:
-                self._json({"status": "ok", "digest": {"title": "Нет данных", "text": "Нет новостей за последние 24 часа.", "news_count": 0}})
-                return
-
-            from apis.digest import generate_daily_digest
-            result = generate_daily_digest(news_list, style=style)
-
-            # Save to DB
-            import uuid
-            from datetime import datetime, timezone
-            from storage.database import save_digest
-            digest_id = str(uuid.uuid4())[:12]
-            digest_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            save_digest(
-                digest_id=digest_id,
-                digest_date=digest_date,
-                style=style,
-                title=result.get("title", ""),
-                text=result.get("text", ""),
-                news_count=result.get("news_count", 0),
-            )
-
-            self._json({"status": "ok", "digest": result})
-
-        except Exception as e:
-            self._json({"status": "error", "message": str(e)[:500]})
-        finally:
-            cur.close()
+        from api.settings import generate_and_save_digest
+        self._json(generate_and_save_digest(body))
 
     def _get_event_chain(self, body):
-        news_id = body.get("news_id", "")
-        if not news_id:
-            self._json({"status": "error", "message": "news_id required"})
-            return
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                row = cur.fetchone()
-                if not row:
-                    self._json({"status": "error", "message": "not found"})
-                    return
-                news = dict(zip(columns, row))
-            else:
-                row = cur.fetchone()
-                if not row:
-                    self._json({"status": "error", "message": "not found"})
-                    return
-                news = dict(row)
-            from checks.temporal_clusters import get_event_chain
-            chain = get_event_chain(news)
-            self._json({"status": "ok", **chain})
-
-        finally:
-            cur.close()
-    # ---- Queue methods ----
+        from api.news import get_event_chain
+        self._json(get_event_chain(body))
 
     def _get_queue(self):
         from api.queue import get_queue
@@ -3001,104 +1291,29 @@ async function login() {
         return get_viral(qs)
 
     def _get_logs(self):
+        from api.settings import get_logs
         qs = parse_qs(urlparse(self.path).query)
-        limit = int(qs.get("limit", [100])[0])
-        level = qs.get("level", [""])[0]
-        from apis.cache import get_logs
-        return {"logs": get_logs(limit=limit, level=level)}
+        return get_logs(query_params=qs)
 
     def _get_rate_stats(self):
-        from apis.cache import get_rate_stats
+        from api.settings import get_rate_stats
         return get_rate_stats()
 
     def _get_cache_stats(self):
-        from apis.cache import get_cache_stats
+        from api.settings import get_cache_stats
         return get_cache_stats()
 
     def _clear_cache(self, body):
-        from apis.cache import clear_cache
-        clear_cache()
-        self._json({"status": "ok"})
+        from api.settings import clear_cache
+        self._json(clear_cache(body))
 
     def _translate_title(self, body):
-        news_id = body.get("news_id", "")
-        if not news_id:
-            self._json({"status": "error", "message": "news_id required"})
-            return
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"SELECT title FROM news WHERE id = {ph}", (news_id,))
-            row = cur.fetchone()
-            if not row:
-                self._json({"status": "error", "message": "not found"})
-                return
-            title = row[0] if _is_postgres() else row["title"]
-            try:
-                from apis.llm import translate_title
-                result = translate_title(title)
-                if result:
-                    # Save translated title as h1 if not Russian
-                    if not result.get("is_russian") and result.get("translated"):
-                        cur.execute(f"UPDATE news SET h1 = {ph} WHERE id = {ph}", (result["translated"], news_id))
-                        if not _is_postgres():
-                            conn.commit()
-                    self._json({"status": "ok", **result})
-                else:
-                    self._json({"status": "error", "message": "LLM not responding. Check API keys and rate limits."})
-            except Exception as e:
-                logger.error("Translate error: %s", e)
-                self._json({"status": "error", "message": str(e)})
+        from api.news import translate_title
+        self._json(translate_title(body))
 
-        finally:
-            cur.close()
     def _ai_recommend(self, body):
-        news_id = body.get("news_id", "")
-        if not news_id:
-            self._json({"status": "error", "message": "news_id required"})
-            return
-        conn = get_connection()
-        cur = conn.cursor()
-        try:
-            ph = "%s" if _is_postgres() else "?"
-            cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
-            row = cur.fetchone()
-            if not row:
-                self._json({"status": "error", "message": "not found"})
-                return
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                news = dict(zip(columns, row))
-            else:
-                news = dict(row)
-
-            # Run checks for context
-            from checks.quality import check_quality
-            from checks.relevance import check_relevance
-            from checks.freshness import check_freshness
-            from checks.viral_score import viral_score
-            checks = {
-                "quality": check_quality(news),
-                "relevance": check_relevance(news),
-                "freshness": check_freshness(news),
-                "viral": viral_score(news),
-            }
-            from apis.llm import ai_recommendation
-            result = ai_recommendation(
-                title=news.get("title", ""),
-                text=news.get("plain_text", "") or news.get("description", ""),
-                source=news.get("source", ""),
-                checks=checks,
-            )
-            if result:
-                self._json({"status": "ok", "recommendation": result, "checks": {k: v.get("score", 0) for k, v in checks.items()}})
-            else:
-                self._json({"status": "error", "message": "AI recommendation failed"})
-
-        finally:
-            cur.close()
-    # --- Phase 3: Analytics Funnel & Source Intelligence ---
+        from api.news import ai_recommend
+        self._json(ai_recommend(body))
 
     def _get_funnel_analytics(self):
         from api.analytics import get_funnel_analytics
@@ -3133,50 +1348,27 @@ async function login() {
     # --- Phase 0: Feature Flags & Observability API ---
 
     def _get_feature_flags(self):
-        try:
-            from core.feature_flags import get_all_flags
-            return {"flags": get_all_flags()}
-        except Exception as e:
-            return {"flags": [], "error": str(e)}
+        from api.settings import get_feature_flags
+        return get_feature_flags()
 
     def _toggle_feature_flag(self, body):
         if not self._require_perm("flags"):
             return
-        flag_id = body.get("flag_id", "")
-        enabled = body.get("enabled", False)
-        if not flag_id:
-            self._json({"error": "flag_id required"}, 400)
-            return
-        try:
-            from core.feature_flags import set_flag
-            user = self._get_session_user() or "admin"
-            set_flag(flag_id, bool(enabled), updated_by=user)
-            self._json({"status": "ok", "flag_id": flag_id, "enabled": enabled})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        from api.settings import toggle_feature_flag
+        user = self._get_session_user() or "admin"
+        self._json(toggle_feature_flag(body, user=user))
 
     def _get_cost_summary(self):
         from api.analytics import get_cost_summary
         return get_cost_summary()
 
     def _get_config_audit(self):
-        try:
-            from core.observability import get_config_audit
-            return {"audit": get_config_audit(limit=50)}
-        except Exception as e:
-            return {"audit": [], "error": str(e)}
+        from api.settings import get_config_audit
+        return get_config_audit()
 
     def _get_decision_trace(self, body):
-        news_id = body.get("news_id", "")
-        if not news_id:
-            self._json({"error": "news_id required"}, 400)
-            return
-        try:
-            from core.observability import get_decision_trace
-            trace = get_decision_trace(news_id)
-            self._json({"news_id": news_id, "trace": trace})
-        except Exception as e:
-            self._json({"error": str(e)}, 500)
+        from api.settings import get_decision_trace
+        self._json(get_decision_trace(body))
 
     def _get_ops_dashboard(self):
         from api.dashboard import get_ops_dashboard
@@ -3197,50 +1389,11 @@ async function login() {
         self._json(simulate_thresholds(body))
 
     def _rescore_news(self, body):
-        """Re-run scoring pipeline for specific news or all with score=0."""
         if not self._require_perm("pipeline"):
             return
-        news_ids = body.get("news_ids", [])
-        rescore_zero = body.get("rescore_zero", False)
-        conn = get_connection()
-        cur = conn.cursor()
-        ph = "%s" if _is_postgres() else "?"
-        try:
-            if rescore_zero:
-                # Find all with score=0, missing analysis, or rejected due to low quality
-                cur.execute(f"""
-                    SELECT n.* FROM news n
-                    LEFT JOIN news_analysis a ON n.id = a.news_id
-                    WHERE n.status IN ('in_review', 'new', 'rejected')
-                    AND (a.total_score IS NULL OR a.total_score = 0 OR a.news_id IS NULL)
-                    ORDER BY n.parsed_at DESC
-                    LIMIT 500
-                """)
-            elif news_ids:
-                placeholders = ",".join([ph] * len(news_ids))
-                cur.execute(f"SELECT * FROM news WHERE id IN ({placeholders})", tuple(news_ids))
-            else:
-                self._json({"status": "error", "message": "news_ids or rescore_zero required"})
-                return
+        from api.news import rescore_news
+        self._json(rescore_news(body))
 
-            if _is_postgres():
-                columns = [desc[0] for desc in cur.description]
-                news_list = [dict(zip(columns, r)) for r in cur.fetchall()]
-            else:
-                news_list = [dict(r) for r in cur.fetchall()]
-        finally:
-            cur.close()
-
-        if not news_list:
-            self._json({"status": "ok", "rescored": 0, "message": "Нет новостей для пересчёта"})
-            return
-
-        from checks.pipeline import run_review_pipeline
-        result = run_review_pipeline(news_list, update_status=False)
-        scored = len(result.get("results", []))
-        self._json({"status": "ok", "rescored": scored})
-
-    # --- Dashboard HTML ---
     def _serve_dashboard(self):
         global _DASHBOARD_HTML_GZIP, _DASHBOARD_HTML_BYTES
         # Pre-compress dashboard HTML once (saves ~400KB per request)
