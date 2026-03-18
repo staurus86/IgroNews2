@@ -73,10 +73,10 @@ class TestCircuitBreaker(unittest.TestCase):
     """Circuit breaker must auto-reset after timeout period."""
 
     def setUp(self):
-        import scheduler
-        scheduler._api_failures = {}
-        if hasattr(scheduler, '_api_failure_times'):
-            scheduler._api_failure_times = {}
+        from core import circuit_breaker as cb
+        with cb._cb_lock:
+            cb._api_failures.clear()
+            cb._api_failure_times.clear()
 
     def test_circuit_opens_after_threshold(self):
         from scheduler import _api_record_failure, _api_circuit_open
@@ -101,14 +101,13 @@ class TestCircuitBreaker(unittest.TestCase):
     def test_circuit_auto_resets_after_timeout(self):
         """Open circuit should auto-reset after CIRCUIT_RESET_SECONDS."""
         from scheduler import _api_record_failure, _api_circuit_open
+        from core import circuit_breaker as cb
         for _ in range(5):
             _api_record_failure("keyso")
         self.assertTrue(_api_circuit_open("keyso"))
 
-        import scheduler
-        self.assertTrue(hasattr(scheduler, '_api_failure_times'),
-                        "scheduler must have _api_failure_times dict for timed reset")
-        scheduler._api_failure_times["keyso"] = time.time() - 400  # > 300s
+        with cb._cb_lock:
+            cb._api_failure_times["keyso"] = time.time() - 400  # > 300s
 
         self.assertFalse(_api_circuit_open("keyso"),
                          "Circuit should auto-reset after timeout period")
@@ -116,13 +115,12 @@ class TestCircuitBreaker(unittest.TestCase):
     def test_circuit_stays_open_within_timeout(self):
         """Open circuit should stay open before timeout expires."""
         from scheduler import _api_record_failure, _api_circuit_open
+        from core import circuit_breaker as cb
         for _ in range(5):
             _api_record_failure("keyso")
 
-        import scheduler
-        self.assertTrue(hasattr(scheduler, '_api_failure_times'),
-                        "scheduler must have _api_failure_times dict for timed reset")
-        scheduler._api_failure_times["keyso"] = time.time() - 60  # < 300s
+        with cb._cb_lock:
+            cb._api_failure_times["keyso"] = time.time() - 60  # < 300s
 
         self.assertTrue(_api_circuit_open("keyso"),
                         "Circuit should remain open before timeout")
@@ -139,12 +137,12 @@ class TestCircuitBreaker(unittest.TestCase):
 class TestFullAutoPipelineRewriteFail(unittest.TestCase):
     """When LLM rewrite fails, news status must be reset (not stuck in 'approved')."""
 
-    @patch('scheduler._update_task')
-    @patch('scheduler._fetch_analysis_by_id')
-    @patch('scheduler._fetch_news_by_id')
-    @patch('scheduler._do_process')
-    @patch('scheduler._calc_final_score')
-    @patch('scheduler.update_news_status')
+    @patch('pipeline.orchestrator._update_task')
+    @patch('pipeline.orchestrator._fetch_analysis_by_id')
+    @patch('pipeline.orchestrator._fetch_news_by_id')
+    @patch('pipeline.orchestrator._do_process')
+    @patch('pipeline.orchestrator._calc_final_score')
+    @patch('pipeline.orchestrator.update_news_status')
     @patch('checks.pipeline.run_review_pipeline')
     @patch('apis.llm.rewrite_news', return_value=None)
     def test_rewrite_fail_resets_status(self, mock_rewrite, mock_review, mock_status,
@@ -178,17 +176,17 @@ class TestFullAutoPipelineRewriteFail(unittest.TestCase):
 class TestFullAutoPipelineSheetsFail(unittest.TestCase):
     """When Sheets export fails, status should NOT be 'ready'."""
 
-    @patch('scheduler._update_task')
-    @patch('scheduler._fetch_analysis_by_id')
-    @patch('scheduler._fetch_news_by_id')
-    @patch('scheduler._do_process')
-    @patch('scheduler._calc_final_score')
-    @patch('scheduler._save_rewrite_article')
-    @patch('scheduler.update_news_status')
+    @patch('pipeline.orchestrator._update_task')
+    @patch('pipeline.orchestrator._fetch_analysis_by_id')
+    @patch('pipeline.orchestrator._fetch_news_by_id')
+    @patch('pipeline.orchestrator._do_process')
+    @patch('pipeline.orchestrator._calc_final_score')
+    @patch('pipeline.orchestrator._save_rewrite_article')
+    @patch('pipeline.orchestrator.update_news_status')
     @patch('checks.pipeline.run_review_pipeline')
     @patch('apis.llm.rewrite_news')
     @patch('storage.sheets.write_ready_row', side_effect=Exception("Sheets 429"))
-    @patch('scheduler.time')
+    @patch('pipeline.orchestrator.time')
     def test_sheets_fail_status_not_ready(self, mock_time, mock_sheets, mock_rewrite,
                                            mock_review, mock_status,
                                            mock_save_article, mock_calc, mock_process,
@@ -230,21 +228,16 @@ class TestCursorLeakExportProcessed(unittest.TestCase):
         with open(web_path, "r", encoding="utf-8") as f:
             source = f.read()
 
-        # Find _export_all_processed method
         func_start = source.find("def _export_all_processed")
         self.assertNotEqual(func_start, -1, "_export_all_processed must exist")
 
-        # Find next def (end of function)
         next_def = source.find("\n    def ", func_start + 1)
         func_body = source[func_start:next_def] if next_def != -1 else source[func_start:]
 
-        # Find cur2 = conn.cursor()
         cur2_pos = func_body.find("cur2")
         self.assertNotEqual(cur2_pos, -1, "cur2 should exist in _export_all_processed")
 
-        # After cur2, there must be try/finally before cur2.close()
         after_cur2 = func_body[cur2_pos:]
-        try_pos = after_cur2.find("try:")
         finally_pos = after_cur2.find("finally:")
         close_pos = after_cur2.find("cur2.close()")
 
@@ -261,12 +254,10 @@ class TestPipelineButtonDoubleClick(unittest.TestCase):
     """JS pipeline buttons must be disabled immediately on click."""
 
     def _get_web_source(self):
-        # Dashboard HTML is now in static/dashboard.html
         html_path = os.path.join(PROJECT_ROOT, "static", "dashboard.html")
         if os.path.exists(html_path):
             with open(html_path, "r", encoding="utf-8") as f:
                 return f.read()
-        # Fallback: inline HTML in web.py (legacy)
         web_path = os.path.join(PROJECT_ROOT, "web.py")
         with open(web_path, "r", encoding="utf-8") as f:
             return f.read()
@@ -282,7 +273,6 @@ class TestPipelineButtonDoubleClick(unittest.TestCase):
         api_call_pos = func_body.find("api('/api/pipeline/full_auto'")
         self.assertNotEqual(api_call_pos, -1, "API call must exist")
 
-        # Look for any disable mechanism before the api call
         before_api = func_body[:api_call_pos]
         has_disable = (
             "disabled = true" in before_api or
