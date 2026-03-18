@@ -307,7 +307,24 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <input type="checkbox" id="notif-toggle" style="width:14px;height:14px;cursor:pointer" onchange="toggleNotifications(this.checked)">
     &#128276; Уведомления
   </label>
+  <button onclick="showHotkeys()" style="background:none;border:1px solid #38444d;color:#8899a6;border-radius:6px;padding:2px 8px;cursor:pointer;font-size:0.82em;margin-left:8px" title="Горячие клавиши">?</button>
 </header>
+<div id="hotkeys-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:10000;align-items:center;justify-content:center">
+  <div style="background:#192734;border:1px solid #38444d;border-radius:12px;padding:24px;max-width:420px;width:90%;color:#e1e8ed">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h3 style="margin:0;font-size:1.1em">Горячие клавиши</h3>
+      <span onclick="document.getElementById('hotkeys-modal').style.display='none'" style="cursor:pointer;font-size:1.2em;opacity:0.6">✕</span>
+    </div>
+    <table style="width:100%;font-size:0.9em">
+      <tr><td style="padding:4px 0"><kbd style="background:#253341;padding:2px 8px;border-radius:4px;font-family:monospace">A</kbd></td><td>Одобрить (в режиме Triage)</td></tr>
+      <tr><td style="padding:4px 0"><kbd style="background:#253341;padding:2px 8px;border-radius:4px;font-family:monospace">R</kbd></td><td>Отклонить (в режиме Triage)</td></tr>
+      <tr><td style="padding:4px 0"><kbd style="background:#253341;padding:2px 8px;border-radius:4px;font-family:monospace">S</kbd></td><td>Пропустить (в режиме Triage)</td></tr>
+      <tr><td style="padding:4px 0"><kbd style="background:#253341;padding:2px 8px;border-radius:4px;font-family:monospace">?</kbd></td><td>Объяснить скор (Explain Drawer)</td></tr>
+      <tr><td colspan="2" style="padding:8px 0 4px;color:#8899a6;font-size:0.9em">Triage режим включается в <b>Редакция → Triage</b></td></tr>
+    </table>
+  </div>
+</div>
+<script>function showHotkeys(){document.getElementById('hotkeys-modal').style.display='flex'}</script>
 
 <div class="container">
   <div class="tabs">
@@ -433,8 +450,8 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <button class="btn btn-sm btn-secondary" onclick="edBatchRewrite()">&#9998; Рерайт</button>
       <span style="color:#38444d">|</span>
       <span id="pipeline-controls">
-        <button id="btn-full-auto" class="btn btn-sm" style="background:#1da1f2;color:#fff" onclick="runFullAuto()" title="Скор→>70 на LLM→Финальный скор→>60 на рерайт→Sheets">&#128640; Полный автомат</button>
-        <button id="btn-no-llm" class="btn btn-sm" style="background:#794bc4;color:#fff" onclick="runNoLLM()">&#128203; Без LLM</button>
+        <button id="btn-full-auto" class="btn btn-sm" style="background:#1da1f2;color:#fff" onclick="runFullAuto()" title="6 этапов: Скор → LLM-обогащение → Рерайт → Sheets/Ready. Платно (расходует API).">&#128640; Полный автомат</button>
+        <button id="btn-no-llm" class="btn btn-sm" style="background:#794bc4;color:#fff" onclick="runNoLLM()" title="Только локальный скоринг → Sheets/NotReady для ручной модерации. Бесплатно.">&#128203; Без LLM</button>
         <button id="btn-pipeline-stop" class="btn btn-sm btn-danger" style="display:none" onclick="stopPipeline()">&#9724; Стоп</button>
         <span id="pipeline-status" style="display:none;margin-left:8px;padding:4px 12px;border-radius:8px;background:#253341;font-size:0.85em;color:#ffad1f;border:1px solid #38444d"></span>
       </span>
@@ -787,7 +804,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       </tr></thead>
       <tbody id="viral-table"></tbody>
     </table>
-    <div id="viral-empty" style="display:none;text-align:center;padding:40px;color:#8899a6">Нет данных. Нажмите &laquo;Обновить&raquo;</div>
+    <div id="viral-empty" style="display:none;text-align:center;padding:40px;color:#8899a6">Нет данных о виральности. Новости появятся после парсинга и скоринга.<br><button class="btn btn-sm btn-secondary" onclick="loadViral()" style="margin-top:12px">Обновить</button></div>
   </div>
 
   <div class="panel" id="panel-analytics">
@@ -1018,8 +1035,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <input type="number" id="filter-limit" value="100" min="10" max="500" style="width:80px" onchange="loadNewsPage(0)" autocomplete="off">
       <span class="filter-sep"></span>
       <span class="filter-label">С:</span>
+      <span class="filter-label">Дата (публикации):</span>
       <input type="date" id="news-date-from" onchange="loadNewsPage(0)">
-      <span class="filter-label">По:</span>
+      <span class="filter-label">по:</span>
       <input type="date" id="news-date-to" onchange="loadNewsPage(0)">
       <span class="filter-sep"></span>
       <button class="btn btn-sm btn-secondary" onclick="setNewsDateRange('today')">Сегодня</button>
@@ -1484,10 +1502,11 @@ document.querySelectorAll('.settings-tab').forEach(t => t.addEventListener('clic
 function toast(msg, isError) {
   const el = document.getElementById('toast');
   if (!el) return;
-  el.textContent = msg;
+  el.innerHTML = msg + ' <span onclick="this.parentElement.style.display=\'none\'" style="cursor:pointer;margin-left:12px;opacity:0.7">✕</span>';
   el.className = 'toast' + (isError ? ' error' : '');
   el.style.display = 'block';
-  setTimeout(() => el.style.display = 'none', 3000);
+  clearTimeout(el._tid);
+  el._tid = setTimeout(() => el.style.display = 'none', isError ? 8000 : 5000);
 }
 function showToast(msg, type) {
   toast(msg, type === 'error' || type === 'warning');
@@ -4590,10 +4609,10 @@ async function runFullAuto() {
   let ids = getEdSelectedIds();
   let allNew = false;
   if (!ids.length) {
-    if (!confirm('Выбранных нет. Запустить полный автомат для ВСЕХ новых?\\n\\nПайплайн: Скор → >70 на LLM → Финальный скор → >60 на рерайт → Sheets/Ready')) return;
+    if (!confirm('Выбранных нет. Запустить полный автомат для ВСЕХ новых?\n\n6 этапов (платно — расходует API):\n1. Локальный скоринг\n2. Фильтр: скор > 70 → LLM\n3. Обогащение: Keys.so + Trends + LLM\n4. Финальный скор\n5. Фильтр: финал > 60 → рерайт\n6. Рерайт → Sheets/Ready')) return;
     allNew = true;
   } else {
-    if (!confirm('Запустить полный автомат для ' + ids.length + ' новостей?\\n\\nПайплайн: Скор → >70 на LLM → Финальный скор → >60 на рерайт → Sheets/Ready')) return;
+    if (!confirm('Запустить полный автомат для ' + ids.length + ' новостей?\n\n6 этапов (платно — расходует API):\nСкор → LLM-обогащение → Рерайт → Sheets/Ready')) return;
   }
   const btnFull = document.getElementById('btn-full-auto');
   const btnNoLLM = document.getElementById('btn-no-llm');
@@ -4621,10 +4640,10 @@ async function runNoLLM() {
   let ids = getEdSelectedIds();
   let allNew = false;
   if (!ids.length) {
-    if (!confirm('Выбранных нет. Запустить "Без LLM" для ВСЕХ новых?')) return;
+    if (!confirm('Выбранных нет. Запустить «Без LLM» для ВСЕХ новых?\n\nТолько локальный скоринг (бесплатно) → Sheets/NotReady для ручной модерации.')) return;
     allNew = true;
   } else {
-    if (!confirm('Запустить "Без LLM" для ' + ids.length + ' новостей? Только локальный анализ + Sheets NotReady.')) return;
+    if (!confirm('Запустить «Без LLM» для ' + ids.length + ' новостей?\n\nТолько локальный скоринг (бесплатно) → Sheets/NotReady.')) return;
   }
   const btnFull = document.getElementById('btn-full-auto');
   const btnNoLLM = document.getElementById('btn-no-llm');

@@ -28,12 +28,13 @@ def _row_to_dict(cur, row):
 # CRUD
 # ---------------------------------------------------------------------------
 
-def get_articles():
-    """Return all articles ordered by updated_at DESC."""
+def get_articles(limit: int = 500):
+    """Return articles ordered by updated_at DESC, with limit."""
     conn = get_connection()
     cur = conn.cursor()
+    ph = "%s" if _is_postgres() else "?"
     try:
-        cur.execute("SELECT * FROM articles ORDER BY updated_at DESC")
+        cur.execute(f"SELECT * FROM articles ORDER BY updated_at DESC LIMIT {ph}", (limit,))
         if _is_postgres():
             columns = [desc[0] for desc in cur.description]
             return [dict(zip(columns, row)) for row in cur.fetchall()]
