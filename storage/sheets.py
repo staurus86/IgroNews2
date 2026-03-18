@@ -602,14 +602,14 @@ def write_storylines(storylines: list[dict]) -> dict:
                 cluster_name, phase, count, sources, avg_score, max_viral,
                 games, triggers,
                 m.get("title", ""), m.get("source", ""), m.get("total_score", 0),
-                m.get("published_at", "")[:16], f'https://{m.get("source", "").lower().replace(" ", "")}.com',
+                m.get("published_at", "")[:16], m.get("url", ""),
             ])
             # Remaining members — only news columns
             for m in members[1:]:
                 rows.append([
                     "", "", "", "", "", "", "", "",
                     m.get("title", ""), m.get("source", ""), m.get("total_score", 0),
-                    m.get("published_at", "")[:16], "",
+                    m.get("published_at", "")[:16], m.get("url", ""),
                 ])
 
     # Write in batches

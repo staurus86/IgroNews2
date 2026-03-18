@@ -156,7 +156,7 @@ def get_storylines():
     try:
         cutoff = (dt_mod.now(timezone.utc) - timedelta(days=3)).isoformat()
         cur.execute(f"""
-            SELECT n.id, n.source, n.title, n.published_at, n.status,
+            SELECT n.id, n.source, n.title, n.url, n.published_at, n.status,
                    COALESCE(a.total_score, 0) as total_score,
                    COALESCE(a.viral_score, 0) as viral_score,
                    COALESCE(a.entity_names, '[]') as entity_names,
@@ -181,11 +181,17 @@ def get_storylines():
         pairs = tfidf_similarity(titles)
         groups = build_groups(news_list, pairs)
 
+        # Deduplication: each news appears in only one storyline (the largest)
+        used_ids = set()
         storylines = []
+        # Sort groups by size descending so largest clusters claim members first
+        groups.sort(key=lambda g: -len(g["members"]))
         for g in groups:
-            members = g["members"]
+            members = [m for m in g["members"] if m.get("id") not in used_ids]
             if len(members) < 2:
                 continue
+            for m in members:
+                used_ids.add(m.get("id"))
             sources = list(set(m.get("source", "") for m in members))
             avg_score = round(sum(m.get("total_score", 0) for m in members) / len(members)) if members else 0
             max_viral = max((m.get("viral_score", 0) for m in members), default=0)
@@ -236,6 +242,7 @@ def get_storylines():
                     "id": m.get("id", ""),
                     "title": m.get("title", ""),
                     "source": m.get("source", ""),
+                    "url": m.get("url", ""),
                     "published_at": m.get("published_at", ""),
                     "status": m.get("status", ""),
                     "total_score": m.get("total_score", 0),
