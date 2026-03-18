@@ -5,6 +5,7 @@ for HTML/RSS parsers.
 
 import logging
 import random
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -13,8 +14,9 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# Round-robin counter for proxy rotation
+# Round-robin counter for proxy rotation (thread-safe)
 _proxy_index = 0
+_proxy_lock = threading.Lock()
 
 
 def get_proxy() -> str | None:
@@ -23,8 +25,9 @@ def get_proxy() -> str | None:
     proxies = _get_proxy_list()
     if not proxies:
         return None
-    proxy = proxies[_proxy_index % len(proxies)]
-    _proxy_index += 1
+    with _proxy_lock:
+        proxy = proxies[_proxy_index % len(proxies)]
+        _proxy_index += 1
     return proxy
 
 

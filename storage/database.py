@@ -2,6 +2,8 @@ import hashlib
 import logging
 import os
 import sqlite3
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -11,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 _conn = None
 _pool = None  # PostgreSQL connection pool
+_local = threading.local()  # Per-thread connections for SQLite
+_conn_lock = threading.Lock()
 
 
 def _is_postgres():
@@ -19,40 +23,77 @@ def _is_postgres():
 
 def get_connection():
     global _conn, _pool
-    if _conn is not None:
-        # Validate PostgreSQL connection is alive
-        if _is_postgres():
-            try:
-                _conn.isolation_level  # triggers error if closed
-                cur = _conn.cursor()
-                cur.execute("SELECT 1")
-                cur.close()
-            except Exception:
-                logger.warning("PostgreSQL connection lost, reconnecting...")
-                _conn = None
-                return get_connection()
-        return _conn
 
     if _is_postgres():
-        import psycopg2
-        url = config.DATABASE_URL
-        # Railway иногда даёт postgres:// вместо postgresql://
-        if url.startswith("postgres://"):
-            url = url.replace("postgres://", "postgresql://", 1)
-        _conn = psycopg2.connect(url)
-        _conn.autocommit = True
-    else:
-        db_path = config.DATABASE_URL.replace("sqlite:///", "")
-        _conn = sqlite3.connect(db_path, check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
+        with _conn_lock:
+            if _conn is not None:
+                try:
+                    cur = _conn.cursor()
+                    cur.execute("SELECT 1")
+                    cur.close()
+                except Exception:
+                    logger.warning("PostgreSQL connection lost, reconnecting...")
+                    try:
+                        _conn.close()
+                    except Exception:
+                        pass
+                    _conn = None
 
-    return _conn
+            if _conn is None:
+                import psycopg2
+                url = config.DATABASE_URL
+                if url.startswith("postgres://"):
+                    url = url.replace("postgres://", "postgresql://", 1)
+                _conn = psycopg2.connect(url)
+                _conn.autocommit = True
+            return _conn
+    else:
+        # Per-thread connections for SQLite (avoids "database is locked")
+        conn = getattr(_local, 'conn', None)
+        if conn is not None:
+            return conn
+        db_path = config.DATABASE_URL.replace("sqlite:///", "")
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        _local.conn = conn
+        return conn
+
+
+@contextmanager
+def db_cursor():
+    """Context manager for safe cursor lifecycle."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        yield cur
+    finally:
+        cur.close()
+
+
+def ph():
+    """Returns the correct placeholder for the current DB engine."""
+    return "%s" if _is_postgres() else "?"
+
+
+def rows_to_dicts(cur) -> list[dict]:
+    """Converts cursor results to list of dicts."""
+    if _is_postgres():
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+    return [dict(row) for row in cur.fetchall()]
 
 
 def init_db():
     conn = get_connection()
     cur = conn.cursor()
+    try:
+        _init_db_impl(conn, cur)
+    finally:
+        cur.close()
+    logger.info("Database initialized")
 
+
+def _init_db_impl(conn, cur):
     articles_sql = """
         CREATE TABLE IF NOT EXISTS articles (
             id TEXT PRIMARY KEY,
@@ -257,8 +298,6 @@ def init_db():
     except Exception as e:
         logger.warning("Observability tables init skipped: %s", e)
 
-    logger.info("Database initialized")
-
 
 def _create_indexes(cur):
     """Create indexes for frequently-queried columns (IF NOT EXISTS is safe to re-run)."""
@@ -313,20 +352,23 @@ def insert_news(source: str, url: str, title: str, h1: str = "",
     cur = conn.cursor()
     now = datetime.now(timezone.utc).isoformat()
 
-    if _is_postgres():
-        cur.execute(
-            """INSERT INTO news (id, source, url, title, h1, description, plain_text, published_at, parsed_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-               ON CONFLICT (id) DO NOTHING""",
-            (news_id, source, url, title, h1, description, plain_text, published_at, now)
-        )
-    else:
-        cur.execute(
-            """INSERT OR IGNORE INTO news (id, source, url, title, h1, description, plain_text, published_at, parsed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (news_id, source, url, title, h1, description, plain_text, published_at, now)
-        )
-        conn.commit()
+    try:
+        if _is_postgres():
+            cur.execute(
+                """INSERT INTO news (id, source, url, title, h1, description, plain_text, published_at, parsed_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (id) DO NOTHING""",
+                (news_id, source, url, title, h1, description, plain_text, published_at, now)
+            )
+        else:
+            cur.execute(
+                """INSERT OR IGNORE INTO news (id, source, url, title, h1, description, plain_text, published_at, parsed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (news_id, source, url, title, h1, description, plain_text, published_at, now)
+            )
+            conn.commit()
+    finally:
+        cur.close()
 
     logger.info("Inserted news: %s — %s", source, title[:60])
     return news_id
@@ -376,32 +418,35 @@ def save_analysis(news_id: str, **kwargs):
     llm_merged_with = json.dumps(kwargs.get("llm_merged_with", []), ensure_ascii=False)
     sheets_row = kwargs.get("sheets_row")
 
-    if _is_postgres():
-        cur.execute(
-            """INSERT INTO news_analysis
-               (news_id, bigrams, trigrams, trends_data, keyso_data,
-                llm_recommendation, llm_trend_forecast, llm_merged_with, sheets_row, processed_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-               ON CONFLICT (news_id) DO UPDATE SET
-                bigrams=EXCLUDED.bigrams, trigrams=EXCLUDED.trigrams,
-                trends_data=EXCLUDED.trends_data, keyso_data=EXCLUDED.keyso_data,
-                llm_recommendation=EXCLUDED.llm_recommendation,
-                llm_trend_forecast=EXCLUDED.llm_trend_forecast,
-                llm_merged_with=EXCLUDED.llm_merged_with,
-                sheets_row=EXCLUDED.sheets_row, processed_at=EXCLUDED.processed_at""",
-            (news_id, bigrams, trigrams, trends_data, keyso_data,
-             llm_recommendation, llm_trend_forecast, llm_merged_with, sheets_row, now)
-        )
-    else:
-        cur.execute(
-            """INSERT OR REPLACE INTO news_analysis
-               (news_id, bigrams, trigrams, trends_data, keyso_data,
-                llm_recommendation, llm_trend_forecast, llm_merged_with, sheets_row, processed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (news_id, bigrams, trigrams, trends_data, keyso_data,
-             llm_recommendation, llm_trend_forecast, llm_merged_with, sheets_row, now)
-        )
-        conn.commit()
+    try:
+        if _is_postgres():
+            cur.execute(
+                """INSERT INTO news_analysis
+                   (news_id, bigrams, trigrams, trends_data, keyso_data,
+                    llm_recommendation, llm_trend_forecast, llm_merged_with, sheets_row, processed_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (news_id) DO UPDATE SET
+                    bigrams=EXCLUDED.bigrams, trigrams=EXCLUDED.trigrams,
+                    trends_data=EXCLUDED.trends_data, keyso_data=EXCLUDED.keyso_data,
+                    llm_recommendation=EXCLUDED.llm_recommendation,
+                    llm_trend_forecast=EXCLUDED.llm_trend_forecast,
+                    llm_merged_with=EXCLUDED.llm_merged_with,
+                    sheets_row=EXCLUDED.sheets_row, processed_at=EXCLUDED.processed_at""",
+                (news_id, bigrams, trigrams, trends_data, keyso_data,
+                 llm_recommendation, llm_trend_forecast, llm_merged_with, sheets_row, now)
+            )
+        else:
+            cur.execute(
+                """INSERT OR REPLACE INTO news_analysis
+                   (news_id, bigrams, trigrams, trends_data, keyso_data,
+                    llm_recommendation, llm_trend_forecast, llm_merged_with, sheets_row, processed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (news_id, bigrams, trigrams, trends_data, keyso_data,
+                 llm_recommendation, llm_trend_forecast, llm_merged_with, sheets_row, now)
+            )
+            conn.commit()
+    finally:
+        cur.close()
 
 
 def save_check_results(news_id: str, checks: dict, sentiment: dict = None,
@@ -470,19 +515,20 @@ def cleanup_old_plaintext(days: int = 14):
     cur = conn.cursor()
     from datetime import timedelta
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    ph = "%s" if _is_postgres() else "?"
-    cur.execute(f"""
-        UPDATE news SET plain_text = ''
-        WHERE parsed_at < {ph} AND plain_text != '' AND status IN ('processed', 'ready', 'rejected', 'duplicate')
-    """, (cutoff,))
-    if _is_postgres():
+    _ph = "%s" if _is_postgres() else "?"
+    try:
+        cur.execute(f"""
+            UPDATE news SET plain_text = ''
+            WHERE parsed_at < {_ph} AND plain_text != '' AND status IN ('processed', 'ready', 'rejected', 'duplicate')
+        """, (cutoff,))
         count = cur.rowcount
-    else:
-        count = cur.rowcount
-        conn.commit()
-    if count > 0:
-        logger.info("Cleaned plain_text for %d old news items", count)
-    return count
+        if not _is_postgres():
+            conn.commit()
+        if count > 0:
+            logger.info("Cleaned plain_text for %d old news items", count)
+        return count
+    finally:
+        cur.close()
 
 
 def cleanup_old_tasks(days: int = 7):

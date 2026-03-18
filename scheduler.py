@@ -1,6 +1,7 @@
 import gc
 import logging
 import json
+import threading
 import time
 from apscheduler.schedulers.blocking import BlockingScheduler
 
@@ -16,10 +17,11 @@ from storage.sheets import write_news_row
 
 logger = logging.getLogger(__name__)
 
-# Global pipeline stop flag (thread-safe via GIL)
-_pipeline_stop = False
+# Thread-safe pipeline stop event
+_pipeline_stop_event = threading.Event()
 
-# Circuit breaker: consecutive API failures per service
+# Circuit breaker: consecutive API failures per service (thread-safe)
+_cb_lock = threading.Lock()
 _api_failures = {}  # {service: consecutive_count}
 _api_failure_times = {}  # {service: timestamp of last failure}
 _API_FAILURE_THRESHOLD = 5  # after 5 consecutive failures, skip service
@@ -29,44 +31,44 @@ _CIRCUIT_RESET_SECONDS = 300  # auto-reset after 5 minutes
 def _api_circuit_open(service: str) -> bool:
     """Returns True if circuit is open (too many failures, should skip).
     Auto-resets after _CIRCUIT_RESET_SECONDS to avoid permanent deadlock."""
-    if _api_failures.get(service, 0) < _API_FAILURE_THRESHOLD:
-        return False
-    # Check timed auto-reset
-    last_failure = _api_failure_times.get(service, 0)
-    if time.time() - last_failure > _CIRCUIT_RESET_SECONDS:
-        _api_failures[service] = 0
-        logger.info("Circuit breaker AUTO-RESET for %s after %ds timeout", service, _CIRCUIT_RESET_SECONDS)
-        return False
-    return True
+    with _cb_lock:
+        if _api_failures.get(service, 0) < _API_FAILURE_THRESHOLD:
+            return False
+        last_failure = _api_failure_times.get(service, 0)
+        if time.time() - last_failure > _CIRCUIT_RESET_SECONDS:
+            _api_failures[service] = 0
+            logger.info("Circuit breaker AUTO-RESET for %s after %ds timeout", service, _CIRCUIT_RESET_SECONDS)
+            return False
+        return True
 
 
 def _api_record_failure(service: str):
     """Records an API failure."""
-    _api_failures[service] = _api_failures.get(service, 0) + 1
-    _api_failure_times[service] = time.time()
-    if _api_failures[service] == _API_FAILURE_THRESHOLD:
-        logger.warning("Circuit breaker OPEN for %s after %d consecutive failures", service, _API_FAILURE_THRESHOLD)
+    with _cb_lock:
+        _api_failures[service] = _api_failures.get(service, 0) + 1
+        _api_failure_times[service] = time.time()
+        if _api_failures[service] == _API_FAILURE_THRESHOLD:
+            logger.warning("Circuit breaker OPEN for %s after %d consecutive failures", service, _API_FAILURE_THRESHOLD)
 
 
 def _api_record_success(service: str):
     """Resets failure counter on success."""
-    _api_failures[service] = 0
+    with _cb_lock:
+        _api_failures[service] = 0
 
 
 def pipeline_stop():
     """Сигнал остановки пайплайна."""
-    global _pipeline_stop
-    _pipeline_stop = True
+    _pipeline_stop_event.set()
 
 
 def pipeline_reset():
     """Сброс флага остановки."""
-    global _pipeline_stop
-    _pipeline_stop = False
+    _pipeline_stop_event.clear()
 
 
 def is_pipeline_stopped():
-    return _pipeline_stop
+    return _pipeline_stop_event.is_set()
 
 
 def parse_sources(interval_min: int):
@@ -619,7 +621,7 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
             pass
 
     for i, (news_id, task_id) in enumerate(zip(news_ids, task_ids)):
-        if _pipeline_stop:
+        if _pipeline_stop_event.is_set():
             # Cancel remaining tasks
             for remaining_tid in task_ids[i:]:
                 _update_task(remaining_tid, "cancelled", {"reason": "Остановлено пользователем"})
@@ -917,7 +919,7 @@ def run_no_llm_pipeline(news_ids: list[str], task_ids: list[str]):
         batch_news_ids.clear()
 
     for i, (news_id, task_id) in enumerate(zip(news_ids, task_ids)):
-        if _pipeline_stop:
+        if _pipeline_stop_event.is_set():
             _flush_batch()  # write what we have so far
             for remaining_tid in task_ids[i:]:
                 _update_task(remaining_tid, "cancelled", {"reason": "Остановлено пользователем"})

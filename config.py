@@ -1,7 +1,18 @@
+import logging
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _int_env(key: str, default: int) -> int:
+    """Safe int parsing from env var with fallback on invalid values."""
+    val = os.getenv(key, str(default))
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        logging.warning("Invalid value '%s' for %s, using default %d", val, key, default)
+        return default
 
 # API Keys
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -22,7 +33,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///news.db")
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
 
 # Automation thresholds
-AUTO_APPROVE_THRESHOLD = int(os.getenv("AUTO_APPROVE_THRESHOLD", "0"))  # 0 = disabled, use pipeline buttons
+AUTO_APPROVE_THRESHOLD = _int_env("AUTO_APPROVE_THRESHOLD", 0)  # 0 = disabled, use pipeline buttons
 AUTO_REWRITE_ON_PUBLISH_NOW = os.getenv("AUTO_REWRITE_ON_PUBLISH_NOW", "true").lower() == "true"
 AUTO_REWRITE_STYLE = os.getenv("AUTO_REWRITE_STYLE", "news")
 
@@ -47,7 +58,7 @@ REGIONS = ["RU", "US", "GB", "DE"]
 # Telegram Bot
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_IDS = os.getenv("TELEGRAM_CHAT_IDS", "")  # comma-separated authorized chat IDs
-TELEGRAM_NOTIFY_THRESHOLD = int(os.getenv("TELEGRAM_NOTIFY_THRESHOLD", "70"))
+TELEGRAM_NOTIFY_THRESHOLD = _int_env("TELEGRAM_NOTIFY_THRESHOLD", 70)
 
 # Sources — flat list, scheduler distributes by interval
 SOURCES = [

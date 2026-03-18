@@ -22,8 +22,8 @@ def _handle_shutdown(signum, frame):
     try:
         from scheduler import pipeline_stop
         pipeline_stop()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("pipeline_stop() failed during shutdown: %s", e)
     sys.exit(0)
 
 

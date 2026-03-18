@@ -117,6 +117,7 @@ def check_keywords_bulk(keywords: list[str]) -> dict:
 
         # Получаем результат с retry
         import time
+        result_data = {}
         for attempt in range(3):
             time.sleep(3 + attempt * 2)  # 3s, 5s, 7s
             try:
