@@ -282,6 +282,20 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 .sim-bar { display:flex; height:28px; border-radius:6px; overflow:hidden; background:#22303c; margin:8px 0; }
 .sim-bar div { display:flex; align-items:center; justify-content:center; font-size:0.72em; color:#fff; font-weight:600; transition:width .3s; }
 
+/* Pipeline progress */
+.pipeline-progress { display:inline-flex; align-items:center; gap:2px; font-size:0.8em; }
+.pipeline-step { padding:2px 8px; border-radius:4px; background:#253341; color:#8899a6; }
+.pipeline-step.active { background:#1da1f2; color:#fff; animation: pulse 1.5s infinite; }
+.pipeline-step.done { background:#17bf63; color:#fff; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
+
+/* Score info tooltip */
+.score-info { cursor:help; color:#1da1f2; font-size:0.85em; opacity:0.7; }
+.score-info:hover { opacity:1; }
+
+/* Pipeline overlay spinner */
+.pipeline-spinner { width:40px; height:40px; border:4px solid #38444d; border-top-color:#1da1f2; border-radius:50%; animation:spin 0.8s linear infinite; margin-bottom:16px; }
+
 /* Funnel */
 .funnel-bar { display:flex; align-items:center; gap:10px; }
 .funnel-bar .fb-label { min-width:100px; font-size:0.82em; color:#8899a6; text-align:right; }
@@ -466,7 +480,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           <th class="sortable" onclick="edSort('source')" style="width:90px">Источник</th>
           <th class="sortable" onclick="edSort('title')">Заголовок</th>
           <th class="sortable" onclick="edSort('status')" style="width:85px">Статус</th>
-          <th class="sortable" onclick="edSort('total_score')" style="width:50px">Скор</th>
+          <th class="sortable" onclick="edSort('total_score')" style="width:50px">Скор <span class="score-info" title="Формула: внутренний×40% + вирал×20% + Keys.so×15% + Trends×10% + заголовок×15%&#10;&#10;0-29: низкий (красный)&#10;30-59: средний (жёлтый)&#10;60-100: высокий (зелёный)">ⓘ</span></th>
           <th style="width:60px">Кач/Рел</th>
           <th class="sortable" onclick="edSort('viral_score')" style="width:75px">Вирал.</th>
           <th style="width:65px">Свежесть</th>
@@ -1612,9 +1626,16 @@ function renderNewsPagination() {
   let html = '<div style="display:flex;gap:4px;align-items:center;margin-top:10px;justify-content:center">';
   if (currentPage > 1) html += `<button class="btn btn-sm btn-secondary" onclick="loadNewsPage(${(_newsOffset - _newsPageSize)})">&#9664; Назад</button>`;
   html += `<span style="color:#8899a6;font-size:0.85em;margin:0 8px">Стр. ${currentPage} из ${totalPages} (всего ${_newsTotal})</span>`;
+  html += `<input type="number" min="1" max="${totalPages}" value="${currentPage}" style="width:50px;padding:3px 6px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:4px;font-size:0.85em;text-align:center" onchange="jumpToNewsPage(this.value)" onkeydown="if(event.key==='Enter')jumpToNewsPage(this.value)">`;
   if (currentPage < totalPages) html += `<button class="btn btn-sm btn-secondary" onclick="loadNewsPage(${(_newsOffset + _newsPageSize)})">Далее &#9654;</button>`;
   html += '</div>';
   el.innerHTML = html;
+}
+
+function jumpToNewsPage(val) {
+  const page = parseInt(val, 10);
+  if (isNaN(page) || page < 1) return;
+  loadNewsPage((page - 1) * _newsPageSize);
 }
 
 const STATUS_LABELS = {new:'Новая',in_review:'Проверка',approved:'Одобр.',processed:'Обогащ.',duplicate:'Дубль',rejected:'Откл.',ready:'Готова'};
@@ -4372,7 +4393,14 @@ function renderEdPagination(total) {
     const active = i === _edPage ? 'background:#1da1f2;color:#fff' : 'background:#192734;color:#8899a6';
     html += `<button onclick="loadEditorial(${i})" style="padding:4px 10px;border:1px solid #38444d;border-radius:4px;cursor:pointer;${active}">${i+1}</button>`;
   }
+  html += `<span style="margin-left:8px;color:#8899a6;font-size:0.85em;display:inline-flex;align-items:center;gap:4px">Стр. <input type="number" min="1" max="${pages}" value="${_edPage+1}" style="width:50px;padding:3px 6px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:4px;font-size:0.9em;text-align:center" onchange="jumpToPage(this.value)" onkeydown="if(event.key==='Enter')jumpToPage(this.value)"> из ${pages}</span>`;
   document.getElementById('ed-pagination').innerHTML = html;
+}
+
+function jumpToPage(val) {
+  const page = parseInt(val, 10);
+  if (isNaN(page) || page < 1) return;
+  loadEditorial(page - 1);
 }
 
 // Bulk Sheets export
@@ -4539,6 +4567,7 @@ function setPipelineActive(type) {
   const btnNoLLM = document.getElementById('btn-no-llm');
   const btnStop = document.getElementById('btn-pipeline-stop');
   const statusEl = document.getElementById('pipeline-status');
+  const overlay = document.getElementById('pipeline-overlay');
   if (!btnFull || !btnNoLLM || !btnStop || !statusEl) return;
 
   if (type) {
@@ -4551,6 +4580,10 @@ function setPipelineActive(type) {
     btnStop.style.display = 'inline-block';
     statusEl.style.display = 'inline-block';
     statusEl.innerHTML = '';
+    // Show overlay
+    if (overlay) { overlay.style.display = 'flex'; }
+    if (document.getElementById('pipeline-overlay-text')) document.getElementById('pipeline-overlay-text').textContent = type === 'full_auto' ? 'Полный автомат...' : 'Без LLM...';
+    if (document.getElementById('pipeline-overlay-detail')) document.getElementById('pipeline-overlay-detail').textContent = '';
     // Start polling
     if (!_pipelinePolling) {
       _pipelinePolling = setInterval(pollPipelineStatus, 3000);
@@ -4565,6 +4598,8 @@ function setPipelineActive(type) {
     btnStop.style.display = 'none';
     statusEl.style.display = 'none';
     statusEl.innerHTML = '';
+    // Hide overlay
+    if (overlay) { overlay.style.display = 'none'; }
     if (_pipelinePolling) {
       clearInterval(_pipelinePolling);
       _pipelinePolling = null;
@@ -4572,10 +4607,25 @@ function setPipelineActive(type) {
   }
 }
 
+const _pipelineSteps = ['scoring','enriching','rewriting','exporting','complete'];
+const _pipelineStepLabels = {scoring:'Скоринг',enriching:'Обогащение',rewriting:'Рерайт',exporting:'Экспорт',complete:'Готово'};
+
+function _buildStepIndicator(currentStage) {
+  const stageIdx = _pipelineSteps.indexOf(currentStage);
+  return '<span class="pipeline-progress">' + _pipelineSteps.map((s, i) => {
+    let cls = 'pipeline-step';
+    if (i < stageIdx) cls += ' done';
+    else if (i === stageIdx) cls += ' active';
+    return `<span class="${cls}">${_pipelineStepLabels[s]}</span>`;
+  }).join('') + '</span>';
+}
+
 async function pollPipelineStatus() {
   try {
     const r = await api('/api/pipeline/status');
     const statusEl = document.getElementById('pipeline-status');
+    const overlayText = document.getElementById('pipeline-overlay-text');
+    const overlayDetail = document.getElementById('pipeline-overlay-detail');
     if (r.running) {
       statusEl.style.display = 'inline-block';
       const typeLabel = r.active_type === 'full_auto' ? 'Автомат' : 'Без LLM';
@@ -4590,9 +4640,15 @@ async function pollPipelineStatus() {
           elapsed = m > 0 ? ` | ${m}м ${s}с` : ` | ${s}с`;
         }
       }
-      statusEl.innerHTML = `<b>${typeLabel}</b> &middot; ${done}/${totalAll} обработано${elapsed}`;
+      // Determine current stage from response
+      const stage = r.current_stage || r.stage || 'scoring';
+      const stepsHtml = _buildStepIndicator(stage);
+      statusEl.innerHTML = `<b>${typeLabel}</b> &middot; ${done}/${totalAll}${elapsed}<br>${stepsHtml}`;
       statusEl.style.color = '#ffad1f';
       statusEl.style.borderColor = r.active_type === 'full_auto' ? '#1da1f2' : '#794bc4';
+      // Update overlay
+      if (overlayText) overlayText.innerHTML = `${typeLabel}: ${_pipelineStepLabels[stage] || stage}`;
+      if (overlayDetail) overlayDetail.textContent = `${done}/${totalAll} обработано${elapsed}`;
     } else {
       statusEl.style.display = 'inline-block';
       statusEl.innerHTML = '<b style="color:#17bf63">Завершено</b>';
@@ -5353,5 +5409,14 @@ function applyFeatureFlags() {
 })();
 
 </script>
+
+<!-- Pipeline overlay -->
+<div id="pipeline-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(15,25,35,0.85);z-index:9999;align-items:center;justify-content:center;flex-direction:column">
+  <div class="pipeline-spinner"></div>
+  <div id="pipeline-overlay-text" style="color:#e1e8ed;font-size:1.1em">Обработка...</div>
+  <div id="pipeline-overlay-detail" style="color:#8899a6;font-size:0.9em;margin-top:8px"></div>
+  <button class="btn btn-danger btn-sm" onclick="stopPipeline()" style="margin-top:20px">Остановить</button>
+</div>
+
 </body>
 </html>

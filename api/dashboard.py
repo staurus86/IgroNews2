@@ -143,7 +143,7 @@ def get_ops_dashboard():
         return result
     except Exception as e:
         logger.error("Ops dashboard error: %s", e)
-        return {"error": str(e)}
+        return {"status": "error", "message": str(e)}
     finally:
         cur.close()
 
@@ -247,7 +247,7 @@ def get_storylines():
         return {"storylines": storylines[:50], "total_news": len(news_list)}
     except Exception as e:
         logger.error("Storylines error: %s", e)
-        return {"storylines": [], "error": str(e)}
+        return {"status": "error", "message": str(e), "storylines": []}
     finally:
         cur.close()
 
@@ -352,7 +352,7 @@ def get_source_health_plus():
         return {"sources": results, "days": days_list}
     except Exception as e:
         logger.error("Source health plus error: %s", e)
-        return {"sources": [], "error": str(e)}
+        return {"status": "error", "message": str(e), "sources": []}
     finally:
         cur.close()
 
@@ -428,6 +428,6 @@ def simulate_thresholds(body):
             "by_source": dict(by_source),
         }
     except Exception as e:
-        return {"error": str(e), "total": 0}
+        return {"status": "error", "message": str(e), "total": 0}
     finally:
         cur.close()

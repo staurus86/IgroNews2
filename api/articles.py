@@ -320,7 +320,7 @@ def get_article_versions(body):
     """Get version history for an article."""
     article_id = body.get("article_id", "")
     if not article_id:
-        return {"error": "article_id required"}
+        return {"status": "error", "message": "article_id required"}
     conn = get_connection()
     cur = conn.cursor()
     ph = _ph()
@@ -337,7 +337,7 @@ def get_article_versions(body):
             rows = [dict(r) for r in cur.fetchall()]
         return {"versions": rows}
     except Exception as e:
-        return {"versions": [], "error": str(e)}
+        return {"status": "error", "message": str(e), "versions": []}
     finally:
         cur.close()
 
@@ -388,7 +388,7 @@ def generate_multi_output(body):
     article_id = body.get("article_id", "")
     formats = body.get("formats", ["social", "short"])
     if not article_id:
-        return {"error": "article_id required"}
+        return {"status": "error", "message": "article_id required"}
 
     conn = get_connection()
     cur = conn.cursor()
@@ -397,7 +397,7 @@ def generate_multi_output(body):
         cur.execute(f"SELECT title, text FROM articles WHERE id = {ph}", (article_id,))
         row = cur.fetchone()
         if not row:
-            return {"error": "article not found"}
+            return {"status": "error", "message": "article not found"}
         if _is_postgres():
             title, text = row[0], row[1]
         else:
@@ -412,7 +412,7 @@ def generate_multi_output(body):
 
         return {"article_id": article_id, "outputs": results}
     except Exception as e:
-        return {"error": str(e)}
+        return {"status": "error", "message": str(e)}
     finally:
         cur.close()
 
@@ -422,7 +422,7 @@ def regenerate_field(body):
     article_id = body.get("article_id", "")
     field = body.get("field", "")
     if not article_id or field not in ("title", "seo_title", "seo_description", "tags"):
-        return {"error": "article_id and valid field required"}
+        return {"status": "error", "message": "article_id and valid field required"}
 
     conn = get_connection()
     cur = conn.cursor()
@@ -431,7 +431,7 @@ def regenerate_field(body):
         cur.execute(f"SELECT title, text FROM articles WHERE id = {ph}", (article_id,))
         row = cur.fetchone()
         if not row:
-            return {"error": "article not found"}
+            return {"status": "error", "message": "article not found"}
         if _is_postgres():
             title, text = row[0], row[1]
         else:
@@ -449,8 +449,8 @@ def regenerate_field(body):
         if result and field in result:
             return {"field": field, "value": result[field]}
         else:
-            return {"error": "LLM returned no result"}
+            return {"status": "error", "message": "LLM returned no result"}
     except Exception as e:
-        return {"error": str(e)}
+        return {"status": "error", "message": str(e)}
     finally:
         cur.close()

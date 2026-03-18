@@ -329,13 +329,13 @@ class TestDashboard(APITestBase):
         result = simulate_thresholds({"score_min": 50, "score_max": 100})
 
         # May error due to missing final_score column; handle gracefully
-        if "error" not in result:
+        if result.get("status") != "error":
             self.assertIn("total", result)
             self.assertIn("pass_score", result)
             self.assertIn("score_distribution", result)
             self.assertIn("by_source", result)
         else:
-            # The function catches errors and returns {"error": ..., "total": 0}
+            # The function catches errors and returns {"status": "error", "message": ..., "total": 0}
             self.assertIn("total", result)
 
     def test_simulate_thresholds_empty(self):
@@ -343,7 +343,7 @@ class TestDashboard(APITestBase):
         from api.dashboard import simulate_thresholds
         result = simulate_thresholds({"score_min": 0, "score_max": 100})
 
-        if "error" not in result:
+        if result.get("status") != "error":
             self.assertEqual(result["total"], 0)
 
 
@@ -712,7 +712,8 @@ class TestSettings(APITestBase):
         """toggle_feature_flag() returns error without flag_id."""
         from api.settings import toggle_feature_flag
         result = toggle_feature_flag({})
-        self.assertIn("error", result)
+        self.assertEqual(result.get("status"), "error")
+        self.assertIn("message", result)
 
     def test_get_logs(self):
         """get_logs() returns log list."""

@@ -12,6 +12,20 @@ from storage.database import get_connection, _is_postgres, update_news_status
 
 logger = logging.getLogger(__name__)
 
+_JSON_FIELDS = ['bigrams', 'trigrams', 'trends_data', 'keyso_data', 'viral_data', 'tags_data', 'entity_names', 'score_breakdown']
+
+
+def _parse_json_fields(row: dict) -> dict:
+    """Parse JSON string fields into Python objects for cleaner API responses."""
+    for field in _JSON_FIELDS:
+        val = row.get(field)
+        if isinstance(val, str) and val:
+            try:
+                row[field] = json.loads(val)
+            except (json.JSONDecodeError, ValueError):
+                pass
+    return row
+
 
 # ---------------------------------------------------------------------------
 # GET endpoints
@@ -85,9 +99,9 @@ def get_news(query_params):
 
         if _is_postgres():
             columns = [desc[0] for desc in cur.description]
-            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+            rows = [_parse_json_fields(dict(zip(columns, row))) for row in cur.fetchall()]
         else:
-            rows = [dict(row) for row in cur.fetchall()]
+            rows = [_parse_json_fields(dict(row)) for row in cur.fetchall()]
 
         return {"news": rows, "total": total_count, "limit": limit, "offset": offset}
     finally:
@@ -191,9 +205,9 @@ def get_editorial(query_params):
 
         if _is_postgres():
             columns = [desc[0] for desc in cur.description]
-            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+            rows = [_parse_json_fields(dict(zip(columns, row))) for row in cur.fetchall()]
         else:
-            rows = [dict(row) for row in cur.fetchall()]
+            rows = [_parse_json_fields(dict(row)) for row in cur.fetchall()]
 
         return {
             "news": rows,
@@ -267,9 +281,9 @@ def get_final(query_params):
 
         if _is_postgres():
             columns = [desc[0] for desc in cur.description]
-            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+            rows = [_parse_json_fields(dict(zip(columns, row))) for row in cur.fetchall()]
         else:
-            rows = [dict(row) for row in cur.fetchall()]
+            rows = [_parse_json_fields(dict(row)) for row in cur.fetchall()]
 
         return {"news": rows, "total": total_count}
     finally:
@@ -349,7 +363,7 @@ def get_event_chain_by_id(news_id):
             cur.execute(f"SELECT id, source, title, published_at, status FROM news WHERE id = {ph}", (news_id,))
             row = cur.fetchone()
             if not row:
-                return {"error": "news not found"}
+                return {"status": "error", "message": "news not found"}
             if _is_postgres():
                 columns = [desc[0] for desc in cur.description]
                 news = dict(zip(columns, row))
@@ -361,7 +375,7 @@ def get_event_chain_by_id(news_id):
         return get_event_chain(news)
     except Exception as e:
         logger.error(f"Event chain error: {e}")
-        return {"chain": [], "chain_length": 0, "days_span": 0, "phase": "single", "error": str(e)}
+        return {"status": "error", "message": str(e), "chain": [], "chain_length": 0, "days_span": 0, "phase": "single"}
 
 
 def get_event_chain(body):
@@ -652,9 +666,9 @@ def news_detail(body):
         if arow:
             if _is_postgres():
                 columns = [desc[0] for desc in cur.description]
-                analysis = dict(zip(columns, arow))
+                analysis = _parse_json_fields(dict(zip(columns, arow)))
             else:
-                analysis = dict(arow)
+                analysis = _parse_json_fields(dict(arow))
         return {"status": "ok", "news": news, "analysis": analysis}
     finally:
         cur.close()

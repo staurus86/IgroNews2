@@ -8,13 +8,23 @@ from storage.database import get_connection, _is_postgres
 logger = logging.getLogger(__name__)
 
 
-def get_queue():
-    """Return all tasks from queue (up to 200)."""
+def get_queue(status_filter: str = "", task_type_filter: str = ""):
+    """Return tasks from queue (up to 200), with optional filters."""
     conn = get_connection()
     cur = conn.cursor()
     try:
-        q = "SELECT * FROM task_queue ORDER BY created_at DESC LIMIT 200"
-        cur.execute(q)
+        ph = "%s" if _is_postgres() else "?"
+        conditions = []
+        params = []
+        if status_filter:
+            conditions.append(f"status = {ph}")
+            params.append(status_filter)
+        if task_type_filter:
+            conditions.append(f"task_type = {ph}")
+            params.append(task_type_filter)
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        q = f"SELECT * FROM task_queue {where} ORDER BY created_at DESC LIMIT 200"
+        cur.execute(q, params)
         if _is_postgres():
             columns = [desc[0] for desc in cur.description]
             rows = [dict(zip(columns, row)) for row in cur.fetchall()]

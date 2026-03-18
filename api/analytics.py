@@ -239,7 +239,7 @@ def get_funnel_analytics():
         funnel["by_source"] = by_source
         return funnel
     except Exception as e:
-        return {"error": str(e)}
+        return {"status": "error", "message": str(e)}
     finally:
         cur.close()
 
@@ -267,7 +267,7 @@ def get_cost_by_source():
             rows = [dict(r) for r in cur.fetchall()]
         return {"by_source": rows}
     except Exception as e:
-        return {"by_source": [], "error": str(e)}
+        return {"status": "error", "message": str(e), "by_source": []}
     finally:
         cur.close()
 
@@ -341,7 +341,7 @@ def get_prompt_insights():
             "by_name": by_name,
         }
     except Exception as e:
-        return {"error": str(e), "versions": [], "model_stats": []}
+        return {"status": "error", "message": str(e), "versions": [], "model_stats": []}
     finally:
         cur.close()
 
@@ -351,4 +351,4 @@ def get_cost_summary():
         from core.observability import get_cost_summary as _get_cost_summary_impl
         return _get_cost_summary_impl(days=1)
     except Exception as e:
-        return {"error": str(e), "total_cost_usd": 0, "total_calls": 0, "by_type": []}
+        return {"status": "error", "message": str(e), "total_cost_usd": 0, "total_calls": 0, "by_type": []}

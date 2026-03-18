@@ -103,7 +103,7 @@ def get_feature_flags():
         from core.feature_flags import get_all_flags
         return {"flags": get_all_flags()}
     except Exception as e:
-        return {"flags": [], "error": str(e)}
+        return {"status": "error", "message": str(e), "flags": []}
 
 
 def get_config_audit():
@@ -111,7 +111,7 @@ def get_config_audit():
         from core.observability import get_config_audit
         return {"audit": get_config_audit(limit=50)}
     except Exception as e:
-        return {"audit": [], "error": str(e)}
+        return {"status": "error", "message": str(e), "audit": []}
 
 
 def get_logs(query_params=None):
@@ -723,25 +723,25 @@ def toggle_feature_flag(body, user="admin"):
     flag_id = body.get("flag_id", "")
     enabled = body.get("enabled", False)
     if not flag_id:
-        return {"error": "flag_id required"}
+        return {"status": "error", "message": "flag_id required"}
     try:
         from core.feature_flags import set_flag
         set_flag(flag_id, bool(enabled), updated_by=user)
         return {"status": "ok", "flag_id": flag_id, "enabled": enabled}
     except Exception as e:
-        return {"error": str(e)}
+        return {"status": "error", "message": str(e)}
 
 
 def get_decision_trace(body):
     news_id = body.get("news_id", "")
     if not news_id:
-        return {"error": "news_id required"}
+        return {"status": "error", "message": "news_id required"}
     try:
         from core.observability import get_decision_trace
         trace = get_decision_trace(news_id)
         return {"news_id": news_id, "trace": trace}
     except Exception as e:
-        return {"error": str(e)}
+        return {"status": "error", "message": str(e)}
 
 
 def clear_cache(body):

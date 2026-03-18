@@ -1014,7 +1014,10 @@ async function login() {
 
     def _get_queue(self):
         from api.queue import get_queue
-        return get_queue()
+        qs = parse_qs(urlparse(self.path).query)
+        status_filter = qs.get("status", [""])[0]
+        task_type_filter = qs.get("task_type", [""])[0]
+        return get_queue(status_filter=status_filter, task_type_filter=task_type_filter)
 
     def _cancel_queue_task(self, body):
         from api.queue import cancel_queue_task
