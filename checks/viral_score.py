@@ -641,20 +641,62 @@ VIRAL_TRIGGERS = {
         ],
     },
 
+    # === ЛОКАЛИЗАЦИЯ / ОЗВУЧКА ===
+    "localization_ru": {
+        "label": "Russian localization",
+        "weight": 30,
+        "keywords": [
+            "русская озвучка", "русская локализация", "русский язык",
+            "озвучка на русском", "перевод на русский", "русские субтитры",
+            "russian localization", "russian voice", "дубляж на русском",
+            "локализация на русский", "добавили русский",
+        ],
+    },
+    "port_new_platform": {
+        "label": "Platform port",
+        "weight": 20,
+        "keywords": [
+            "порт на", "портирование", "выйдет на switch", "выйдет на pc",
+            "now on playstation", "now on xbox", "coming to switch",
+            "coming to mobile", "порт на пк", "мобильная версия",
+            "mobile port", "switch port", "pc port", "console port",
+        ],
+    },
+    "remake_remaster": {
+        "label": "Remake/Remaster",
+        "weight": 25,
+        "keywords": [
+            "ремейк", "ремастер", "remake", "remaster", "remastered",
+            "переиздание", "enhanced edition", "definitive edition",
+            "hd collection", "обновлённая версия", "remake announced",
+        ],
+    },
+    "indie_breakout": {
+        "label": "Indie breakout",
+        "weight": 35,
+        "keywords": [
+            "инди-хит", "инди хит", "indie hit", "indie breakout",
+            "инди побила рекорд", "surprise hit", "sleeper hit",
+            "неожиданный хит", "инди продалась миллионом",
+            "indie sold million", "overwhelmingly positive",
+            "indie game of the year", "инди года",
+        ],
+    },
+
     # === БАЗОВЫЕ КАТЕГОРИИ ===
     "sequel": {
         "label": "Sequel",
-        "weight": 20,
+        "weight": 15,
         "keywords": ["продолжение", "сиквел", "sequel", "part 2", "new installment"],
     },
     "free_content": {
         "label": "Free/Giveaway",
-        "weight": 20,
+        "weight": 15,
         "keywords": ["бесплатно", "раздача", "free to play", "f2p", "giveaway", "free weekend"],
     },
     "delay": {
         "label": "Delay",
-        "weight": 15,
+        "weight": 12,
         "keywords": ["перенос", "отложили", "delayed", "postponed", "pushed back"],
     },
     "canceled": {
@@ -677,7 +719,7 @@ VIRAL_TRIGGERS = {
     },
     "big_update": {
         "label": "Big update",
-        "weight": 15,
+        "weight": 10,
         "keywords": [
             "крупное обновление", "масштабное обновление", "большой патч",
             "major update", "big update", "massive update", "season pass",
@@ -687,18 +729,18 @@ VIRAL_TRIGGERS = {
     },
     "release_date": {
         "label": "Release date",
-        "weight": 20,
+        "weight": 10,
         "keywords": [
-            "дата выхода", "release date", "дата релиза", "выходит",
-            "релиз состоится", "launches", "coming soon", "выйдет",
+            "дата выхода", "release date", "дата релиза",
+            "релиз состоится", "launches",
         ],
     },
     "trailer": {
         "label": "Trailer",
-        "weight": 15,
+        "weight": 10,
         "keywords": [
             "трейлер", "trailer", "тизер", "teaser", "геймплей",
-            "gameplay", "первый взгляд", "first look", "показали",
+            "gameplay", "первый взгляд", "first look",
         ],
     },
     "record": {
@@ -858,12 +900,21 @@ def viral_score(news: dict, precomputed_entities: list = None) -> dict:
         score += 30
         triggered.append({"id": "closure_big_title", "label": "Закрытие крупной студии", "weight": 30})
 
-    # Lawsuit + Big company combo (из entity базы — студии)
+    # Lawsuit + Big company combo
     has_lawsuit = any(kw in text for kw in ["lawsuit", "судебный иск", "court", "sued"])
     has_big_company = any(e.get("type") == "studio" and e.get("tier") in ("S", "A", "B") for e in entities)
     if has_lawsuit and has_big_company:
         score += 20
         triggered.append({"id": "lawsuit_big_company", "label": "Судебный иск + крупная компания", "weight": 20})
+
+    # Scandal/controversy + big title/company combo
+    has_scandal = any(kw in text for kw in [
+        "скандал", "controversy", "backlash", "outrage", "бойкот", "boycott",
+        "скандальный", "сатанист", "шокирующее", "домогательства", "harassment",
+    ])
+    if has_scandal and has_big_title:
+        score += 25
+        triggered.append({"id": "scandal_big_title", "label": "Скандал + крупный тайтл/студия", "weight": 25})
 
     # Calendar boost
     cal_boost, event_name = get_calendar_boost()
