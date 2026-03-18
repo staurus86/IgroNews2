@@ -148,13 +148,13 @@ def get_ops_dashboard():
         cur.close()
 
 
-def get_storylines():
-    """Return clustered news storylines from last 3 days."""
+def get_storylines(days: int = 3):
+    """Return clustered news storylines from last N days."""
     conn = get_connection()
     cur = conn.cursor()
     ph = "%s" if _is_postgres() else "?"
     try:
-        cutoff = (dt_mod.now(timezone.utc) - timedelta(days=3)).isoformat()
+        cutoff = (dt_mod.now(timezone.utc) - timedelta(days=days)).isoformat()
         cur.execute(f"""
             SELECT n.id, n.source, n.title, n.url, n.published_at, n.status,
                    COALESCE(a.total_score, 0) as total_score,
@@ -440,9 +440,9 @@ def simulate_thresholds(body):
         cur.close()
 
 
-def export_storylines_to_sheets():
+def export_storylines_to_sheets(days: int = 3):
     """Fetch current storylines and export them to Google Sheets 'Сюжеты' tab."""
-    data = get_storylines()
+    data = get_storylines(days=days)
     storylines = data.get("storylines", [])
     if not storylines:
         return {"status": "error", "message": "Нет сюжетов для экспорта (нужно минимум 2 связанные новости)"}
@@ -452,3 +452,103 @@ def export_storylines_to_sheets():
     result["total_storylines"] = len(storylines)
     result["total_news"] = data.get("total_news", 0)
     return result
+
+
+def get_storylines_settings() -> dict:
+    """Get storylines auto-export settings from DB."""
+    conn = get_connection()
+    cur = conn.cursor()
+    ph = "%s" if _is_postgres() else "?"
+    defaults = {"enabled": False, "hour": 9, "minute": 0, "days": 3}
+    try:
+        cur.execute(f"SELECT flag_name, description FROM feature_flags WHERE flag_name = {ph}",
+                    ("storylines_auto_export",))
+        row = cur.fetchone()
+        if row:
+            import json
+            val = row[1] if _is_postgres() else row["description"]
+            try:
+                settings = json.loads(val)
+                return {**defaults, **settings}
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return defaults
+    except Exception:
+        return defaults
+    finally:
+        cur.close()
+
+
+def save_storylines_settings(body: dict) -> dict:
+    """Save storylines auto-export settings to DB and update scheduler."""
+    import json
+    enabled = bool(body.get("enabled", False))
+    hour = int(body.get("hour", 9))
+    minute = int(body.get("minute", 0))
+    days = int(body.get("days", 3))
+
+    if not (0 <= hour <= 23):
+        return {"status": "error", "message": "Час должен быть 0-23"}
+    if not (0 <= minute <= 59):
+        return {"status": "error", "message": "Минуты должны быть 0-59"}
+    if not (1 <= days <= 14):
+        return {"status": "error", "message": "Дни должны быть 1-14"}
+
+    settings = {"enabled": enabled, "hour": hour, "minute": minute, "days": days}
+    settings_json = json.dumps(settings)
+
+    conn = get_connection()
+    cur = conn.cursor()
+    ph = "%s" if _is_postgres() else "?"
+    try:
+        if _is_postgres():
+            cur.execute(f"""INSERT INTO feature_flags (flag_name, enabled, description)
+                VALUES ({ph}, {ph}, {ph})
+                ON CONFLICT (flag_name) DO UPDATE SET enabled = EXCLUDED.enabled, description = EXCLUDED.description""",
+                ("storylines_auto_export", 1 if enabled else 0, settings_json))
+        else:
+            cur.execute(f"INSERT OR REPLACE INTO feature_flags (flag_name, enabled, description) VALUES ({ph}, {ph}, {ph})",
+                ("storylines_auto_export", 1 if enabled else 0, settings_json))
+            conn.commit()
+
+        # Update scheduler job
+        _update_storylines_cron(enabled, hour, minute, days)
+
+        return {"status": "ok", "settings": settings}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+    finally:
+        cur.close()
+
+
+def _update_storylines_cron(enabled: bool, hour: int, minute: int, days: int):
+    """Add/remove/update the storylines auto-export cron job in APScheduler."""
+    try:
+        from apscheduler.schedulers.blocking import BlockingScheduler
+        import scheduler as sched_module
+        # Access the running scheduler instance (if available)
+        for obj in dir(sched_module):
+            val = getattr(sched_module, obj, None)
+            if isinstance(val, BlockingScheduler):
+                _do_update_cron(val, enabled, hour, minute, days)
+                return
+    except Exception as e:
+        logger.debug("Storylines cron update skipped (scheduler not running): %s", e)
+
+
+def _do_update_cron(scheduler, enabled: bool, hour: int, minute: int, days: int):
+    """Internal: update cron job on a running scheduler."""
+    job_id = "storylines_auto_export"
+    try:
+        scheduler.remove_job(job_id)
+    except Exception:
+        pass
+
+    if enabled:
+        def _auto_export():
+            logger.info("Storylines auto-export triggered (days=%d)", days)
+            export_storylines_to_sheets(days=days)
+
+        scheduler.add_job(_auto_export, "cron", hour=hour, minute=minute,
+                          id=job_id, replace_existing=True)
+        logger.info("Storylines auto-export scheduled: %02d:%02d daily, %d days", hour, minute, days)

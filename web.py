@@ -163,6 +163,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             # Phase 4: storylines, source health plus, threshold simulator
             "/api/storylines": lambda: self._json(self._get_storylines()),
             "/api/source_health_plus": lambda: self._json(self._get_source_health_plus()),
+            "/api/storylines/settings": lambda: self._json(self._get_storylines_settings()),
         }
 
         # DOCX download (GET with query param)
@@ -289,6 +290,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/rescore": lambda: self._rescore_news(body),
             "/api/health/heal": lambda: self._heal_source(body),
             "/api/storylines/export": lambda: self._export_storylines(body),
+            "/api/storylines/settings": lambda: self._save_storylines_settings(body),
         }
         handler = routes.get(path)
         if handler:
@@ -1382,7 +1384,9 @@ async function login() {
 
     def _get_storylines(self):
         from api.dashboard import get_storylines
-        return get_storylines()
+        qs = parse_qs(urlparse(self.path).query)
+        days = int(qs.get("days", ["3"])[0])
+        return get_storylines(days=days)
 
     def _get_source_health_plus(self):
         from api.dashboard import get_source_health_plus
@@ -1394,7 +1398,16 @@ async function login() {
 
     def _export_storylines(self, body):
         from api.dashboard import export_storylines_to_sheets
-        self._json(export_storylines_to_sheets())
+        days = int(body.get("days", 3))
+        self._json(export_storylines_to_sheets(days=days))
+
+    def _get_storylines_settings(self):
+        from api.dashboard import get_storylines_settings
+        return get_storylines_settings()
+
+    def _save_storylines_settings(self, body):
+        from api.dashboard import save_storylines_settings
+        self._json(save_storylines_settings(body))
 
     def _rescore_news(self, body):
         if not self._require_perm("pipeline"):

@@ -1007,11 +1007,48 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   <!-- STORYLINES -->
   <div class="panel" id="panel-storylines" style="display:none">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <h2>Сюжетные линии <span style="font-size:0.65em;color:#8899a6;font-weight:normal">кластеры похожих новостей за 3 дня</span></h2>
-      <div>
-        <span id="storylines-count" style="color:#8899a6;font-size:0.85em;margin-right:12px"></span>
+      <h2>Сюжетные линии <span id="sl-days-label" style="font-size:0.65em;color:#8899a6;font-weight:normal">кластеры похожих новостей за 3 дня</span></h2>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="storylines-count" style="color:#8899a6;font-size:0.85em"></span>
+        <select id="sl-days" onchange="loadStorylines()" style="background:#253341;color:#e1e8ed;border:1px solid #38444d;border-radius:6px;padding:3px 8px;font-size:0.85em">
+          <option value="1">1 день</option>
+          <option value="2">2 дня</option>
+          <option value="3" selected>3 дня</option>
+          <option value="5">5 дней</option>
+          <option value="7">7 дней</option>
+          <option value="14">14 дней</option>
+        </select>
         <button class="btn btn-sm btn-secondary" onclick="loadStorylines()">Обновить</button>
         <button class="btn btn-sm btn-success" onclick="exportStorylinesToSheets()" title="Экспорт сюжетов в Google Sheets (вкладка Сюжеты)">&#9776; В Sheets</button>
+        <button class="btn btn-sm" style="background:#253341;color:#8899a6;border:1px solid #38444d" onclick="toggleSlSettings()" title="Настройки авто-экспорта">&#9881;</button>
+      </div>
+    </div>
+    <!-- Auto-export settings -->
+    <div id="sl-settings" style="display:none;background:#15202b;border:1px solid #38444d;border-radius:10px;padding:16px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="sl-auto-enabled" style="width:16px;height:16px;cursor:pointer">
+          <span>Авто-экспорт в Sheets</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:6px">
+          <span style="color:#8899a6;font-size:0.9em">Время (МСК):</span>
+          <input type="number" id="sl-auto-hour" min="0" max="23" value="9" style="width:50px;background:#253341;color:#e1e8ed;border:1px solid #38444d;border-radius:6px;padding:4px 8px;font-size:0.9em">
+          <span>:</span>
+          <input type="number" id="sl-auto-minute" min="0" max="59" value="0" style="width:50px;background:#253341;color:#e1e8ed;border:1px solid #38444d;border-radius:6px;padding:4px 8px;font-size:0.9em">
+        </label>
+        <label style="display:flex;align-items:center;gap:6px">
+          <span style="color:#8899a6;font-size:0.9em">Период:</span>
+          <select id="sl-auto-days" style="background:#253341;color:#e1e8ed;border:1px solid #38444d;border-radius:6px;padding:4px 8px;font-size:0.9em">
+            <option value="1">1 день</option>
+            <option value="2">2 дня</option>
+            <option value="3" selected>3 дня</option>
+            <option value="5">5 дней</option>
+            <option value="7">7 дней</option>
+            <option value="14">14 дней</option>
+          </select>
+        </label>
+        <button class="btn btn-sm btn-primary" onclick="saveSlSettings()">Сохранить</button>
+        <span id="sl-settings-status" style="color:#8899a6;font-size:0.85em"></span>
       </div>
     </div>
     <div id="storylines-list"></div>
@@ -5185,11 +5222,57 @@ async function loadPromptInsights() {
 // ═══════════════════════════════════════════
 // Phase 4: Storylines
 // ═══════════════════════════════════════════
+function _getSlDays() {
+  const el = document.getElementById('sl-days');
+  return el ? parseInt(el.value) || 3 : 3;
+}
+
+function toggleSlSettings() {
+  const el = document.getElementById('sl-settings');
+  if (!el) return;
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    loadSlSettings();
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+async function loadSlSettings() {
+  try {
+    const r = await api('/api/storylines/settings');
+    document.getElementById('sl-auto-enabled').checked = r.enabled || false;
+    document.getElementById('sl-auto-hour').value = r.hour ?? 9;
+    document.getElementById('sl-auto-minute').value = r.minute ?? 0;
+    document.getElementById('sl-auto-days').value = r.days ?? 3;
+  } catch(e) {}
+}
+
+async function saveSlSettings() {
+  const body = {
+    enabled: document.getElementById('sl-auto-enabled').checked,
+    hour: parseInt(document.getElementById('sl-auto-hour').value) || 9,
+    minute: parseInt(document.getElementById('sl-auto-minute').value) || 0,
+    days: parseInt(document.getElementById('sl-auto-days').value) || 3,
+  };
+  const statusEl = document.getElementById('sl-settings-status');
+  try {
+    const r = await api('/api/storylines/settings', body);
+    if (r.status === 'ok') {
+      if (statusEl) statusEl.textContent = body.enabled ? 'Сохранено: ежедневно в ' + String(body.hour).padStart(2,'0') + ':' + String(body.minute).padStart(2,'0') : 'Авто-экспорт выключен';
+      toast('Настройки сюжетов сохранены');
+    } else {
+      toast(r.message || 'Ошибка', true);
+    }
+  } catch(e) { toast('Ошибка: ' + (e.message||e), true); }
+}
+
 async function exportStorylinesToSheets() {
-  if (!confirm('Экспортировать текущие сюжеты в Google Sheets (вкладка «Сюжеты»)?\n\nСтарые данные будут заменены.')) return;
+  const days = _getSlDays();
+  if (!confirm('Экспортировать сюжеты за ' + days + ' дн. в Google Sheets (вкладка «Сюжеты»)?\n\nСтарые данные будут заменены.')) return;
   toast('Экспорт сюжетов в Sheets...');
   try {
-    const r = await api('/api/storylines/export', {});
+    const r = await api('/api/storylines/export', {days: days});
     if (r.status === 'ok') {
       toast('Экспортировано: ' + r.storylines + ' сюжетов, ' + r.written + ' строк');
     } else {
@@ -5204,11 +5287,14 @@ async function loadStorylines() {
   if (!el) return;
   el.innerHTML = '<div style="color:#8899a6;padding:20px">Загрузка кластеров...</div>';
   try {
-    const data = await api('/api/storylines');
+    const days = _getSlDays();
+    const labelEl = document.getElementById('sl-days-label');
+    if (labelEl) labelEl.textContent = 'кластеры похожих новостей за ' + days + ' дн.';
+    const data = await api('/api/storylines?days=' + days);
     const stories = data.storylines || [];
     if (countEl) countEl.textContent = stories.length + ' сюжетов из ' + (data.total_news||0) + ' новостей';
     if (!stories.length) {
-      el.innerHTML = '<div style="color:#8899a6;padding:20px">Нет кластеров (менее 2 похожих новостей за 3 дня)</div>';
+      el.innerHTML = '<div style="color:#8899a6;padding:20px">Нет кластеров (менее 2 похожих новостей за ' + days + ' дн.)</div>';
       return;
     }
     el.innerHTML = stories.map(s => {
