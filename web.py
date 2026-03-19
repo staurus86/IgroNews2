@@ -297,6 +297,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/health/heal": lambda: self._heal_source(body),
             "/api/storylines/export": lambda: self._export_storylines(body),
             "/api/storylines/settings": lambda: self._save_storylines_settings(body),
+            "/api/cleanup_short": lambda: self._cleanup_short(body),
+            "/api/cleanup_old": lambda: self._cleanup_old(body),
         }
         handler = routes.get(path)
         if handler:
@@ -937,6 +939,18 @@ async function login() {
     def _heal_source(self, body):
         from api.settings import heal_source
         self._json(heal_source(body))
+
+    def _cleanup_short(self, body):
+        min_chars = body.get("min_chars", 100)
+        from api.news import cleanup_short_news
+        count = cleanup_short_news(min_chars)
+        self._json({"status": "ok", "deleted": count})
+
+    def _cleanup_old(self, body):
+        days = body.get("days", 7)
+        from api.news import cleanup_old_news
+        count = cleanup_old_news(days)
+        self._json({"status": "ok", "deleted": count})
 
     def _change_password(self, body):
         username = body.get("username", "")

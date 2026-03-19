@@ -1267,6 +1267,13 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
             </select>
           </div>
           <button class="btn btn-primary" onclick="saveSettings()">Сохранить</button>
+          <hr style="border-color:#38444d;margin:15px 0">
+          <h3 style="margin-bottom:10px">Очистка</h3>
+          <div class="btn-group">
+            <button class="btn btn-warning btn-sm" onclick="cleanupShortNews()">Удалить короткие (&lt; 100 символов)</button>
+            <button class="btn btn-warning btn-sm" onclick="cleanupOldNews()">Удалить старые (&gt; 7 дней)</button>
+          </div>
+          <div id="cleanup-result" style="color:#8899a6;font-size:0.85em;margin-top:6px"></div>
         </div>
         <div class="card">
           <h2>Статус API</h2>
@@ -5574,6 +5581,29 @@ function applyFeatureFlags() {
     });
   }, 500);
 })();
+
+// ---------------------------------------------------------------------------
+// CLEANUP buttons
+// ---------------------------------------------------------------------------
+async function cleanupShortNews() {
+  if (!confirm('Удалить все новости с заголовком < 100 символов? (кроме approved/ready)')) return;
+  const r = await api('/api/cleanup_short', {min_chars: 100});
+  if (r.status === 'ok') {
+    document.getElementById('cleanup-result').textContent = `Удалено: ${r.deleted}`;
+    toast(`Удалено коротких новостей: ${r.deleted}`);
+    loadEditorial();
+  } else toast(r.message, true);
+}
+
+async function cleanupOldNews() {
+  if (!confirm('Удалить все новости старше 7 дней? (кроме approved/ready)')) return;
+  const r = await api('/api/cleanup_old', {days: 7});
+  if (r.status === 'ok') {
+    document.getElementById('cleanup-result').textContent = `Удалено: ${r.deleted}`;
+    toast(`Удалено старых новостей: ${r.deleted}`);
+    loadEditorial();
+  } else toast(r.message, true);
+}
 
 // ---------------------------------------------------------------------------
 // TRASH (soft-delete)

@@ -763,6 +763,31 @@ def cleanup_short_news(min_chars=100):
         cur.close()
 
 
+def cleanup_old_news(days=7):
+    """Soft-delete news older than N days (except approved/ready)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    _ph = "%s" if _is_postgres() else "?"
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        cur.execute(f"""
+            UPDATE news SET is_deleted=1, deleted_at={_ph}
+            WHERE COALESCE(is_deleted, 0) = 0
+              AND parsed_at < {_ph}
+              AND status NOT IN ('approved', 'ready')
+        """, (now, cutoff))
+        count = cur.rowcount
+        if not _is_postgres():
+            conn.commit()
+        if count > 0:
+            logger.info("Auto-deleted %d news older than %d days", count, days)
+        return count
+    finally:
+        cur.close()
+
+
 def news_detail(body):
     """Get full news + analysis detail."""
     news_id = body.get("news_id")
