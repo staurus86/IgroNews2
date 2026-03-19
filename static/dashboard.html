@@ -1215,8 +1215,9 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 
   <!-- TRASH (soft-delete) -->
   <div class="panel" id="panel-trash">
-    <h2>Корзина</h2>
+    <h2>Удалённые</h2>
     <div class="btn-group" style="margin:10px 0">
+      <button class="btn btn-primary btn-sm" onclick="exportTrashToSheets()">Выгрузить в Sheets</button>
       <button class="btn btn-danger btn-sm" onclick="purgeAllTrash()">Очистить корзину</button>
       <span id="trash-count" style="color:#8899a6;font-size:0.85em"></span>
     </div>
@@ -5625,17 +5626,25 @@ async function loadTrash(page) {
     return;
   }
 
-  let html = '<table><tr><th>Источник</th><th>Заголовок</th><th>Удалено</th><th>Балл</th><th>Действия</th></tr>';
+  let html = '<table><tr><th>Источник</th><th>Заголовок</th><th>Скор</th><th>Кач</th><th>Рел</th><th>Вирал</th><th>Свежесть</th><th>Тон</th><th>Удалено</th><th>Действия</th></tr>';
   for (const n of data.news) {
     const delDate = n.deleted_at ? new Date(n.deleted_at).toLocaleDateString('ru') : '';
+    const score = n.total_score || 0;
+    const scoreColor = score >= 70 ? '#17bf63' : score >= 40 ? '#ffad1f' : '#e0245e';
+    const freshH = n.freshness_hours >= 0 ? `${Math.round(n.freshness_hours)}ч` : '?';
     html += `<tr>
       <td>${n.source || ''}</td>
       <td class="td-title"><a href="${n.url}" target="_blank">${n.title || ''}</a></td>
+      <td style="color:${scoreColor};font-weight:bold">${score}</td>
+      <td>${n.quality_score || 0}</td>
+      <td>${n.relevance_score || 0}</td>
+      <td>${n.viral_score || 0}</td>
+      <td>${freshH}</td>
+      <td>${n.sentiment_label || ''}</td>
       <td>${delDate}</td>
-      <td>${n.total_score || 0}</td>
-      <td>
-        <button class="btn btn-sm btn-success" onclick="restoreNews('${n.id}')">Восстановить</button>
-        <button class="btn btn-sm btn-danger" onclick="purgeNews('${n.id}')">Удалить</button>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-success btn-icon" onclick="restoreNews('${n.id}')" title="Восстановить">&#8634;</button>
+        <button class="btn btn-sm btn-danger btn-icon" onclick="purgeNews('${n.id}')" title="Удалить навсегда">&#10005;</button>
       </td>
     </tr>`;
   }
@@ -5663,6 +5672,15 @@ async function purgeNews(id) {
   if (!confirm('Удалить навсегда? Это действие необратимо.')) return;
   const r = await api('/api/news/purge', {news_ids: [id]});
   if (r.status === 'ok') { toast('Удалено навсегда'); loadTrash(); } else toast(r.message, true);
+}
+
+async function exportTrashToSheets() {
+  if (!confirm('Выгрузить все удалённые новости в Google Sheets (вкладка "Удалённые")?')) return;
+  toast('Выгрузка...');
+  const r = await api('/api/trash/export_sheets', {});
+  if (r.status === 'ok') {
+    toast(`Выгружено: ${r.written}, пропущено дублей: ${r.skipped || 0}`);
+  } else toast(r.message || 'Ошибка', true);
 }
 
 async function purgeAllTrash() {

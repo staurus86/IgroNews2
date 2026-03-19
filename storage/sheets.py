@@ -627,3 +627,89 @@ def write_storylines(storylines: list[dict]) -> dict:
 
     logger.info("Storylines export: %d rows written, %d storylines", written, len(storylines))
     return {"status": "ok", "written": written, "storylines": len(storylines)}
+
+
+def write_deleted_batch(items: list[dict]) -> dict:
+    """Export deleted news to 'Удалённые' tab in Google Sheets.
+
+    items = list of dicts with news + analysis fields.
+    Returns {"written": int, "skipped": int}.
+    """
+    tab_name = "Удалённые"
+    ws = _get_worksheet(tab_name, HEADERS_NOT_READY)
+    if not ws:
+        return {"written": 0, "skipped": 0, "errors": len(items)}
+
+    existing_urls = _get_cached_urls(ws, 15, tab_name)  # col O = URL
+    rows = []
+    skipped = 0
+
+    for item in items:
+        url = item.get("url") or ""
+        if url in existing_urls:
+            skipped += 1
+            continue
+
+        tags_raw = item.get("tags_data") or "[]"
+        if isinstance(tags_raw, str):
+            tags_raw = _safe_json_loads(tags_raw, [])
+        tags_str = ", ".join(
+            (t.get("label") or t.get("id") or t) if isinstance(t, dict) else str(t)
+            for t in (tags_raw if isinstance(tags_raw, list) else [])
+        )
+
+        entities_raw = item.get("entity_names") or "[]"
+        if isinstance(entities_raw, str):
+            entities_raw = _safe_json_loads(entities_raw, [])
+        entities_str = ", ".join(
+            (e.get("name") or e) if isinstance(e, dict) else str(e)
+            for e in (entities_raw if isinstance(entities_raw, list) else [])[:10]
+        )
+
+        viral_raw = item.get("viral_data") or "[]"
+        if isinstance(viral_raw, str):
+            viral_raw = _safe_json_loads(viral_raw, [])
+        viral_str = ", ".join(
+            (v.get("label") or v.get("trigger") or str(v)) if isinstance(v, dict) else str(v)
+            for v in (viral_raw if isinstance(viral_raw, list) else [])
+        )
+
+        age_h = item.get("freshness_hours", -1)
+        age_str = f"{age_h:.1f}" if isinstance(age_h, (int, float)) and age_h >= 0 else "?"
+
+        rows.append([
+            item.get("parsed_at") or "",
+            item.get("source") or "",
+            item.get("title") or "",
+            str(item.get("total_score") or 0),
+            str(item.get("quality_score") or 0),
+            str(item.get("relevance_score") or 0),
+            age_str,
+            str(item.get("viral_score") or 0),
+            viral_str,
+            item.get("sentiment_label") or "neutral",
+            tags_str,
+            entities_str,
+            str(item.get("headline_score") or 0),
+            str(item.get("momentum_score") or 0),
+            url,
+            (item.get("description") or "")[:500],
+        ])
+
+    if not rows:
+        return {"written": 0, "skipped": skipped}
+
+    written = 0
+    BATCH = 50
+    for start in range(0, len(rows), BATCH):
+        chunk = rows[start:start + BATCH]
+        try:
+            _append_rows_batch(ws, chunk, tab_name)
+            written += len(chunk)
+            if start + BATCH < len(rows):
+                time.sleep(3)
+        except Exception as e:
+            logger.error("Deleted export batch error: %s", e)
+
+    logger.info("Deleted export: %d written, %d skipped", written, skipped)
+    return {"written": written, "skipped": skipped}

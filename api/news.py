@@ -680,37 +680,97 @@ def purge_news(body):
 
 
 def get_trash(query_params):
-    """Get soft-deleted news."""
+    """Get soft-deleted news with full analysis data (same as editorial)."""
     conn = get_connection()
     cur = conn.cursor()
     try:
         limit = int(query_params.get("limit", [100])[0])
         offset = int(query_params.get("offset", [0])[0])
+        source_filter = query_params.get("source", [None])[0]
         _ph = "%s" if _is_postgres() else "?"
 
-        cur.execute("SELECT COUNT(*) FROM news WHERE is_deleted = 1")
+        conditions = ["n.is_deleted = 1"]
+        params = []
+        if source_filter:
+            conditions.append(f"n.source = {_ph}")
+            params.append(source_filter)
+        where = "WHERE " + " AND ".join(conditions)
+
+        cur.execute(f"SELECT COUNT(*) FROM news n {where}", params[:])
         total = cur.fetchone()[0]
 
         cur.execute(f"""
-            SELECT n.id, n.source, n.title, n.url, n.published_at, n.parsed_at,
+            SELECT n.id, n.source, n.title, n.description, n.url, n.published_at, n.parsed_at,
                    n.status, n.deleted_at,
-                   COALESCE(a.total_score, 0) as total_score
+                   COALESCE(a.total_score, 0) as total_score,
+                   COALESCE(a.quality_score, 0) as quality_score,
+                   COALESCE(a.relevance_score, 0) as relevance_score,
+                   COALESCE(a.viral_score, 0) as viral_score,
+                   COALESCE(a.viral_level, '') as viral_level,
+                   COALESCE(a.viral_data, '[]') as viral_data,
+                   COALESCE(a.sentiment_label, '') as sentiment_label,
+                   COALESCE(a.freshness_hours, -1) as freshness_hours,
+                   COALESCE(a.tags_data, '[]') as tags_data,
+                   COALESCE(a.momentum_score, 0) as momentum_score,
+                   COALESCE(a.headline_score, 0) as headline_score,
+                   COALESCE(a.entity_names, '[]') as entity_names,
+                   a.llm_recommendation
+            FROM news n
+            LEFT JOIN news_analysis a ON n.id = a.news_id
+            {where}
+            ORDER BY n.deleted_at DESC
+            LIMIT {_ph} OFFSET {_ph}
+        """, (*params, limit, offset))
+
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            rows = [_parse_json_fields(dict(zip(columns, row))) for row in cur.fetchall()]
+        else:
+            rows = [_parse_json_fields(dict(row)) for row in cur.fetchall()]
+
+        return {"news": rows, "total": total, "limit": limit, "offset": offset}
+    finally:
+        cur.close()
+
+
+def export_trash_to_sheets():
+    """Export all deleted news to 'Удалённые' tab in Google Sheets."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT n.id, n.source, n.title, n.description, n.url, n.published_at, n.parsed_at,
+                   n.status, n.deleted_at,
+                   COALESCE(a.total_score, 0) as total_score,
+                   COALESCE(a.quality_score, 0) as quality_score,
+                   COALESCE(a.relevance_score, 0) as relevance_score,
+                   COALESCE(a.viral_score, 0) as viral_score,
+                   COALESCE(a.viral_data, '[]') as viral_data,
+                   COALESCE(a.sentiment_label, '') as sentiment_label,
+                   COALESCE(a.freshness_hours, -1) as freshness_hours,
+                   COALESCE(a.tags_data, '[]') as tags_data,
+                   COALESCE(a.momentum_score, 0) as momentum_score,
+                   COALESCE(a.headline_score, 0) as headline_score,
+                   COALESCE(a.entity_names, '[]') as entity_names
             FROM news n
             LEFT JOIN news_analysis a ON n.id = a.news_id
             WHERE n.is_deleted = 1
             ORDER BY n.deleted_at DESC
-            LIMIT {_ph} OFFSET {_ph}
-        """, (limit, offset))
-
+        """)
         if _is_postgres():
             columns = [desc[0] for desc in cur.description]
             rows = [dict(zip(columns, row)) for row in cur.fetchall()]
         else:
             rows = [dict(row) for row in cur.fetchall()]
-
-        return {"news": rows, "total": total, "limit": limit, "offset": offset}
     finally:
         cur.close()
+
+    if not rows:
+        return {"status": "ok", "written": 0, "message": "Корзина пуста"}
+
+    from storage.sheets import write_deleted_batch
+    result = write_deleted_batch(rows)
+    return {"status": "ok", **result}
 
 
 def auto_purge_old_deleted(days=30):

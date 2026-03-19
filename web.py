@@ -299,6 +299,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/storylines/settings": lambda: self._save_storylines_settings(body),
             "/api/cleanup_short": lambda: self._cleanup_short(body),
             "/api/cleanup_old": lambda: self._cleanup_old(body),
+            "/api/trash/export_sheets": lambda: self._export_trash_sheets(body),
         }
         handler = routes.get(path)
         if handler:
@@ -951,6 +952,10 @@ async function login() {
         from api.news import cleanup_old_news
         count = cleanup_old_news(days)
         self._json({"status": "ok", "deleted": count})
+
+    def _export_trash_sheets(self, body):
+        from api.news import export_trash_to_sheets
+        self._json(export_trash_to_sheets())
 
     def _change_password(self, body):
         username = body.get("username", "")
