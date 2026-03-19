@@ -2,9 +2,10 @@ import logging
 import time
 from datetime import datetime, timezone
 
+import requests
+
 import config
 from storage.database import insert_news, news_exists
-from parsers.proxy import fetch_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +65,16 @@ def parse_vk_source(source: dict) -> int:
             "access_token": config.VK_API_TOKEN,
         }
 
-        resp = fetch_with_retry(f"{api_url}?{'&'.join(f'{k}={v}' for k, v in params.items())}")
+        resp = requests.get(api_url, params=params, timeout=30)
         data = resp.json()
 
         if "error" in data:
+            error_code = data["error"].get("error_code", 0)
             error_msg = data["error"].get("error_msg", "Unknown VK API error")
-            logger.error("VK API error for %s: %s", name, error_msg)
+            if error_code == 15:
+                logger.debug("VK group %s is closed/private, skipping", name)
+            else:
+                logger.warning("VK API error for %s: %s (code %d)", name, error_msg, error_code)
             return 0
 
         items = data.get("response", {}).get("items", [])

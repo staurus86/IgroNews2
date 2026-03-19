@@ -112,10 +112,9 @@ SOURCES = [
     {"name": "BS:Druckmann",    "type": "bluesky", "handle": "druckmann.bsky.social",                           "interval": 90},
     {"name": "BS:Barlog",       "type": "bluesky", "handle": "corybarlog.bsky.social",                          "interval": 90},
     # VK studios (needs VK_API_TOKEN env var)
-    {"name": "VK:CDPR",         "type": "vk", "group_id": "20733433",  "interval": 45},
+    # Removed closed groups: CDPR (20733433), SquareEnix (10707369), Xbox (48194892)
     {"name": "VK:Kojima",       "type": "vk", "group_id": "200465049", "interval": 45},
     {"name": "VK:PlayStation",   "type": "vk", "group_id": "26006257",  "interval": 45},
-    {"name": "VK:Xbox",         "type": "vk", "group_id": "48194892",  "interval": 45},
     {"name": "VK:Nintendo",     "type": "vk", "group_id": "115527361", "interval": 45},
     {"name": "VK:Ubisoft",      "type": "vk", "group_id": "41600377",  "interval": 45},
     {"name": "VK:Bethesda",     "type": "vk", "group_id": "167356678", "interval": 45},
@@ -133,7 +132,6 @@ SOURCES = [
     {"name": "VK:QuanticDream", "type": "vk", "group_id": "182276271", "interval": 90},
     {"name": "VK:WBGames",      "type": "vk", "group_id": "192444559", "interval": 90},
     {"name": "VK:Activision",   "type": "vk", "group_id": "170689275", "interval": 90},
-    {"name": "VK:SquareEnix",   "type": "vk", "group_id": "10707369",  "interval": 90},
     {"name": "VK:RedBarrels",   "type": "vk", "group_id": "71125581",  "interval": 90},
     {"name": "VK:Frictional",   "type": "vk", "group_id": "22934002",  "interval": 90},
     {"name": "VK:Rocksteady",   "type": "vk", "group_id": "42028449",  "interval": 90},
