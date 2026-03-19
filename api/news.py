@@ -31,148 +31,125 @@ def _parse_json_fields(row: dict) -> dict:
 # GET endpoints
 # ---------------------------------------------------------------------------
 
-def get_news(query_params):
-    """Combined _get_news + _get_news_impl. query_params is a parsed qs dict."""
+def get_news_unified(query_params):
+    """Unified news endpoint. Use ?view=editorial|final|all (default: editorial).
+    Replaces get_news, get_editorial, get_final."""
     conn = get_connection()
     cur = conn.cursor()
     try:
         qs = query_params
+        view = qs.get("view", ["editorial"])[0]
         limit = int(qs.get("limit", [100])[0])
         offset = int(qs.get("offset", [0])[0])
         status_filter = qs.get("status", [None])[0]
         source_filter = qs.get("source", [None])[0]
         date_from = qs.get("date_from", [None])[0]
         date_to = qs.get("date_to", [None])[0]
-        llm_filter = qs.get("llm", [None])[0]
-
-        ph = "%s" if _is_postgres() else "?"
-        conditions = []
-        params = []
-        need_join_for_count = False
-        if status_filter:
-            conditions.append(f"n.status = {ph}")
-            params.append(status_filter)
-        else:
-            conditions.append("n.status IN ('approved', 'processed', 'ready')")
-        if source_filter:
-            conditions.append(f"n.source = {ph}")
-            params.append(source_filter)
-        if date_from:
-            conditions.append(f"n.parsed_at >= {ph}")
-            params.append(date_from)
-        if date_to:
-            conditions.append(f"n.parsed_at <= {ph}")
-            params.append(date_to + "T23:59:59")
-        if llm_filter:
-            need_join_for_count = True
-            if llm_filter == "has_rec":
-                conditions.append("a.llm_recommendation IS NOT NULL AND a.llm_recommendation != ''")
-            elif llm_filter == "no_rec":
-                conditions.append("(a.llm_recommendation IS NULL OR a.llm_recommendation = '')")
-            else:
-                conditions.append(f"LOWER(a.llm_recommendation) LIKE {ph}")
-                params.append(f"%{llm_filter.lower()}%")
-
-        where = "WHERE " + " AND ".join(conditions) if conditions else ""
-
-        count_join = "LEFT JOIN news_analysis a ON n.id = a.news_id" if need_join_for_count else ""
-        cur.execute(f"SELECT COUNT(*) FROM news n {count_join} {where}", params[:])
-        total_count = cur.fetchone()[0]
-
-        query = f"""
-            SELECT n.id, n.source, n.title, n.url, n.h1, n.description,
-                   n.published_at, n.parsed_at, n.status,
-                   a.bigrams, a.trigrams, a.trends_data, a.keyso_data,
-                   a.llm_recommendation, a.llm_trend_forecast, a.sheets_row, a.processed_at,
-                   a.viral_score, a.viral_level, a.viral_data,
-                   a.sentiment_label, a.sentiment_score,
-                   a.freshness_status, a.freshness_hours,
-                   a.tags_data, a.momentum_score, a.headline_score, a.total_score
-            FROM news n
-            LEFT JOIN news_analysis a ON n.id = a.news_id
-            {where}
-            ORDER BY n.parsed_at DESC LIMIT {ph} OFFSET {ph}
-        """
-        params.append(limit)
-        params.append(offset)
-        cur.execute(query, params)
-
-        if _is_postgres():
-            columns = [desc[0] for desc in cur.description]
-            rows = [_parse_json_fields(dict(zip(columns, row))) for row in cur.fetchall()]
-        else:
-            rows = [_parse_json_fields(dict(row)) for row in cur.fetchall()]
-
-        return {"news": rows, "total": total_count, "limit": limit, "offset": offset}
-    finally:
-        cur.close()
-
-
-def get_editorial(query_params):
-    """Combined _get_editorial + _get_editorial_impl."""
-    conn = get_connection()
-    cur = conn.cursor()
-    try:
-        qs = query_params
-        limit = int(qs.get("limit", [100])[0])
-        offset = int(qs.get("offset", [0])[0])
-        status_filter = qs.get("status", [None])[0]
-        source_filter = qs.get("source", [None])[0]
         min_score = int(qs.get("min_score", [0])[0])
         max_score = int(qs.get("max_score", [0])[0])
         score_filter = qs.get("score_filter", [None])[0]
         viral_level = qs.get("viral_level", [None])[0]
         tier_filter = qs.get("tier", [None])[0]
         search = qs.get("q", [None])[0]
+        llm_filter = qs.get("llm", [None])[0]
+        sort_field = qs.get("sort", ["parsed_at"])[0]
+        sort_dir = qs.get("dir", ["desc"])[0]
+        include_deleted = qs.get("deleted", ["0"])[0] == "1"
 
-        ph = "%s" if _is_postgres() else "?"
+        _ph = "%s" if _is_postgres() else "?"
         conditions = []
         params = []
+        join_type = "LEFT JOIN"
 
-        if status_filter:
-            conditions.append(f"n.status = {ph}")
+        # Soft-delete filter
+        if not include_deleted:
+            conditions.append("COALESCE(n.is_deleted, 0) = 0")
+
+        # View-specific default status filters
+        if view == "final":
+            join_type = "JOIN"
+            if not status_filter:
+                conditions.append("n.status IN ('processed', 'ready')")
+                conditions.append("LOWER(a.llm_recommendation) = 'publish_now'")
+            sort_field = qs.get("sort", ["total_score"])[0]
+        elif view == "all":
+            pass  # no default status filter
+        else:  # editorial (default)
+            if status_filter:
+                conditions.append(f"n.status = {_ph}")
+                params.append(status_filter)
+            else:
+                conditions.append("n.status NOT IN ('duplicate', 'rejected')")
+
+        # Common filters
+        if view == "final" and status_filter:
+            conditions.append(f"n.status = {_ph}")
             params.append(status_filter)
-        else:
-            conditions.append(f"n.status NOT IN ('duplicate', 'rejected')")
-
         if source_filter:
-            conditions.append(f"n.source = {ph}")
+            conditions.append(f"n.source = {_ph}")
             params.append(source_filter)
+        if date_from:
+            conditions.append(f"n.parsed_at >= {_ph}")
+            params.append(date_from)
+        if date_to:
+            conditions.append(f"n.parsed_at <= {_ph}")
+            params.append(date_to + "T23:59:59")
         if min_score > 0:
-            conditions.append(f"COALESCE(a.total_score, 0) >= {ph}")
+            conditions.append(f"COALESCE(a.total_score, 0) >= {_ph}")
             params.append(min_score)
         if max_score > 0:
-            conditions.append(f"COALESCE(a.total_score, 0) <= {ph}")
+            conditions.append(f"COALESCE(a.total_score, 0) <= {_ph}")
             params.append(max_score)
         if score_filter == "zero":
             conditions.append("COALESCE(a.total_score, 0) = 0")
         elif score_filter == "nonzero":
             conditions.append("COALESCE(a.total_score, 0) > 0")
         if viral_level:
-            conditions.append(f"a.viral_level = {ph}")
+            conditions.append(f"a.viral_level = {_ph}")
             params.append(viral_level)
         if tier_filter:
-            conditions.append(f"a.entity_best_tier = {ph}")
+            conditions.append(f"a.entity_best_tier = {_ph}")
             params.append(tier_filter)
         if search:
-            conditions.append(f"LOWER(n.title) LIKE {ph}")
+            conditions.append(f"LOWER(n.title) LIKE {_ph}")
             params.append(f"%{search.lower()}%")
+        if llm_filter:
+            if llm_filter == "has_rec":
+                conditions.append("a.llm_recommendation IS NOT NULL AND a.llm_recommendation != ''")
+            elif llm_filter == "no_rec":
+                conditions.append("(a.llm_recommendation IS NULL OR a.llm_recommendation = '')")
+            else:
+                conditions.append(f"LOWER(a.llm_recommendation) LIKE {_ph}")
+                params.append(f"%{llm_filter.lower()}%")
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
-        cur.execute(f"SELECT COUNT(*) FROM news n LEFT JOIN news_analysis a ON n.id = a.news_id {where}", params[:])
+        # Count
+        cur.execute(f"SELECT COUNT(*) FROM news n {join_type} news_analysis a ON n.id = a.news_id {where}", params[:])
         total_count = cur.fetchone()[0]
 
-        cur.execute("SELECT status, COUNT(*) FROM news GROUP BY status")
+        # Status stats (for editorial view)
         status_counts = {}
-        for row in cur.fetchall():
-            if _is_postgres():
-                status_counts[row[0]] = row[1]
-            else:
+        if view == "editorial":
+            cur.execute("SELECT status, COUNT(*) FROM news WHERE COALESCE(is_deleted, 0) = 0 GROUP BY status")
+            for row in cur.fetchall():
                 status_counts[row[0]] = row[1]
 
+        # Sort
+        allowed_sorts = {
+            "total_score": "COALESCE(a.total_score, 0)",
+            "final_score": "COALESCE(a.total_score, 0)",
+            "viral_score": "COALESCE(a.viral_score, 0)",
+            "freshness_hours": "COALESCE(a.freshness_hours, -1)",
+            "source": "n.source",
+            "parsed_at": "n.parsed_at",
+        }
+        order_col = allowed_sorts.get(sort_field, "n.parsed_at")
+        order_dir = "ASC" if sort_dir == "asc" else "DESC"
+
         query = f"""
-            SELECT n.id, n.source, n.title, n.description, n.url, n.published_at, n.parsed_at, n.status,
+            SELECT n.id, n.source, n.title, n.description, n.url, n.h1,
+                   n.published_at, n.parsed_at, n.status,
                    COALESCE(a.total_score, 0) as total_score,
                    COALESCE(a.quality_score, 0) as quality_score,
                    COALESCE(a.relevance_score, 0) as relevance_score,
@@ -191,13 +168,13 @@ def get_editorial(query_params):
                    COALESCE(a.entity_best_tier, '') as entity_best_tier,
                    COALESCE(a.reviewed_at, '') as reviewed_at,
                    COALESCE(a.score_breakdown, '{{}}') as score_breakdown,
-                   a.bigrams, a.llm_recommendation, a.llm_trend_forecast,
-                   a.keyso_data, a.trends_data
+                   a.bigrams, a.trigrams, a.llm_recommendation, a.llm_trend_forecast,
+                   a.keyso_data, a.trends_data, a.sheets_row, a.processed_at
             FROM news n
-            LEFT JOIN news_analysis a ON n.id = a.news_id
+            {join_type} news_analysis a ON n.id = a.news_id
             {where}
-            ORDER BY n.parsed_at DESC
-            LIMIT {ph} OFFSET {ph}
+            ORDER BY {order_col} {order_dir}
+            LIMIT {_ph} OFFSET {_ph}
         """
         params.append(limit)
         params.append(offset)
@@ -209,85 +186,99 @@ def get_editorial(query_params):
         else:
             rows = [_parse_json_fields(dict(row)) for row in cur.fetchall()]
 
-        return {
-            "news": rows,
-            "total": total_count,
-            "limit": limit,
-            "offset": offset,
-            "stats": status_counts,
-        }
+        result = {"news": rows, "total": total_count, "limit": limit, "offset": offset}
+        if status_counts:
+            result["stats"] = status_counts
+        return result
     finally:
         cur.close()
 
 
-def get_final(query_params):
-    """Combined _get_final + _get_final_impl."""
+# Deprecated: use get_news_unified(view=...) instead
+def get_news(query_params):
+    query_params.setdefault("view", ["all"])
+    if "status" not in query_params:
+        query_params["status"] = [None]
+    # Preserve old default: only approved/processed/ready
+    qs = dict(query_params)
+    if not qs.get("status", [None])[0]:
+        qs["status"] = [""]
+    qs["view"] = ["all"]
+    # Old behavior: filter approved/processed/ready by default
     conn = get_connection()
     cur = conn.cursor()
     try:
-        qs = query_params
-        limit = int(qs.get("limit", [100])[0])
-        offset = int(qs.get("offset", [0])[0])
-        source_filter = qs.get("source", [None])[0]
-        sort_field = qs.get("sort", ["final_score"])[0]
-        sort_dir = qs.get("dir", ["desc"])[0]
-
-        ph = "%s" if _is_postgres() else "?"
-        conditions = [
-            "n.status IN ('processed', 'ready')",
-            "LOWER(a.llm_recommendation) = 'publish_now'",
-        ]
+        _qs = query_params
+        limit = int(_qs.get("limit", [100])[0])
+        offset = int(_qs.get("offset", [0])[0])
+        status_filter = _qs.get("status", [None])[0]
+        source_filter = _qs.get("source", [None])[0]
+        date_from = _qs.get("date_from", [None])[0]
+        date_to = _qs.get("date_to", [None])[0]
+        llm_filter = _qs.get("llm", [None])[0]
+        _ph = "%s" if _is_postgres() else "?"
+        conditions = ["COALESCE(n.is_deleted, 0) = 0"]
         params = []
-
+        if status_filter:
+            conditions.append(f"n.status = {_ph}")
+            params.append(status_filter)
+        else:
+            conditions.append("n.status IN ('approved', 'processed', 'ready')")
         if source_filter:
-            conditions.append(f"n.source = {ph}")
+            conditions.append(f"n.source = {_ph}")
             params.append(source_filter)
-
-        where = "WHERE " + " AND ".join(conditions)
-
-        cur.execute(f"SELECT COUNT(*) FROM news n JOIN news_analysis a ON n.id = a.news_id {where}", params[:])
+        if date_from:
+            conditions.append(f"n.parsed_at >= {_ph}")
+            params.append(date_from)
+        if date_to:
+            conditions.append(f"n.parsed_at <= {_ph}")
+            params.append(date_to + "T23:59:59")
+        if llm_filter:
+            if llm_filter == "has_rec":
+                conditions.append("a.llm_recommendation IS NOT NULL AND a.llm_recommendation != ''")
+            elif llm_filter == "no_rec":
+                conditions.append("(a.llm_recommendation IS NULL OR a.llm_recommendation = '')")
+            else:
+                conditions.append(f"LOWER(a.llm_recommendation) LIKE {_ph}")
+                params.append(f"%{llm_filter.lower()}%")
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        cur.execute(f"SELECT COUNT(*) FROM news n LEFT JOIN news_analysis a ON n.id = a.news_id {where}", params[:])
         total_count = cur.fetchone()[0]
-
-        allowed_sorts = {
-            "final_score": "a.total_score",
-            "total_score": "a.total_score",
-            "viral_score": "a.viral_score",
-            "freshness_hours": "a.freshness_hours",
-            "source": "n.source",
-            "parsed_at": "n.parsed_at",
-        }
-        order_col = allowed_sorts.get(sort_field, "a.total_score")
-        order_dir = "ASC" if sort_dir == "asc" else "DESC"
-
         query = f"""
-            SELECT n.id, n.source, n.title, n.url, n.h1,
+            SELECT n.id, n.source, n.title, n.url, n.h1, n.description,
                    n.published_at, n.parsed_at, n.status,
                    a.bigrams, a.trigrams, a.trends_data, a.keyso_data,
-                   a.llm_recommendation, a.llm_trend_forecast,
+                   a.llm_recommendation, a.llm_trend_forecast, a.sheets_row, a.processed_at,
                    a.viral_score, a.viral_level, a.viral_data,
                    a.sentiment_label, a.sentiment_score,
                    a.freshness_status, a.freshness_hours,
-                   a.tags_data, a.momentum_score, a.headline_score,
-                   a.total_score, a.quality_score, a.relevance_score,
-                   a.entity_names, a.entity_best_tier, a.processed_at
-            FROM news n
-            JOIN news_analysis a ON n.id = a.news_id
-            {where}
-            ORDER BY {order_col} {order_dir} LIMIT {ph} OFFSET {ph}
+                   a.tags_data, a.momentum_score, a.headline_score, a.total_score
+            FROM news n LEFT JOIN news_analysis a ON n.id = a.news_id
+            {where} ORDER BY n.parsed_at DESC LIMIT {_ph} OFFSET {_ph}
         """
         params.append(limit)
         params.append(offset)
         cur.execute(query, params)
-
         if _is_postgres():
             columns = [desc[0] for desc in cur.description]
             rows = [_parse_json_fields(dict(zip(columns, row))) for row in cur.fetchall()]
         else:
             rows = [_parse_json_fields(dict(row)) for row in cur.fetchall()]
-
-        return {"news": rows, "total": total_count}
+        return {"news": rows, "total": total_count, "limit": limit, "offset": offset}
     finally:
         cur.close()
+
+
+def get_editorial(query_params):
+    """Deprecated: proxies to get_news_unified(view=editorial)."""
+    query_params.setdefault("view", ["editorial"])
+    return get_news_unified(query_params)
+
+
+def get_final(query_params):
+    """Deprecated: proxies to get_news_unified(view=final)."""
+    query_params.setdefault("view", ["final"])
+    return get_news_unified(query_params)
 
 
 def get_moderation_list(query_params):
@@ -302,7 +293,7 @@ def get_moderation_list(query_params):
     cur = conn.cursor()
     ph = "%s" if _is_postgres() else "?"
 
-    conditions = ["n.status = 'moderation'"]
+    conditions = ["n.status = 'moderation'", "COALESCE(n.is_deleted, 0) = 0"]
     params = []
 
     if source:
@@ -623,7 +614,52 @@ def bulk_status(body):
 
 
 def delete_news(body):
-    """Delete news (caller must check permissions before calling)."""
+    """Soft-delete news (sets is_deleted=1)."""
+    news_ids = body.get("news_ids", [])
+    if not news_ids:
+        return {"status": "error", "message": "news_ids required"}
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if _is_postgres():
+            placeholders = ",".join(["%s"] * len(news_ids))
+        else:
+            placeholders = ",".join(["?"] * len(news_ids))
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        _ph = "%s" if _is_postgres() else "?"
+        cur.execute(f"UPDATE news SET is_deleted=1, deleted_at={_ph} WHERE id IN ({placeholders})",
+                    (now, *news_ids))
+        if not _is_postgres():
+            conn.commit()
+        return {"status": "ok", "deleted": len(news_ids)}
+    finally:
+        cur.close()
+
+
+def restore_news(body):
+    """Restore soft-deleted news."""
+    news_ids = body.get("news_ids", [])
+    if not news_ids:
+        return {"status": "error", "message": "news_ids required"}
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if _is_postgres():
+            placeholders = ",".join(["%s"] * len(news_ids))
+        else:
+            placeholders = ",".join(["?"] * len(news_ids))
+        cur.execute(f"UPDATE news SET is_deleted=0, deleted_at=NULL WHERE id IN ({placeholders})",
+                    tuple(news_ids))
+        if not _is_postgres():
+            conn.commit()
+        return {"status": "ok", "restored": len(news_ids)}
+    finally:
+        cur.close()
+
+
+def purge_news(body):
+    """Hard-delete news permanently (admin only)."""
     news_ids = body.get("news_ids", [])
     if not news_ids:
         return {"status": "error", "message": "news_ids required"}
@@ -636,8 +672,69 @@ def delete_news(body):
             placeholders = ",".join(["?"] * len(news_ids))
         cur.execute(f"DELETE FROM news_analysis WHERE news_id IN ({placeholders})", tuple(news_ids))
         cur.execute(f"DELETE FROM news WHERE id IN ({placeholders})", tuple(news_ids))
-        conn.commit()
-        return {"status": "ok", "deleted": len(news_ids)}
+        if not _is_postgres():
+            conn.commit()
+        return {"status": "ok", "purged": len(news_ids)}
+    finally:
+        cur.close()
+
+
+def get_trash(query_params):
+    """Get soft-deleted news."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        limit = int(query_params.get("limit", [100])[0])
+        offset = int(query_params.get("offset", [0])[0])
+        _ph = "%s" if _is_postgres() else "?"
+
+        cur.execute("SELECT COUNT(*) FROM news WHERE is_deleted = 1")
+        total = cur.fetchone()[0]
+
+        cur.execute(f"""
+            SELECT n.id, n.source, n.title, n.url, n.published_at, n.parsed_at,
+                   n.status, n.deleted_at,
+                   COALESCE(a.total_score, 0) as total_score
+            FROM news n
+            LEFT JOIN news_analysis a ON n.id = a.news_id
+            WHERE n.is_deleted = 1
+            ORDER BY n.deleted_at DESC
+            LIMIT {_ph} OFFSET {_ph}
+        """, (limit, offset))
+
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            rows = [dict(row) for row in cur.fetchall()]
+
+        return {"news": rows, "total": total, "limit": limit, "offset": offset}
+    finally:
+        cur.close()
+
+
+def auto_purge_old_deleted(days=30):
+    """Permanently delete items in trash older than N days."""
+    conn = get_connection()
+    cur = conn.cursor()
+    _ph = "%s" if _is_postgres() else "?"
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    try:
+        cur.execute(f"SELECT id FROM news WHERE is_deleted = 1 AND deleted_at < {_ph}", (cutoff,))
+        if _is_postgres():
+            old_ids = [row[0] for row in cur.fetchall()]
+        else:
+            old_ids = [row[0] for row in cur.fetchall()]
+        if not old_ids:
+            return 0
+        placeholders = ",".join([_ph] * len(old_ids))
+        cur.execute(f"DELETE FROM news_analysis WHERE news_id IN ({placeholders})", tuple(old_ids))
+        cur.execute(f"DELETE FROM news WHERE id IN ({placeholders})", tuple(old_ids))
+        if not _is_postgres():
+            conn.commit()
+        logger.info("Auto-purged %d old deleted news items", len(old_ids))
+        return len(old_ids)
     finally:
         cur.close()
 

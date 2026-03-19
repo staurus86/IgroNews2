@@ -45,6 +45,15 @@ def parse_sources(interval_min: int):
         elif source["type"] == "sitemap":
             from parsers.html_parser import parse_sitemap_source
             total += parse_sitemap_source(source)
+        elif source["type"] == "vk":
+            from parsers.vk_parser import parse_vk_source
+            total += parse_vk_source(source)
+        elif source["type"] == "telegram":
+            from parsers.telegram_parser import parse_telegram_source
+            total += parse_telegram_source(source)
+        elif source["type"] == "bluesky":
+            from parsers.bluesky_parser import parse_bluesky_source
+            total += parse_bluesky_source(source)
     logger.info("[%dmin] Total new articles: %d", interval_min, total)
 
     gc.collect()
@@ -67,6 +76,10 @@ def start_scheduler():
 
     # Cleanup old tasks from task_queue daily
     scheduler.add_job(cleanup_old_tasks, "interval", hours=24, id="cleanup_tasks")
+
+    # Auto-purge soft-deleted news older than 30 days
+    from api.news import auto_purge_old_deleted
+    scheduler.add_job(lambda: auto_purge_old_deleted(days=30), "interval", hours=24, id="auto_purge_deleted")
 
     # Cache cleanup every 3 hours
     from apis.cache import cache_cleanup

@@ -251,6 +251,12 @@ def _init_db_impl(conn, cur):
     # Articles: scheduled publication time
     _add_column_if_missing(cur, "articles", "scheduled_at", "TEXT")
 
+    # Soft-delete support
+    _add_column_if_missing(cur, "news", "is_deleted", "INTEGER DEFAULT 0")
+    _add_column_if_missing(cur, "news", "deleted_at", "TEXT")
+    _add_column_if_missing(cur, "articles", "is_deleted", "INTEGER DEFAULT 0")
+    _add_column_if_missing(cur, "articles", "deleted_at", "TEXT")
+
     # Phase 0: new columns for explainability (nullable, safe)
     _add_column_if_missing(cur, "news_analysis", "decision_reason", "TEXT DEFAULT ''")
     _add_column_if_missing(cur, "news_analysis", "score_breakdown", "TEXT DEFAULT '{}'")
@@ -312,6 +318,7 @@ def _create_indexes(cur):
         "CREATE INDEX IF NOT EXISTS idx_task_queue_created ON task_queue(created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_articles_status ON articles(status)",
         "CREATE INDEX IF NOT EXISTS idx_articles_newsid ON articles(news_id)",
+        "CREATE INDEX IF NOT EXISTS idx_news_deleted ON news(is_deleted)",
     ]
     for sql in indexes:
         try:

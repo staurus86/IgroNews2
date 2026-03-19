@@ -164,6 +164,24 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 .empty-state .empty-icon { font-size:2.5em; margin-bottom:10px; opacity:0.5; }
 
 /* Responsive */
+@media(max-width:1024px) {
+  .container { padding:10px; }
+  .grid-2 { grid-template-columns:1fr; }
+  .triage-card { max-width:100%; }
+  .tabs { flex-wrap:wrap; }
+  .tab { padding:8px 14px; font-size:0.85em; }
+  .btn-group { gap:6px; }
+  .modal { width:95vw !important; max-width:95vw !important; }
+  td.td-title { max-width:280px; }
+  .stats { gap:8px; }
+  .stat { min-width:100px; padding:10px 14px; }
+  .dash-filters { flex-wrap:wrap; }
+  .dash-filters select, .dash-filters input { min-width:140px; }
+  .settings-nav { gap:0; }
+  .settings-tab { padding:6px 10px; font-size:0.8em; }
+  header { padding:8px 12px; }
+  h1 { font-size:1.3em; }
+}
 @media(max-width:768px) {
   .grid-2 { grid-template-columns:1fr; }
   .stats { gap:8px; }
@@ -171,6 +189,24 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   .stat .num { font-size:1.4em; }
   .dash-filters { flex-direction:column; }
   .dash-filters select, .dash-filters input { width:100%; }
+  .tabs { gap:0; }
+  .tab { padding:6px 10px; font-size:0.8em; flex:1; text-align:center; }
+  table { font-size:0.82em; }
+  td { padding:6px 8px; }
+  th { padding:8px; font-size:0.78em; }
+  .btn { padding:6px 12px; min-height:36px; }
+  .btn-group { flex-direction:column; }
+  header { flex-direction:column; gap:8px; }
+}
+@media(max-width:480px) {
+  .container { padding:6px; }
+  .stat { min-width:70px; padding:8px; }
+  .stat .num { font-size:1.2em; }
+  .stat .lbl { font-size:0.7em; }
+  table { font-size:0.78em; }
+  td.td-title { max-width:200px; }
+  .btn { width:100%; min-height:44px; }
+  .modal { width:100vw !important; max-width:100vw !important; border-radius:0 !important; }
 }
 
 /* Ops Dashboard */
@@ -352,6 +388,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div class="tab" data-tab="queue">Очередь</div>
     <div class="tab" data-tab="health">Здоровье</div>
     <div class="tab" data-tab="storylines" id="tab-storylines" style="display:none">Сюжеты</div>
+    <div class="tab" data-tab="trash" id="tab-trash">&#128465; Корзина</div>
     <div class="tab" data-tab="settings">&#9881;</div>
     <div style="margin-left:auto"><a href="/logout" class="btn btn-secondary btn-sm">Выйти</a></div>
   </div>
@@ -1175,6 +1212,17 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   <!-- LOGS -->
   <!-- logs, sources, prompts, tools, users panels moved to settings sub-tabs -->
 
+  <!-- TRASH (soft-delete) -->
+  <div class="panel" id="panel-trash">
+    <h2>Корзина</h2>
+    <div class="btn-group" style="margin:10px 0">
+      <button class="btn btn-danger btn-sm" onclick="purgeAllTrash()">Очистить корзину</button>
+      <span id="trash-count" style="color:#8899a6;font-size:0.85em"></span>
+    </div>
+    <div id="trash-list"></div>
+    <div id="trash-pagination" style="margin-top:10px;display:flex;gap:4px;align-items:center"></div>
+  </div>
+
   <!-- SETTINGS (unified with sub-tabs) -->
   <div class="panel" id="panel-settings">
     <div class="settings-nav">
@@ -1533,6 +1581,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   if (t.dataset.tab === 'queue') { loadQueueStandalone(); }
   if (t.dataset.tab === 'health') { loadHealth(); }
   if (t.dataset.tab === 'storylines') { loadStorylines(); }
+  if (t.dataset.tab === 'trash') { loadTrash(); }
   if (t.dataset.tab === 'settings') { loadSettings(); loadLogs(); loadQueue(); loadViralTriggers(); }
 }));
 
@@ -5523,6 +5572,75 @@ function applyFeatureFlags() {
     });
   }, 500);
 })();
+
+// ---------------------------------------------------------------------------
+// TRASH (soft-delete)
+// ---------------------------------------------------------------------------
+let _trashPage = 0;
+const _trashLimit = 50;
+
+async function loadTrash(page) {
+  if (page !== undefined) _trashPage = page;
+  const offset = _trashPage * _trashLimit;
+  const data = await api(`/api/news/trash?limit=${_trashLimit}&offset=${offset}`);
+  if (!data || !data.news) return;
+
+  document.getElementById('trash-count').textContent = `${data.total} элементов в корзине`;
+
+  if (data.news.length === 0) {
+    document.getElementById('trash-list').innerHTML = '<div class="empty-state"><div class="empty-icon">&#128465;</div><div>Корзина пуста</div></div>';
+    document.getElementById('trash-pagination').innerHTML = '';
+    return;
+  }
+
+  let html = '<table><tr><th>Источник</th><th>Заголовок</th><th>Удалено</th><th>Балл</th><th>Действия</th></tr>';
+  for (const n of data.news) {
+    const delDate = n.deleted_at ? new Date(n.deleted_at).toLocaleDateString('ru') : '';
+    html += `<tr>
+      <td>${n.source || ''}</td>
+      <td class="td-title"><a href="${n.url}" target="_blank">${n.title || ''}</a></td>
+      <td>${delDate}</td>
+      <td>${n.total_score || 0}</td>
+      <td>
+        <button class="btn btn-sm btn-success" onclick="restoreNews('${n.id}')">Восстановить</button>
+        <button class="btn btn-sm btn-danger" onclick="purgeNews('${n.id}')">Удалить</button>
+      </td>
+    </tr>`;
+  }
+  html += '</table>';
+  document.getElementById('trash-list').innerHTML = html;
+
+  // Pagination
+  const pages = Math.ceil(data.total / _trashLimit);
+  let pHtml = '';
+  if (pages > 1) {
+    for (let i = 0; i < pages && i < 10; i++) {
+      const active = i === _trashPage ? 'background:#1da1f2;color:#fff' : 'background:#192734;color:#8899a6';
+      pHtml += `<button onclick="loadTrash(${i})" style="padding:4px 10px;border:1px solid #38444d;border-radius:4px;cursor:pointer;${active}">${i+1}</button>`;
+    }
+  }
+  document.getElementById('trash-pagination').innerHTML = pHtml;
+}
+
+async function restoreNews(id) {
+  const r = await api('/api/news/restore', {news_ids: [id]});
+  if (r.status === 'ok') { toast('Восстановлено'); loadTrash(); } else toast(r.message, true);
+}
+
+async function purgeNews(id) {
+  if (!confirm('Удалить навсегда? Это действие необратимо.')) return;
+  const r = await api('/api/news/purge', {news_ids: [id]});
+  if (r.status === 'ok') { toast('Удалено навсегда'); loadTrash(); } else toast(r.message, true);
+}
+
+async function purgeAllTrash() {
+  if (!confirm('Очистить всю корзину? Все элементы будут удалены навсегда.')) return;
+  const data = await api('/api/news/trash?limit=1000');
+  if (!data || !data.news || data.news.length === 0) { toast('Корзина пуста'); return; }
+  const ids = data.news.map(n => n.id);
+  const r = await api('/api/news/purge', {news_ids: ids});
+  if (r.status === 'ok') { toast(`Удалено навсегда: ${ids.length}`); loadTrash(); } else toast(r.message, true);
+}
 
 </script>
 

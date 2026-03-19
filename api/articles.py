@@ -34,7 +34,7 @@ def get_articles(limit: int = 500):
     cur = conn.cursor()
     ph = "%s" if _is_postgres() else "?"
     try:
-        cur.execute(f"SELECT * FROM articles ORDER BY updated_at DESC LIMIT {ph}", (limit,))
+        cur.execute(f"SELECT * FROM articles WHERE COALESCE(is_deleted, 0) = 0 ORDER BY updated_at DESC LIMIT {ph}", (limit,))
         if _is_postgres():
             columns = [desc[0] for desc in cur.description]
             return [dict(zip(columns, row)) for row in cur.fetchall()]
@@ -95,14 +95,34 @@ def update_article(body, changed_by="admin"):
 
 
 def delete_article(body):
+    """Soft-delete article."""
     aid = body.get("id")
     if not aid:
         return {"status": "error", "message": "id required"}
     conn = get_connection()
     cur = conn.cursor()
     try:
-        ph = _ph()
-        cur.execute(f"DELETE FROM articles WHERE id = {ph}", (aid,))
+        p = _ph()
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        cur.execute(f"UPDATE articles SET is_deleted=1, deleted_at={p} WHERE id = {p}", (now, aid))
+        if not _is_postgres():
+            conn.commit()
+        return {"status": "ok"}
+    finally:
+        cur.close()
+
+
+def restore_article(body):
+    """Restore soft-deleted article."""
+    aid = body.get("id")
+    if not aid:
+        return {"status": "error", "message": "id required"}
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        p = _ph()
+        cur.execute(f"UPDATE articles SET is_deleted=0, deleted_at=NULL WHERE id = {p}", (aid,))
         if not _is_postgres():
             conn.commit()
         return {"status": "ok"}

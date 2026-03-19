@@ -130,6 +130,8 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/stats": lambda: self._json(self._get_stats()),
             "/api/pipeline/status": lambda: self._json(self._get_pipeline_status()),
             "/api/news": lambda: self._json(self._get_news()),
+            "/api/news/list": lambda: self._json(self._get_news_unified()),
+            "/api/news/trash": lambda: self._json(self._get_trash()),
             "/api/sources": lambda: self._json(self._get_sources()),
             "/api/prompts": lambda: self._json(self._get_prompts()),
             "/api/settings": lambda: self._json(self._get_settings()),
@@ -238,6 +240,9 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/users/change_password": lambda: self._change_password(body),
             "/api/news/bulk_status": lambda: self._bulk_status(body),
             "/api/news/delete": lambda: self._delete_news(body),
+            "/api/news/restore": lambda: self._restore_news(body),
+            "/api/news/purge": lambda: self._purge_news(body),
+            "/api/articles/restore": lambda: self._restore_article(body),
             "/api/test_parse": lambda: self._test_parse(body),
             "/api/setup_headers": lambda: self._setup_headers(body),
             "/api/reparse_all": lambda: self._reparse_all(body),
@@ -593,6 +598,16 @@ async function login() {
         qs = parse_qs(urlparse(self.path).query)
         return get_editorial(qs)
 
+    def _get_news_unified(self):
+        from api.news import get_news_unified
+        qs = parse_qs(urlparse(self.path).query)
+        return get_news_unified(qs)
+
+    def _get_trash(self):
+        from api.news import get_trash
+        qs = parse_qs(urlparse(self.path).query)
+        return get_trash(qs)
+
     def _get_event_chain_by_id(self, news_id):
         from api.news import get_event_chain_by_id
         return get_event_chain_by_id(news_id)
@@ -944,6 +959,24 @@ async function login() {
             return
         from api.news import delete_news
         self._json(delete_news(body))
+
+    def _restore_news(self, body):
+        if not self._require_perm("delete"):
+            return
+        from api.news import restore_news
+        self._json(restore_news(body))
+
+    def _purge_news(self, body):
+        if not self._require_perm("delete"):
+            return
+        from api.news import purge_news
+        self._json(purge_news(body))
+
+    def _restore_article(self, body):
+        if not self._require_perm("delete"):
+            return
+        from api.articles import restore_article
+        self._json(restore_article(body))
 
     def _test_parse(self, body):
         from api.settings import test_parse

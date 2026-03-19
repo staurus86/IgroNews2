@@ -470,7 +470,7 @@ class TestNews(APITestBase):
         self.assertEqual(result["status"], "error")
 
     def test_delete_news(self):
-        """delete_news() removes news and analysis."""
+        """delete_news() soft-deletes news (is_deleted=1)."""
         _insert_test_news(self.conn, self.cur)
 
         from api.news import delete_news
@@ -479,11 +479,37 @@ class TestNews(APITestBase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["deleted"], 2)
 
-        # Verify deleted from DB
-        self.cur.execute("SELECT COUNT(*) FROM news WHERE id IN ('n1', 'n3')")
-        self.assertEqual(self.cur.fetchone()[0], 0)
-        # Analysis also deleted
+        # Verify soft-deleted (still in DB but is_deleted=1)
+        self.cur.execute("SELECT COUNT(*) FROM news WHERE id IN ('n1', 'n3') AND is_deleted = 1")
+        self.assertEqual(self.cur.fetchone()[0], 2)
+        # Analysis still exists (not touched by soft-delete)
         self.cur.execute("SELECT COUNT(*) FROM news_analysis WHERE news_id IN ('n1', 'n3')")
+        self.assertEqual(self.cur.fetchone()[0], 2)
+
+    def test_restore_news(self):
+        """restore_news() restores soft-deleted news."""
+        _insert_test_news(self.conn, self.cur)
+
+        from api.news import delete_news, restore_news
+        delete_news({"news_ids": ["n1"]})
+        self.cur.execute("SELECT is_deleted FROM news WHERE id = 'n1'")
+        self.assertEqual(self.cur.fetchone()[0], 1)
+
+        result = restore_news({"news_ids": ["n1"]})
+        self.assertEqual(result["status"], "ok")
+        self.cur.execute("SELECT is_deleted FROM news WHERE id = 'n1'")
+        self.assertEqual(self.cur.fetchone()[0], 0)
+
+    def test_purge_news(self):
+        """purge_news() hard-deletes news permanently."""
+        _insert_test_news(self.conn, self.cur)
+
+        from api.news import purge_news
+        result = purge_news({"news_ids": ["n1"]})
+        self.assertEqual(result["status"], "ok")
+        self.cur.execute("SELECT COUNT(*) FROM news WHERE id = 'n1'")
+        self.assertEqual(self.cur.fetchone()[0], 0)
+        self.cur.execute("SELECT COUNT(*) FROM news_analysis WHERE news_id = 'n1'")
         self.assertEqual(self.cur.fetchone()[0], 0)
 
     def test_delete_news_empty(self):
@@ -604,7 +630,7 @@ class TestArticles(APITestBase):
         self.assertEqual(result["status"], "error")
 
     def test_delete_article(self):
-        """delete_article() removes article from DB."""
+        """delete_article() soft-deletes article."""
         _insert_test_article(self.conn, self.cur)
 
         from api.articles import delete_article
@@ -612,8 +638,8 @@ class TestArticles(APITestBase):
 
         self.assertEqual(result["status"], "ok")
 
-        self.cur.execute("SELECT COUNT(*) FROM articles WHERE id = ?", ("art1",))
-        self.assertEqual(self.cur.fetchone()[0], 0)
+        self.cur.execute("SELECT is_deleted FROM articles WHERE id = ?", ("art1",))
+        self.assertEqual(self.cur.fetchone()[0], 1)
 
     def test_delete_article_missing_id(self):
         """delete_article() returns error if no ID."""
