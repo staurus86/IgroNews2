@@ -148,6 +148,10 @@ def parse_vk_source(source: dict) -> int:
             if news_exists(url):
                 continue
 
+            # Skip posts with less than 100 chars of meaningful text
+            if len(plain_text) < 100:
+                continue
+
             title = _truncate_title(title)
             ts = post.get("date", 0)
             published_at = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts else ""

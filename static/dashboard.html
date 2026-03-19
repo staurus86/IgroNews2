@@ -472,6 +472,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <select id="ed-score-filter" onchange="loadEditorial(0)" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
         <option value="">Скор: все</option>
         <option value="zero">= 0</option>
+        <option value="max30">&lt; 30</option>
         <option value="min10">&ge; 10</option>
         <option value="min30">&ge; 30</option>
         <option value="min50">&ge; 50</option>
@@ -4145,6 +4146,7 @@ async function loadEditorial(page) {
   if (source) url += `&source=${encodeURIComponent(source)}`;
   if (viral) url += `&viral_level=${viral}`;
   if (scoreFilter === 'zero') url += '&score_filter=zero';
+  else if (scoreFilter.startsWith('max')) url += '&max_score=' + scoreFilter.replace('max','');
   else if (scoreFilter.startsWith('range')) { const [lo,hi] = scoreFilter.replace('range','').split('_'); url += '&min_score='+lo+'&max_score='+hi; }
   else if (scoreFilter.startsWith('min')) url += '&min_score=' + scoreFilter.replace('min','');
   if (tier) url += `&tier=${tier}`;

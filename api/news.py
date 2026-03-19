@@ -739,6 +739,30 @@ def auto_purge_old_deleted(days=30):
         cur.close()
 
 
+def cleanup_short_news(min_chars=100):
+    """Soft-delete news with title shorter than min_chars."""
+    conn = get_connection()
+    cur = conn.cursor()
+    _ph = "%s" if _is_postgres() else "?"
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        cur.execute(f"""
+            UPDATE news SET is_deleted=1, deleted_at={_ph}
+            WHERE COALESCE(is_deleted, 0) = 0
+              AND LENGTH(title) < {_ph}
+              AND status NOT IN ('approved', 'ready')
+        """, (now, min_chars))
+        count = cur.rowcount
+        if not _is_postgres():
+            conn.commit()
+        if count > 0:
+            logger.info("Auto-deleted %d news with title < %d chars", count, min_chars)
+        return count
+    finally:
+        cur.close()
+
+
 def news_detail(body):
     """Get full news + analysis detail."""
     news_id = body.get("news_id")

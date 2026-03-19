@@ -81,6 +81,10 @@ def start_scheduler():
     from api.news import auto_purge_old_deleted
     scheduler.add_job(lambda: auto_purge_old_deleted(days=30), "interval", hours=24, id="auto_purge_deleted")
 
+    # Auto-delete short news (< 100 chars title)
+    from api.news import cleanup_short_news
+    scheduler.add_job(lambda: cleanup_short_news(100), "interval", hours=6, id="cleanup_short_news")
+
     # Cache cleanup every 3 hours
     from apis.cache import cache_cleanup
     scheduler.add_job(cache_cleanup, "interval", hours=3, id="cache_cleanup")
