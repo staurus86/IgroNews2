@@ -1571,6 +1571,17 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
   </div>
 </div>
 
+<!-- News text preview drawer -->
+<div class="explain-drawer" id="text-drawer" style="width:520px;right:-540px">
+  <button class="close-btn" onclick="document.getElementById('text-drawer').classList.remove('open')">&times;</button>
+  <div id="text-drawer-source" style="color:#8899a6;font-size:0.8em;margin-bottom:4px"></div>
+  <h2 id="text-drawer-title" style="margin-bottom:8px;font-size:1.1em;line-height:1.4"></h2>
+  <div id="text-drawer-meta" style="color:#8899a6;font-size:0.82em;margin-bottom:12px;display:flex;gap:12px;flex-wrap:wrap"></div>
+  <div id="text-drawer-desc" style="background:#22303c;border-radius:6px;padding:10px;margin-bottom:12px;font-size:0.9em;color:#e1e8ed;line-height:1.5;display:none"></div>
+  <div id="text-drawer-text" style="font-size:0.88em;line-height:1.6;color:#c8d6e5;white-space:pre-wrap;word-break:break-word"></div>
+  <div id="text-drawer-url" style="margin-top:12px"></div>
+</div>
+
 <script>
 // Tabs
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
@@ -4277,12 +4288,13 @@ function renderEdTable() {
     const rejectBtn = canApprove ? `<button class="btn btn-sm btn-danger" onclick="edReject('${n.id}')" title="Отклонить" style="padding:2px 6px">&#10007;</button>` : '';
     const editorBtn = `<button class="btn btn-sm btn-secondary" onclick="edToEditor('${n.id}')" title="В редактор" style="padding:2px 6px">&#9998;</button>`;
     const explainBtn = `<button class="btn btn-sm btn-secondary" onclick="openExplainDrawer('${n.id}','${esc(n.title).replace(/'/g,"\\'")}') " title="Почему?" style="padding:2px 6px;font-size:0.75em">?</button>`;
+    const textBtn = `<button class="btn btn-sm btn-secondary" onclick="openTextDrawer('${n.id}')" title="Текст новости" style="padding:2px 6px;font-size:0.75em">&#128196;</button>`;
 
     return `<tr class="ed-row" data-id="${n.id}">
       <td><input type="checkbox" class="ed-cb" value="${n.id}" style="width:15px;height:15px"></td>
       <td style="font-size:0.8em;color:#8899a6">${n.source} ${entHtml}</td>
       <td>
-        <div style="cursor:pointer" onclick="edToggleDetail('${n.id}')">
+        <div style="cursor:pointer" onclick="openTextDrawer('${n.id}')">
           <div style="font-size:0.9em;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${n.title}</div>
         </div>
       </td>
@@ -4294,7 +4306,7 @@ function renderEdTable() {
       <td style="text-align:center"><span style="color:${slColor}" title="${sl}">${sEmoji}</span></td>
       <td>${tagsHtml}</td>
       <td style="font-size:0.72em;color:#8899a6;white-space:nowrap">${fmtDate(n.published_at)}</td>
-      <td style="white-space:nowrap">${approveBtn} ${rejectBtn} ${editorBtn} ${explainBtn}</td>
+      <td style="white-space:nowrap">${approveBtn} ${rejectBtn} ${editorBtn} ${textBtn} ${explainBtn}</td>
     </tr>
     <tr class="ed-detail" id="ed-detail-${n.id}" style="display:none">
       <td colspan="12" style="padding:12px 20px;background:#15202b;border-left:3px solid #1da1f2">
@@ -4941,6 +4953,47 @@ async function loadOpsDashboard() {
 // ═══════════════════════════════════════════
 // PHASE 1: EXPLAIN DRAWER (EXPLAINABILITY)
 // ═══════════════════════════════════════════
+
+async function openTextDrawer(newsId) {
+  // Close explain drawer if open
+  document.getElementById('explain-drawer').classList.remove('open');
+  const d = document.getElementById('text-drawer');
+  d.classList.add('open');
+  document.getElementById('text-drawer-title').textContent = 'Загрузка...';
+  document.getElementById('text-drawer-text').textContent = '';
+  document.getElementById('text-drawer-desc').style.display = 'none';
+  document.getElementById('text-drawer-source').textContent = '';
+  document.getElementById('text-drawer-meta').innerHTML = '';
+  document.getElementById('text-drawer-url').innerHTML = '';
+
+  const r = await api('/api/news/detail', {news_id: newsId});
+  if (!r || r.status === 'error') {
+    document.getElementById('text-drawer-title').textContent = 'Ошибка загрузки';
+    return;
+  }
+  const n = r.news || {};
+  const a = r.analysis || {};
+  document.getElementById('text-drawer-source').textContent = n.source || '';
+  document.getElementById('text-drawer-title').textContent = n.h1 || n.title || '';
+
+  let meta = '';
+  if (n.published_at) meta += `<span>&#128197; ${n.published_at.slice(0,16).replace('T',' ')}</span>`;
+  if (a.total_score) meta += `<span>&#127919; Скор: ${a.total_score}</span>`;
+  if (a.sentiment_label) meta += `<span>${a.sentiment_label}</span>`;
+  if (a.freshness_hours >= 0) meta += `<span>&#9200; ${Math.round(a.freshness_hours)}ч</span>`;
+  document.getElementById('text-drawer-meta').innerHTML = meta;
+
+  if (n.description) {
+    document.getElementById('text-drawer-desc').textContent = n.description;
+    document.getElementById('text-drawer-desc').style.display = 'block';
+  }
+
+  document.getElementById('text-drawer-text').textContent = n.plain_text || '(текст не загружен)';
+
+  if (n.url) {
+    document.getElementById('text-drawer-url').innerHTML = `<a href="${n.url}" target="_blank" class="btn btn-sm btn-primary">Открыть оригинал</a>`;
+  }
+}
 
 function openExplainDrawer(newsId, title) {
   if (!ffEnabled('explainability_v1')) {
