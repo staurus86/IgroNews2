@@ -2,7 +2,7 @@
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import requests
 
@@ -11,6 +11,7 @@ from storage.database import insert_news, news_exists
 logger = logging.getLogger(__name__)
 
 BLUESKY_API = "https://public.api.bsky.app/xrpc"
+MAX_AGE_DAYS = 7
 
 
 def _truncate_title(text: str, max_len: int = 100) -> str:
@@ -102,6 +103,15 @@ def parse_bluesky_source(source: dict) -> int:
 
             title = _truncate_title(text)
             published_at = record.get("createdAt", "")
+
+            # Skip old posts
+            if published_at:
+                try:
+                    pub_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+                    if pub_dt < datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS):
+                        continue
+                except (ValueError, TypeError):
+                    pass
 
             # Extract description from external embed if available
             description = text[:300]

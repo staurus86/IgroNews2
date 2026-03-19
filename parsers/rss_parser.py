@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 from storage.database import insert_news, news_exists
 from parsers.proxy import fetch_with_retry, _get_random_ua
 
-MAX_AGE_DAYS = 30
+MAX_AGE_DAYS = 7
 
 logger = logging.getLogger(__name__)
 

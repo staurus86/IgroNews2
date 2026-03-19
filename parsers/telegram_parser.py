@@ -1,9 +1,10 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from storage.database import insert_news, news_exists
 
 logger = logging.getLogger(__name__)
+MAX_AGE_DAYS = 7
 
 # Try to import telethon; if unavailable, fall back to RSS
 try:
@@ -207,6 +208,13 @@ def _parse_via_web_preview(source: dict) -> int:
             published_at = ""
             if date_el and date_el.get("datetime"):
                 published_at = date_el["datetime"]
+                # Skip old posts
+                try:
+                    pub_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+                    if pub_dt < datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS):
+                        continue
+                except (ValueError, TypeError):
+                    pass
 
             # Извлекаем внешнюю ссылку (если есть)
             ext_link_el = msg_el.select_one(".tgme_widget_message_link_preview")

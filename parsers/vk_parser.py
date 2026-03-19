@@ -11,6 +11,7 @@ import config
 from storage.database import insert_news, news_exists
 
 logger = logging.getLogger(__name__)
+MAX_AGE_DAYS = 7
 
 _HASHTAG_RE = re.compile(r"#\S+")
 _LINK_RE = re.compile(r"https?://\S+")
@@ -135,8 +136,16 @@ def parse_vk_source(source: dict) -> int:
             return 0
 
         items = data.get("response", {}).get("items", [])
+        cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
 
         for post in items:
+            # Skip old posts
+            ts = post.get("date", 0)
+            if ts:
+                post_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                if post_dt < cutoff:
+                    continue
+
             if _is_ad_post(post):
                 continue
 
