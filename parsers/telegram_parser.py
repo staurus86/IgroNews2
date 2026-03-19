@@ -172,8 +172,9 @@ def _parse_via_web_preview(source: dict) -> int:
 
     try:
         url = f"https://t.me/s/{channel_clean}"
-        resp = requests.get(url, timeout=15, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        resp = requests.get(url, timeout=30, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
         })
         if resp.status_code != 200:
             logger.warning("Telegram web preview returned %d for %s", resp.status_code, name)
