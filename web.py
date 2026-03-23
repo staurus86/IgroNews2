@@ -8,6 +8,12 @@ import threading
 import logging
 import time as _time
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+    request_queue_size = 20
 from http.cookies import SimpleCookie
 from urllib.parse import urlparse, parse_qs
 
@@ -101,6 +107,11 @@ class AdminHandler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self):
+        try:
+            from core.watchdog import watchdog
+            watchdog.heartbeat("web")
+        except Exception:
+            pass
         path = urlparse(self.path).path
         # Static files that don't require auth
         if path == "/robots.txt":
@@ -208,6 +219,11 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
     def do_POST(self):
+        try:
+            from core.watchdog import watchdog
+            watchdog.heartbeat("web")
+        except Exception:
+            pass
         path = urlparse(self.path).path
         body = self._read_body()
 
@@ -1545,7 +1561,7 @@ def _load_active_prompts():
 
 def start_web():
     _load_active_prompts()
-    server = HTTPServer(("0.0.0.0", PORT), AdminHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), AdminHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     logger.info("Admin panel running on port %d", PORT)
