@@ -513,6 +513,41 @@ def _calc_final_score(analysis: dict) -> int:
     return round(internal * 0.4 + viral * 0.2 + keyso_bonus * 0.15 + trends_bonus * 0.1 + headline * 0.15)
 
 
+# ─── Sheets retry ───
+
+def retry_sheets_exports():
+    """Retry failed Sheets exports from task_queue."""
+    from storage.database import db_cursor, rows_to_dicts
+    try:
+        with db_cursor() as cur:
+            cur.execute(
+                "SELECT id, news_id FROM task_queue WHERE task_type='sheets_retry' AND status='pending' ORDER BY created_at LIMIT 10"
+            )
+            tasks = rows_to_dicts(cur)
+
+        if not tasks:
+            return
+
+        for task in tasks:
+            news_id = task["news_id"]
+            try:
+                news = _fetch_news_by_id(news_id)
+                if not news:
+                    _update_task(task["id"], "completed", "News not found, skipping")
+                    continue
+                analysis = _fetch_analysis_by_id(news_id)
+                from storage.sheets import write_ready_row
+                # Sheets retry without rewrite — export the raw news row
+                from storage.sheets import write_news_row
+                write_news_row(news, analysis)
+                _update_task(task["id"], "completed", "Retried successfully")
+                logger.info("Sheets retry OK for %s", news_id)
+            except Exception as e:
+                logger.warning("Sheets retry failed for %s: %s", news_id, e)
+    except Exception as e:
+        logger.error("retry_sheets_exports error: %s", e)
+
+
 # ─── Pipeline 1: Full Auto ───
 
 def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
@@ -621,12 +656,22 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
             _update_task(task_id, "running", {"stage": "rewriting", "score": total_score, "final_score": final_score})
             import config
             style = getattr(config, "AUTO_REWRITE_STYLE", "news")
-            rewrite = rewrite_news(
-                title=news.get("title", ""),
-                text=news.get("plain_text", ""),
-                style=style,
-                language="русский",
-            )
+            rewrite = None
+            for rewrite_attempt in range(2):
+                try:
+                    rewrite = rewrite_news(
+                        title=news.get("title", ""),
+                        text=news.get("plain_text", ""),
+                        style=style,
+                        language="русский",
+                    )
+                    if rewrite:
+                        break
+                except Exception as e:
+                    logger.warning("Rewrite attempt %d/2 failed for %s: %s",
+                                   rewrite_attempt + 1, news_id, e)
+                    if rewrite_attempt == 0:
+                        time.sleep(3)
             if not rewrite:
                 _update_task(task_id, "error", {"stage": "rewriting", "error": "Rewrite returned None"})
                 update_news_status(news_id, "in_review")
@@ -640,7 +685,11 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
             try:
                 sheet_row = write_ready_row(news, analysis, rewrite)
             except Exception as sheets_err:
-                logger.error("Full-auto Sheets write failed for %s: %s", news_id, sheets_err)
+                logger.warning("Sheets export failed for %s, queuing for retry: %s", news_id, sheets_err)
+                try:
+                    _create_task("sheets_retry", news_id, news.get("title", ""), "")
+                except Exception:
+                    pass
                 time.sleep(10)
 
             if sheet_row:

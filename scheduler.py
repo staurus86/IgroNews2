@@ -126,6 +126,10 @@ def start_scheduler():
     # Publish scheduled articles every minute
     scheduler.add_job(publish_scheduled_articles, "interval", minutes=1, id="publish_scheduled")
 
+    # Retry failed Sheets exports every 15 minutes
+    from pipeline.orchestrator import retry_sheets_exports
+    scheduler.add_job(retry_sheets_exports, "interval", minutes=15, id="retry_sheets")
+
     # Auto-rescore news with score=0: daily at 04:00
     scheduler.add_job(_auto_rescore_zero, "cron", hour=4, minute=0, id="auto_rescore_zero")
 
