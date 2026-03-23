@@ -78,13 +78,34 @@ def _get_client():
 
 
 def _retry_api(func, max_retries=5):
-    """Retry gspread API call with exponential backoff on rate limit / server errors."""
+    """Retry gspread API call with exponential backoff on rate limit / server errors.
+
+    On 401/403 (auth expired mid-export) the client cache is invalidated so the
+    next _get_client() call re-authorizes automatically, then the call is retried
+    once before giving up.
+    """
+    global _client_created_at
+    _auth_retried = False
+
     for attempt in range(max_retries):
         _rate_limit()
         try:
             return func()
         except gspread.exceptions.APIError as e:
             code = e.response.status_code if hasattr(e, 'response') else 0
+
+            # Auth expired — refresh credentials and retry once
+            if code in (401, 403) and not _auth_retried:
+                logger.warning(
+                    "Sheets auth error %d on attempt %d — refreshing credentials and retrying",
+                    code, attempt + 1,
+                )
+                _auth_retried = True
+                _client_created_at = 0   # invalidate TTL → _get_client() will re-auth
+                _worksheet_cache.clear()  # stale worksheet handles are invalid after re-auth
+                time.sleep(1)
+                continue  # retry with fresh client on next loop iteration
+
             if code in (429, 500, 503) and attempt < max_retries - 1:
                 # Aggressive backoff for 429: 5s, 15s, 45s, 120s
                 if code == 429:
@@ -94,7 +115,6 @@ def _retry_api(func, max_retries=5):
                 logger.warning("Sheets API %d, retry in %ds (attempt %d/%d)", code, wait, attempt + 1, max_retries)
                 time.sleep(wait)
                 if code == 429 and attempt >= 1:
-                    global _client_created_at
                     _client_created_at = 0
                 continue
             raise
@@ -106,19 +126,24 @@ def _retry_api(func, max_retries=5):
 
 
 def _get_worksheet(tab_name: str, headers: list = None):
-    """Get cached worksheet, create if needed."""
-    global _worksheet_cache_at
-    now = time.time()
+    """Get cached worksheet, create if needed.
 
-    # Return cached if fresh
-    if tab_name in _worksheet_cache and (now - _worksheet_cache_at) < _WS_CACHE_TTL:
-        return _worksheet_cache[tab_name]
+    If the cached worksheet handle is stale (e.g. after a token refresh), the
+    cache is cleared and a single transparent retry is performed so callers
+    never need to handle auth errors themselves.
+    """
+    global _worksheet_cache_at, _client_created_at
 
-    client = _get_client()
-    if not client:
-        return None
+    def _fetch():
+        now = time.time()
+        # Return cached worksheet only if cache is fresh
+        if tab_name in _worksheet_cache and (now - _worksheet_cache_at) < _WS_CACHE_TTL:
+            return _worksheet_cache[tab_name]
 
-    try:
+        client = _get_client()
+        if not client:
+            return None
+
         spreadsheet = _retry_api(lambda: client.open_by_key(config.GOOGLE_SHEETS_ID))
         try:
             ws = _retry_api(lambda: spreadsheet.worksheet(tab_name))
@@ -131,15 +156,34 @@ def _get_worksheet(tab_name: str, headers: list = None):
             else:
                 return None
 
-        # Check headers exist
+        # Ensure headers are present
         if headers:
             first_row = _retry_api(lambda: ws.row_values(1))
             if not first_row or first_row[0] != headers[0]:
                 _retry_api(lambda: ws.insert_row(headers, index=1, value_input_option="USER_ENTERED"))
 
         _worksheet_cache[tab_name] = ws
-        _worksheet_cache_at = now
+        _worksheet_cache_at = time.time()
         return ws
+
+    try:
+        return _fetch()
+    except gspread.exceptions.APIError as e:
+        code = e.response.status_code if hasattr(e, 'response') else 0
+        if code in (401, 403):
+            logger.warning(
+                "Sheets auth error %d getting worksheet '%s' — refreshing and retrying",
+                code, tab_name,
+            )
+            _client_created_at = 0
+            _worksheet_cache.clear()
+            try:
+                return _fetch()
+            except Exception as e2:
+                logger.error("Failed to get worksheet '%s' after re-auth: %s", tab_name, e2)
+                return None
+        logger.error("Failed to get worksheet '%s': %s", tab_name, e)
+        return None
     except Exception as e:
         logger.error("Failed to get worksheet '%s': %s", tab_name, e)
         return None
