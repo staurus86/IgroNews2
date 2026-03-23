@@ -51,6 +51,13 @@ def parse_sources(interval_min: int):
             logger.debug("Skipping unhealthy source: %s", name)
             continue
 
+        # Skip manually disabled sources (toggled from dashboard)
+        from core.feature_flags import get_disabled_sources
+        disabled = get_disabled_sources()
+        if name in disabled:
+            logger.debug("Skipping manually disabled source: %s", name)
+            continue
+
         try:
             def _parse_one(src=source):
                 if src["type"] == "rss":

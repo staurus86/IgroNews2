@@ -244,6 +244,87 @@ def set_flag(flag_id: str, enabled: bool, updated_by: str = "admin"):
     logger.info("Feature flag '%s' set to %s by %s", flag_id, enabled, updated_by)
 
 
+def get_flag(flag_id: str):
+    """Get raw flag value. Returns the enabled bool for known flags, or None."""
+    flags = _get_cached_flags()
+    entry = flags.get(flag_id)
+    if entry is None:
+        return None
+    return entry.get("enabled")
+
+
+def get_disabled_sources() -> list[str]:
+    """Get list of source names disabled via dashboard."""
+    conn, is_pg = _get_db()
+    cur = conn.cursor()
+    ph = "%s" if is_pg else "?"
+    try:
+        cur.execute(f"SELECT enabled FROM feature_flags WHERE flag_id = {ph}", ("disabled_sources",))
+        row = cur.fetchone()
+    finally:
+        cur.close()
+    if row is None:
+        return []
+    raw = row[0] if not hasattr(row, "keys") else row["enabled"]
+    # We store the JSON list in the `description` column to avoid type conflicts
+    # Re-read using description column
+    conn2, is_pg2 = _get_db()
+    cur2 = conn2.cursor()
+    ph2 = "%s" if is_pg2 else "?"
+    try:
+        cur2.execute(f"SELECT description FROM feature_flags WHERE flag_id = {ph2}", ("disabled_sources",))
+        row2 = cur2.fetchone()
+    finally:
+        cur2.close()
+    if row2 is None:
+        return []
+    raw2 = row2[0] if not hasattr(row2, "keys") else row2["description"]
+    if not raw2:
+        return []
+    try:
+        result = json.loads(raw2)
+        return result if isinstance(result, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def _set_disabled_sources(disabled: list):
+    """Persist disabled sources list to DB (stored in description column of a special flag)."""
+    conn, is_pg = _get_db()
+    cur = conn.cursor()
+    ph = "%s" if is_pg else "?"
+    now = datetime.now(timezone.utc).isoformat()
+    encoded = json.dumps(disabled)
+    try:
+        if is_pg:
+            cur.execute(f"""
+                INSERT INTO feature_flags (flag_id, enabled, description, phase, updated_at, updated_by)
+                VALUES ({ph}, 1, {ph}, 0, {ph}, {ph})
+                ON CONFLICT (flag_id) DO UPDATE SET description = EXCLUDED.description, updated_at = EXCLUDED.updated_at
+            """, ("disabled_sources", encoded, now, "admin"))
+        else:
+            cur.execute(f"""
+                INSERT OR REPLACE INTO feature_flags (flag_id, enabled, description, phase, updated_at, updated_by)
+                VALUES ({ph}, 1, {ph}, 0, {ph}, {ph})
+            """, ("disabled_sources", encoded, now, "admin"))
+        if not is_pg:
+            conn.commit()
+    finally:
+        cur.close()
+    invalidate_cache()
+
+
+def toggle_source(source_name: str, enabled: bool):
+    """Enable or disable a source via dashboard."""
+    disabled = get_disabled_sources()
+    if enabled and source_name in disabled:
+        disabled.remove(source_name)
+    elif not enabled and source_name not in disabled:
+        disabled.append(source_name)
+    _set_disabled_sources(disabled)
+    logger.info("Source '%s' %s via dashboard", source_name, "enabled" if enabled else "disabled")
+
+
 def get_all_flags() -> list[dict]:
     """Return all flags as list of dicts for API/UI."""
     flags = _get_cached_flags()

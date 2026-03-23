@@ -249,6 +249,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/sources/add": lambda: self._add_source(body),
             "/api/sources/edit": lambda: self._edit_source(body),
             "/api/sources/delete": lambda: self._delete_source(body),
+            "/api/sources/toggle": lambda: self._handle_toggle_source(body),
             "/api/prompts/save": lambda: self._save_prompts(body),
             "/api/settings/save": lambda: self._save_settings(body),
             "/api/test_llm": lambda: self._test_llm(body),
@@ -716,6 +717,16 @@ async function login() {
     def _delete_source(self, body):
         from api.settings import delete_source
         self._json(delete_source(body))
+
+    def _handle_toggle_source(self, body):
+        name = body.get("name", "")
+        enabled = body.get("enabled", True)
+        if not name:
+            self._json({"error": "name required"}, 400)
+            return
+        from core.feature_flags import toggle_source
+        toggle_source(name, enabled)
+        self._json({"status": "ok", "source": name, "enabled": enabled})
 
     def _save_prompts(self, body):
         from api.settings import save_prompts
