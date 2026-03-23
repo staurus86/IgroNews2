@@ -58,3 +58,20 @@ def pipeline_reset():
 
 def is_pipeline_stopped() -> bool:
     return _pipeline_stop_event.is_set()
+
+
+def get_circuit_status() -> dict:
+    """Состояние circuit breaker'ов для дашборда."""
+    with _cb_lock:
+        now = time.time()
+        result = {}
+        for service in set(list(_api_failures.keys()) + list(_api_failure_times.keys())):
+            failures = _api_failures.get(service, 0)
+            last_time = _api_failure_times.get(service, 0)
+            is_open = failures >= _API_FAILURE_THRESHOLD and (now - last_time <= _CIRCUIT_RESET_SECONDS)
+            result[service] = {
+                "open": is_open,
+                "failures": failures,
+                "seconds_until_reset": max(0, int(_CIRCUIT_RESET_SECONDS - (now - last_time))) if is_open else 0,
+            }
+        return result

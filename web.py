@@ -133,6 +133,9 @@ class AdminHandler(BaseHTTPRequestHandler):
         if path == "/api/diag":
             self._serve_diag()
             return
+        if path == "/api/health/sources":
+            self._handle_source_health()
+            return
         if not self._require_auth():
             return
 
@@ -414,6 +417,18 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json({"error": "Недостаточно прав"}, 403)
             return False
         return True
+
+    def _handle_source_health(self):
+        """Публичный endpoint: статус источников, circuit breakers, watchdog."""
+        from core.source_health import source_health
+        from core.circuit_breaker import get_circuit_status
+        from core.watchdog import watchdog
+        self._json({
+            "status": "ok" if watchdog.is_alive() else "degraded",
+            "sources": source_health.get_status(),
+            "circuits": get_circuit_status(),
+            "system": watchdog.get_system_health(),
+        })
 
     def _serve_diag(self):
         """Публичный диагностический endpoint — проверка БД и парсинга."""
