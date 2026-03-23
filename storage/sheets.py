@@ -42,6 +42,15 @@ def _rate_limit():
         _last_api_call = time.time()
 
 
+def get_sheets_config_error() -> str:
+    """Return human-readable config error or empty string when Sheets is configured."""
+    if not config.GOOGLE_SHEETS_ID:
+        return "GOOGLE_SHEETS_ID not set"
+    if not config.GOOGLE_SERVICE_ACCOUNT_JSON:
+        return "GOOGLE_SERVICE_ACCOUNT_JSON not set"
+    return ""
+
+
 def _get_client():
     global _client, _client_created_at
     now = time.time()
@@ -53,10 +62,11 @@ def _get_client():
         "https://www.googleapis.com/auth/drive",
     ]
 
-    sa_json = config.GOOGLE_SERVICE_ACCOUNT_JSON
-    if not sa_json:
-        logger.error("GOOGLE_SERVICE_ACCOUNT_JSON not set")
+    config_error = get_sheets_config_error()
+    if config_error:
+        logger.error(config_error)
         return None
+    sa_json = config.GOOGLE_SERVICE_ACCOUNT_JSON
 
     try:
         decoded = base64.b64decode(sa_json)
@@ -135,6 +145,7 @@ def _get_worksheet(tab_name: str, headers: list = None):
     global _worksheet_cache_at, _client_created_at
 
     def _fetch():
+        global _worksheet_cache_at
         now = time.time()
         # Return cached worksheet only if cache is fresh
         if tab_name in _worksheet_cache and (now - _worksheet_cache_at) < _WS_CACHE_TTL:

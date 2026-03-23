@@ -8,6 +8,105 @@ from storage.database import get_connection, _is_postgres
 logger = logging.getLogger(__name__)
 
 
+def _start_sheets_worker(task_ids: list[str]):
+    """Start background worker for specific sheets task ids."""
+    if not task_ids:
+        return
+
+    def _process_sheets_queue(ids: list[str]):
+        import json as _json
+        from datetime import datetime, timezone
+        from storage.sheets import write_news_row
+
+        conn2 = get_connection()
+        cur2 = conn2.cursor()
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            for tid in ids:
+                cur2.execute(f"SELECT * FROM task_queue WHERE id = {ph}", (tid,))
+                row = cur2.fetchone()
+                if not row:
+                    continue
+                if _is_postgres():
+                    cols = [d[0] for d in cur2.description]
+                    task = dict(zip(cols, row))
+                else:
+                    task = dict(row)
+                if task["status"] != "pending":
+                    continue
+
+                nid = task["news_id"]
+                _now = datetime.now(timezone.utc).isoformat()
+                cur2.execute(
+                    f"UPDATE task_queue SET status = 'processing', updated_at = {ph} WHERE id = {ph}",
+                    (_now, tid),
+                )
+                if not _is_postgres():
+                    conn2.commit()
+                try:
+                    cur2.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
+                    news_row = cur2.fetchone()
+                    if not news_row:
+                        raise Exception("news not found")
+                    if _is_postgres():
+                        cols = [d[0] for d in cur2.description]
+                        news = dict(zip(cols, news_row))
+                    else:
+                        news = dict(news_row)
+
+                    cur2.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (nid,))
+                    arow = cur2.fetchone()
+                    if arow:
+                        if _is_postgres():
+                            cols = [d[0] for d in cur2.description]
+                            analysis = dict(zip(cols, arow))
+                        else:
+                            analysis = dict(arow)
+                    else:
+                        analysis = {
+                            "bigrams": "[]",
+                            "trends_data": "{}",
+                            "keyso_data": "{}",
+                            "llm_recommendation": "",
+                            "llm_trend_forecast": "",
+                            "llm_merged_with": "",
+                        }
+
+                    sheet_row = write_news_row(news, analysis)
+                    _now2 = datetime.now(timezone.utc).isoformat()
+                    if sheet_row and sheet_row > 0:
+                        res_data = _json.dumps({"row": sheet_row}, ensure_ascii=False)
+                        cur2.execute(
+                            f"UPDATE task_queue SET status = 'done', result = {ph}, updated_at = {ph} WHERE id = {ph}",
+                            (res_data, _now2, tid),
+                        )
+                    elif sheet_row == -1:
+                        cur2.execute(
+                            f"UPDATE task_queue SET status = 'skipped', result = 'duplicate', updated_at = {ph} WHERE id = {ph}",
+                            (_now2, tid),
+                        )
+                    else:
+                        cur2.execute(
+                            f"UPDATE task_queue SET status = 'error', result = 'no row', updated_at = {ph} WHERE id = {ph}",
+                            (_now2, tid),
+                        )
+                    if not _is_postgres():
+                        conn2.commit()
+                except Exception as e:
+                    logger.warning("Queue sheets error %s: %s", tid, e)
+                    _now2 = datetime.now(timezone.utc).isoformat()
+                    cur2.execute(
+                        f"UPDATE task_queue SET status = 'error', result = {ph}, updated_at = {ph} WHERE id = {ph}",
+                        (str(e), _now2, tid),
+                    )
+                    if not _is_postgres():
+                        conn2.commit()
+        finally:
+            cur2.close()
+
+    threading.Thread(target=_process_sheets_queue, args=(list(task_ids),), daemon=True).start()
+
+
 def get_queue(status_filter: str = "", task_type_filter: str = ""):
     """Return tasks from queue (up to 200), with optional filters."""
     conn = get_connection()
@@ -118,6 +217,7 @@ def retry_queue_tasks(body):
         if pending:
             no_llm_tasks = [t for t in pending if t["task_type"] == "no_llm"]
             full_auto_tasks = [t for t in pending if t["task_type"] == "full_auto"]
+            sheets_tasks = [t for t in pending if t["task_type"] == "sheets"]
 
             if no_llm_tasks:
                 nids = [t["news_id"] for t in no_llm_tasks]
@@ -129,6 +229,8 @@ def retry_queue_tasks(body):
                 tids = [t["id"] for t in full_auto_tasks]
                 from scheduler import run_full_auto_pipeline
                 threading.Thread(target=run_full_auto_pipeline, args=(nids, tids), daemon=True).start()
+            if sheets_tasks:
+                _start_sheets_worker([t["id"] for t in sheets_tasks])
 
         return {"status": "ok", "retried": count}
     finally:
@@ -265,6 +367,10 @@ def queue_sheets_export(body):
     news_ids = body.get("news_ids", [])
     if not news_ids:
         return {"status": "error", "message": "news_ids required"}
+    from storage.sheets import get_sheets_config_error
+    config_error = get_sheets_config_error()
+    if config_error:
+        return {"status": "error", "message": config_error}
 
     import uuid
     from datetime import datetime, timezone
@@ -290,70 +396,7 @@ def queue_sheets_export(body):
         if not _is_postgres():
             conn.commit()
 
-        # Process in background
-        def _process_sheets_queue():
-            import json as _json
-            from storage.sheets import write_news_row
-            conn2 = get_connection()
-            cur2 = conn2.cursor()
-            try:
-                for tid in created:
-                    cur2.execute(f"SELECT * FROM task_queue WHERE id = {ph}", (tid,))
-                    if _is_postgres():
-                        cols = [d[0] for d in cur2.description]
-                        task = dict(zip(cols, cur2.fetchone()))
-                    else:
-                        task = dict(cur2.fetchone())
-                    if task["status"] != "pending":
-                        continue
-                    nid = task["news_id"]
-                    _now = datetime.now(timezone.utc).isoformat()
-                    cur2.execute(f"UPDATE task_queue SET status = 'processing', updated_at = {ph} WHERE id = {ph}", (_now, tid))
-                    if not _is_postgres():
-                        conn2.commit()
-                    try:
-                        cur2.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
-                        row = cur2.fetchone()
-                        if not row:
-                            raise Exception("news not found")
-                        if _is_postgres():
-                            cols = [d[0] for d in cur2.description]
-                            news = dict(zip(cols, row))
-                        else:
-                            news = dict(row)
-                        cur2.execute(f"SELECT * FROM news_analysis WHERE news_id = {ph}", (nid,))
-                        arow = cur2.fetchone()
-                        if arow:
-                            if _is_postgres():
-                                cols = [d[0] for d in cur2.description]
-                                analysis = dict(zip(cols, arow))
-                            else:
-                                analysis = dict(arow)
-                        else:
-                            analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
-                                       "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
-                        sheet_row = write_news_row(news, analysis)
-                        _now2 = datetime.now(timezone.utc).isoformat()
-                        if sheet_row and sheet_row > 0:
-                            res_data = _json.dumps({"row": sheet_row}, ensure_ascii=False)
-                            cur2.execute(f"UPDATE task_queue SET status = 'done', result = {ph}, updated_at = {ph} WHERE id = {ph}", (res_data, _now2, tid))
-                        elif sheet_row == -1:
-                            cur2.execute(f"UPDATE task_queue SET status = 'skipped', result = 'duplicate', updated_at = {ph} WHERE id = {ph}", (_now2, tid))
-                        else:
-                            cur2.execute(f"UPDATE task_queue SET status = 'error', result = 'no row', updated_at = {ph} WHERE id = {ph}", (_now2, tid))
-                        if not _is_postgres():
-                            conn2.commit()
-                    except Exception as e:
-                        logger.warning("Queue sheets error %s: %s", tid, e)
-                        _now2 = datetime.now(timezone.utc).isoformat()
-                        cur2.execute(f"UPDATE task_queue SET status = 'error', result = {ph}, updated_at = {ph} WHERE id = {ph}", (str(e), _now2, tid))
-                        if not _is_postgres():
-                            conn2.commit()
-
-            finally:
-                cur2.close()
-        t = threading.Thread(target=_process_sheets_queue, daemon=True)
-        t.start()
+        _start_sheets_worker(created)
         return {"status": "ok", "queued": len(created), "task_ids": created}
 
     finally:

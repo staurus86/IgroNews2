@@ -278,7 +278,10 @@ def test_keyso(body):
 def test_sheets(body):
     try:
         import config
-        from storage.sheets import _get_client
+        from storage.sheets import _get_client, get_sheets_config_error
+        config_error = get_sheets_config_error()
+        if config_error:
+            return {"status": "error", "message": config_error}
         client = _get_client()
         if not client:
             return {"status": "error", "message": "Google client init failed. Check GOOGLE_SERVICE_ACCOUNT_JSON"}
@@ -311,7 +314,10 @@ def test_parse(body):
 
 def setup_headers(body):
     try:
-        from storage.sheets import setup_headers
+        from storage.sheets import setup_headers, get_sheets_config_error
+        config_error = get_sheets_config_error()
+        if config_error:
+            return {"status": "error", "message": config_error}
         setup_headers()
         return {"status": "ok"}
     except Exception as e:

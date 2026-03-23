@@ -990,7 +990,10 @@ def export_sheets(body):
     """Export single news to Google Sheets."""
     news_id = body.get("news_id")
     try:
-        from storage.sheets import write_news_row
+        from storage.sheets import write_news_row, get_sheets_config_error
+        config_error = get_sheets_config_error()
+        if config_error:
+            return {"status": "error", "message": config_error}
         conn = get_connection()
         cur = conn.cursor()
         try:
@@ -1028,7 +1031,10 @@ def export_sheets_bulk(body):
     if not news_ids:
         return {"status": "error", "message": "news_ids required"}
     try:
-        from storage.sheets import write_news_row
+        from storage.sheets import write_news_row, get_sheets_config_error
+        config_error = get_sheets_config_error()
+        if config_error:
+            return {"status": "error", "message": config_error}
         conn = get_connection()
         cur = conn.cursor()
         try:

@@ -913,6 +913,126 @@ class TestQueue(APITestBase):
         self.cur.execute("SELECT COUNT(*) FROM task_queue WHERE status = 'cancelled'")
         self.assertEqual(self.cur.fetchone()[0], 3)
 
+    def test_queue_sheets_export_requires_sheets_config(self):
+        """queue_sheets_export() should fail fast with a descriptive config error."""
+        _insert_test_news(self.conn, self.cur)
+
+        import config
+        from api.queue import queue_sheets_export
+
+        old_id = config.GOOGLE_SHEETS_ID
+        old_sa = config.GOOGLE_SERVICE_ACCOUNT_JSON
+        try:
+            config.GOOGLE_SHEETS_ID = ""
+            config.GOOGLE_SERVICE_ACCOUNT_JSON = ""
+            result = queue_sheets_export({"news_ids": ["n1"]})
+        finally:
+            config.GOOGLE_SHEETS_ID = old_id
+            config.GOOGLE_SERVICE_ACCOUNT_JSON = old_sa
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["message"], "GOOGLE_SHEETS_ID not set")
+
+    @patch("api.queue._start_sheets_worker")
+    def test_queue_sheets_export_starts_worker(self, mock_start_worker):
+        """queue_sheets_export() should enqueue sheets tasks and start worker for them."""
+        _insert_test_news(self.conn, self.cur)
+
+        import config
+        from api.queue import queue_sheets_export
+
+        old_id = config.GOOGLE_SHEETS_ID
+        old_sa = config.GOOGLE_SERVICE_ACCOUNT_JSON
+        try:
+            config.GOOGLE_SHEETS_ID = "test-sheet-id"
+            config.GOOGLE_SERVICE_ACCOUNT_JSON = '{"type":"service_account"}'
+            result = queue_sheets_export({"news_ids": ["n1"]})
+        finally:
+            config.GOOGLE_SHEETS_ID = old_id
+            config.GOOGLE_SERVICE_ACCOUNT_JSON = old_sa
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["queued"], 1)
+        self.assertEqual(mock_start_worker.call_count, 1)
+        worker_ids = mock_start_worker.call_args[0][0]
+        self.assertEqual(len(worker_ids), 1)
+
+    @patch("api.queue._start_sheets_worker")
+    def test_retry_queue_tasks_restarts_pending_sheets(self, mock_start_worker):
+        """retry_queue_tasks() should restart pending sheets tasks too."""
+        now = datetime.now(timezone.utc).isoformat()
+        self.cur.execute(
+            "INSERT INTO task_queue (id, task_type, news_id, news_title, style, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("s1", "sheets", "n1", "Sheet task", "", "done", now, now)
+        )
+        self.conn.commit()
+
+        from api.queue import retry_queue_tasks
+        result = retry_queue_tasks({"task_ids": ["s1"]})
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["retried"], 1)
+        self.assertEqual(mock_start_worker.call_count, 1)
+        self.assertEqual(mock_start_worker.call_args[0][0], ["s1"])
+
+
+class TestSettingsSheets(APITestBase):
+
+    def test_test_sheets_requires_config(self):
+        """test_sheets() should return the exact missing config reason."""
+        import config
+        from api.settings import test_sheets
+
+        old_id = config.GOOGLE_SHEETS_ID
+        old_sa = config.GOOGLE_SERVICE_ACCOUNT_JSON
+        try:
+            config.GOOGLE_SHEETS_ID = "test-sheet-id"
+            config.GOOGLE_SERVICE_ACCOUNT_JSON = ""
+            result = test_sheets({})
+        finally:
+            config.GOOGLE_SHEETS_ID = old_id
+            config.GOOGLE_SERVICE_ACCOUNT_JSON = old_sa
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["message"], "GOOGLE_SERVICE_ACCOUNT_JSON not set")
+
+
+class TestStorageSheetsCache(APITestBase):
+
+    @patch("storage.sheets._get_client")
+    @patch("storage.sheets._retry_api")
+    def test_get_worksheet_uses_global_cache_timestamp(self, mock_retry_api, mock_get_client):
+        """_get_worksheet() should not crash on cache timestamp access."""
+        import storage.sheets as sheets
+
+        class FakeWorksheet:
+            title = "Лист1"
+
+            def row_values(self, index):
+                return sheets.HEADERS
+
+        class FakeSpreadsheet:
+            def worksheet(self, tab_name):
+                return FakeWorksheet()
+
+        fake_spreadsheet = FakeSpreadsheet()
+        mock_client = MagicMock()
+        mock_client.open_by_key.return_value = fake_spreadsheet
+        mock_get_client.return_value = mock_client
+
+        def passthrough(func, *args, **kwargs):
+            return func()
+
+        mock_retry_api.side_effect = passthrough
+        sheets._worksheet_cache.clear()
+        sheets._worksheet_cache_at = 0
+
+        ws = sheets._get_worksheet("Лист1", sheets.HEADERS)
+
+        self.assertIsNotNone(ws)
+        self.assertEqual(ws.title, "Лист1")
+
 
 # ===========================================================================
 # 7. Viral tests
