@@ -11,9 +11,7 @@ import config
 
 logger = logging.getLogger(__name__)
 
-_conn = None
-_pool = None  # PostgreSQL connection pool
-_local = threading.local()  # Per-thread connections for SQLite
+_local = threading.local()  # Per-thread connections (SQLite and PostgreSQL)
 _conn_lock = threading.Lock()
 
 
@@ -22,31 +20,47 @@ def _is_postgres():
 
 
 def get_connection():
-    global _conn, _pool
-
     if _is_postgres():
-        with _conn_lock:
-            if _conn is not None:
+        # Per-thread connections for PostgreSQL (thread-safe for ThreadingHTTPServer)
+        conn = getattr(_local, 'pg_conn', None)
+        if conn is not None:
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT 1")
+                cur.close()
+                return conn
+            except Exception:
+                logger.warning("PostgreSQL thread connection lost, reconnecting...")
                 try:
-                    cur = _conn.cursor()
-                    cur.execute("SELECT 1")
-                    cur.close()
+                    conn.close()
                 except Exception:
-                    logger.warning("PostgreSQL connection lost, reconnecting...")
-                    try:
-                        _conn.close()
-                    except Exception:
-                        pass
-                    _conn = None
+                    pass
+                _local.pg_conn = None
 
-            if _conn is None:
-                import psycopg2
-                url = config.DATABASE_URL
-                if url.startswith("postgres://"):
-                    url = url.replace("postgres://", "postgresql://", 1)
-                _conn = psycopg2.connect(url)
-                _conn.autocommit = True
-            return _conn
+        # Create new connection with retry
+        import psycopg2
+        url = config.DATABASE_URL
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+
+        for attempt in range(3):
+            try:
+                conn = psycopg2.connect(url, connect_timeout=10)
+                conn.autocommit = True
+                cur = conn.cursor()
+                cur.execute("SET statement_timeout = '120s'")
+                cur.close()
+                _local.pg_conn = conn
+                if attempt > 0:
+                    logger.info("PostgreSQL connected (attempt %d)", attempt + 1)
+                return conn
+            except Exception as e:
+                logger.warning("PostgreSQL connect attempt %d/3: %s", attempt + 1, e)
+                if attempt < 2:
+                    import time as _time; _time.sleep(2 * (attempt + 1))
+                else:
+                    logger.error("PostgreSQL connection failed after 3 attempts")
+                    raise
     else:
         # Per-thread connections for SQLite (avoids "database is locked")
         conn = getattr(_local, 'conn', None)

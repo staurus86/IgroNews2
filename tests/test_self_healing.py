@@ -137,3 +137,45 @@ def test_watchdog_system_health_has_thread_info():
     assert "zombie_threads" in health
     assert "active_threads" in health
     assert health["active_threads"] > 0
+
+
+def test_parse_sources_isolates_failures():
+    """Ошибка одного парсера не останавливает остальные."""
+    import sys
+    from unittest.mock import patch, MagicMock
+
+    # Stub out heavy transitive deps so `import scheduler` succeeds in test env
+    for mod in ("pytrends", "pytrends.request", "gspread", "openai"):
+        if mod not in sys.modules:
+            sys.modules[mod] = MagicMock()
+
+    import scheduler
+
+    call_log = []
+    def mock_rss(source):
+        if source["name"] == "broken":
+            raise ConnectionError("DNS failed")
+        call_log.append(source["name"])
+        return 1
+
+    sources = [
+        {"name": "good1", "type": "rss", "interval": 5},
+        {"name": "broken", "type": "rss", "interval": 5},
+        {"name": "good2", "type": "rss", "interval": 5},
+    ]
+    with patch.object(scheduler.config, "SOURCES", sources), \
+         patch("scheduler.parse_rss_source", side_effect=mock_rss), \
+         patch("scheduler._auto_review_new"):
+        scheduler.parse_sources(5)
+
+    assert "good1" in call_log
+    assert "good2" in call_log
+
+
+def test_db_connection_returns_valid():
+    """get_connection() возвращает рабочее соединение."""
+    from storage.database import get_connection, db_cursor
+    conn = get_connection()
+    assert conn is not None
+    with db_cursor() as cur:
+        cur.execute("SELECT 1")
