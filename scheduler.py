@@ -155,12 +155,18 @@ def start_scheduler():
     # Watchdog: periodic health check + recovery actions
     from core.watchdog import watchdog
 
-    def _recovery_gc():
-        """Recovery: forced GC on stale components."""
+    def _recovery_parse_restart():
+        """Recovery: re-trigger parsing for all intervals."""
+        logger.warning("RECOVERY: re-triggering parse for all intervals")
         gc.collect()
-        logger.warning("RECOVERY: forced GC")
+        intervals = sorted(set(s["interval"] for s in config.SOURCES))
+        for mins in intervals:
+            try:
+                parse_sources(mins)
+            except Exception as e:
+                logger.error("RECOVERY parse %dmin failed: %s", mins, e)
 
-    watchdog.register_recovery("scheduler", _recovery_gc)
+    watchdog.register_recovery("scheduler", _recovery_parse_restart)
 
     def _watchdog_check():
         watchdog.run_recovery()
