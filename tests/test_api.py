@@ -1100,6 +1100,34 @@ class TestStorylinesScheduler(APITestBase):
         mock_do_update.assert_called_once_with(fake_scheduler, True, 9, 0, 3)
 
 
+class TestNotReadyExportFields(APITestBase):
+
+    def test_build_not_ready_row_prefers_published_at_and_plain_text(self):
+        from storage.sheets import _build_not_ready_row
+
+        news = {
+            "published_at": "2026-03-23T10:00:00+00:00",
+            "parsed_at": "2026-03-23T11:00:00+00:00",
+            "source": "IGN",
+            "title": "Test title",
+            "url": "https://example.com/news",
+            "plain_text": "Long body text here",
+            "description": "Short desc",
+        }
+        check_results = {
+            "total_score": 77,
+            "checks": {"quality": {"score": 10}, "relevance": {"score": 20}, "viral": {"score": 30}, "freshness": {"age_hours": 1.5}},
+            "sentiment": {"label": "positive"},
+            "headline": {"score": 40},
+            "momentum": {"score": 50},
+        }
+
+        row, _ = _build_not_ready_row(news, check_results)
+
+        self.assertEqual(row[0], "2026-03-23T10:00:00+00:00")
+        self.assertEqual(row[15], "Long body text here")
+
+
 # ===========================================================================
 # 7. Viral tests
 # ===========================================================================

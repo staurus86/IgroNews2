@@ -277,6 +277,25 @@ def _format_viral_triggers_from_checks(checks: dict) -> str:
     return ", ".join(f"{t.get('label', '?')}({t.get('weight', 0)})" for t in triggers[:10])
 
 
+def _pick_not_ready_date(news: dict) -> str:
+    """Prefer published date, then parsed date for NotReady exports."""
+    return (
+        news.get("published_at")
+        or news.get("parsed_at")
+        or ""
+    )
+
+
+def _pick_not_ready_text(news: dict) -> str:
+    """Prefer article text, then description for NotReady exports."""
+    text = (
+        news.get("plain_text")
+        or news.get("description")
+        or ""
+    )
+    return str(text)[:1000]
+
+
 # ─── Headers ─────────────────────────────────────────────────────────
 
 HEADERS = [
@@ -466,7 +485,7 @@ def write_not_ready_row(news: dict, check_results: dict) -> int | None:
         age_str = f"{age_h:.1f}" if isinstance(age_h, (int, float)) and age_h >= 0 else "?"
 
         row = [
-            news.get("parsed_at") or "",                               # A
+            _pick_not_ready_date(news),                                # A
             news.get("source") or "",                                  # B
             news.get("title") or "",                                   # C
             str(check_results.get("total_score") or 0),                # D
@@ -481,7 +500,7 @@ def write_not_ready_row(news: dict, check_results: dict) -> int | None:
             str((check_results.get("headline") or {}).get("score", 0)),  # M
             str((check_results.get("momentum") or {}).get("score", 0)),  # N
             news_url,                                                  # O
-            (news.get("description") or "")[:500],                     # P
+            _pick_not_ready_text(news),                                # P
         ]
 
         row_num = _append_row(ws, row, tab_name, news_url)
@@ -525,7 +544,7 @@ def _build_not_ready_row(news: dict, check_results: dict) -> tuple[list, str]:
     age_str = f"{age_h:.1f}" if isinstance(age_h, (int, float)) and age_h >= 0 else "?"
 
     row = [
-        news.get("parsed_at") or "",
+        _pick_not_ready_date(news),
         news.get("source") or "",
         news.get("title") or "",
         str(check_results.get("total_score") or 0),
@@ -540,7 +559,7 @@ def _build_not_ready_row(news: dict, check_results: dict) -> tuple[list, str]:
         str((check_results.get("headline") or {}).get("score", 0)),
         str((check_results.get("momentum") or {}).get("score", 0)),
         news_url,
-        (news.get("description") or "")[:500],
+        _pick_not_ready_text(news),
     ]
     return row, news_url
 

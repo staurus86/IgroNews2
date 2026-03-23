@@ -55,19 +55,21 @@ def _auto_review_new():
         AUTO_EXPORT_THRESHOLD = 60
         try:
             high_score_items = []
+            news_by_id = {n.get("id", ""): n for n in news_list}
             for r in result.get("results", []):
                 if (not r.get("is_duplicate") and not r.get("auto_rejected")
                         and r.get("total_score", 0) >= AUTO_EXPORT_THRESHOLD):
+                    source_news = news_by_id.get(r.get("id", ""), {})
                     news_dict = {
                         "id": r.get("id", ""),
-                        "title": r.get("title", ""),
-                        "source": r.get("source", ""),
-                        "url": r.get("url", ""),
-                        "h1": r.get("h1", ""),
-                        "description": r.get("description", ""),
-                        "plain_text": r.get("plain_text", ""),
-                        "published_at": r.get("published_at", ""),
-                        "parsed_at": r.get("parsed_at", ""),
+                        "title": source_news.get("title") or r.get("title", ""),
+                        "source": source_news.get("source") or r.get("source", ""),
+                        "url": source_news.get("url") or r.get("url", ""),
+                        "h1": source_news.get("h1") or r.get("h1", ""),
+                        "description": source_news.get("description") or r.get("description", ""),
+                        "plain_text": source_news.get("plain_text") or r.get("plain_text", ""),
+                        "published_at": source_news.get("published_at") or r.get("published_at", ""),
+                        "parsed_at": source_news.get("parsed_at") or r.get("parsed_at", ""),
                     }
                     check_results = {
                         "checks": r.get("checks", {}),
