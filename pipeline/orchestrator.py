@@ -51,6 +51,36 @@ def _auto_review_new():
         dupes = sum(1 for r in result.get("results", []) if r.get("is_duplicate"))
         logger.info("Auto-review: %d checked, %d duplicates", reviewed, dupes)
 
+        # Auto-export high-scoring news to NotReady tab in Sheets (score >= 60)
+        AUTO_EXPORT_THRESHOLD = 60
+        try:
+            high_score_items = []
+            for r in result.get("results", []):
+                if (not r.get("is_duplicate") and not r.get("auto_rejected")
+                        and r.get("total_score", 0) >= AUTO_EXPORT_THRESHOLD):
+                    news_dict = {
+                        "id": r.get("id", ""),
+                        "title": r.get("title", ""),
+                        "source": r.get("source", ""),
+                        "url": r.get("url", ""),
+                        "h1": r.get("h1", ""),
+                        "description": r.get("description", ""),
+                        "plain_text": r.get("plain_text", ""),
+                        "published_at": r.get("published_at", ""),
+                        "parsed_at": r.get("parsed_at", ""),
+                    }
+                    check_results = r.get("checks", {})
+                    high_score_items.append((news_dict, check_results))
+            if high_score_items:
+                from storage.sheets import write_not_ready_batch
+                batch_result = write_not_ready_batch(high_score_items)
+                written = batch_result.get("written", 0)
+                skipped = batch_result.get("skipped", 0)
+                logger.info("Auto-export to NotReady: %d written, %d skipped (threshold=%d)",
+                            written, skipped, AUTO_EXPORT_THRESHOLD)
+        except Exception as export_err:
+            logger.warning("Auto-export to NotReady failed (non-fatal): %s", export_err)
+
         # Telegram notifications for high-scoring news
         try:
             if getattr(config, "TELEGRAM_BOT_TOKEN", ""):
