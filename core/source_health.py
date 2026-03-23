@@ -7,6 +7,30 @@ import time
 logger = logging.getLogger(__name__)
 
 
+def classify_error(error: str) -> str:
+    """Classify raw error string into a category."""
+    err = str(error).lower()
+    if any(k in err for k in ["timeout", "timed out", "read timed out"]):
+        return "timeout"
+    if any(k in err for k in ["name resolution", "dns", "getaddrinfo", "nodename nor servname"]):
+        return "dns"
+    if any(k in err for k in ["401", "unauthorized", "forbidden", "403"]):
+        return "auth"
+    if any(k in err for k in ["404", "not found", "410 gone"]):
+        return "http_4xx"
+    if any(k in err for k in ["500", "502", "503", "504", "internal server error", "bad gateway", "service unavailable"]):
+        return "http_5xx"
+    if any(k in err for k in ["429", "rate limit", "too many requests"]):
+        return "rate_limit"
+    if any(k in err for k in ["connection refused", "connection reset", "broken pipe", "connection aborted"]):
+        return "connection"
+    if any(k in err for k in ["ssl", "certificate", "handshake"]):
+        return "ssl"
+    if any(k in err for k in ["json", "parse", "decode", "xml", "encoding"]):
+        return "parse_error"
+    return "unknown"
+
+
 class SourceHealth:
     def __init__(self, threshold=5, cooldown=600):
         """
@@ -23,7 +47,7 @@ class SourceHealth:
         if source not in self._sources:
             self._sources[source] = {
                 "failures": 0, "total_failures": 0, "total_success": 0,
-                "disabled_at": None, "last_error": "",
+                "disabled_at": None, "last_error": "", "error_type": "",
             }
 
     def record_success(self, source: str):
@@ -45,6 +69,7 @@ class SourceHealth:
             s["failures"] += 1
             s["total_failures"] += 1
             s["last_error"] = str(error)[:200]
+            s["error_type"] = classify_error(error)
             if s["failures"] >= self._threshold:
                 if s["disabled_at"] is None:
                     logger.warning("Source DISABLED: %s after %d consecutive failures: %s",
@@ -74,6 +99,7 @@ class SourceHealth:
                     "total_failures": s["total_failures"],
                     "total_success": s["total_success"],
                     "last_error": s["last_error"],
+                    "error_type": s["error_type"],
                     "disabled_at": s["disabled_at"],
                 }
                 for name, s in self._sources.items()

@@ -219,6 +219,19 @@ def test_full_self_healing_cycle():
     assert status["test_src"]["total_success"] == 2
 
 
+from core.source_health import classify_error
+
+
+def test_classify_error_categories():
+    assert classify_error("Connection timed out") == "timeout"
+    assert classify_error("getaddrinfo failed") == "dns"
+    assert classify_error("HTTP 503 Service Unavailable") == "http_5xx"
+    assert classify_error("401 Unauthorized") == "auth"
+    assert classify_error("429 Too Many Requests") == "rate_limit"
+    assert classify_error("JSONDecodeError") == "parse_error"
+    assert classify_error("something weird") == "unknown"
+
+
 def test_watchdog_with_source_health_integration():
     """Watchdog + source health + timeouts работают вместе."""
     from core.watchdog import Watchdog
