@@ -13,7 +13,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 import config
 from parsers.rss_parser import parse_rss_source
 from parsers.html_parser import parse_html_source
-from storage.database import cleanup_old_plaintext, cleanup_old_tasks
+from storage.database import cleanup_old_plaintext, cleanup_old_tasks, log_health_snapshot
 
 # Re-export for backward compatibility (web.py, bot, tests import from scheduler)
 from core.circuit_breaker import (  # noqa: F401
@@ -184,6 +184,22 @@ def start_scheduler():
             import os; os._exit(1)
 
     scheduler.add_job(_watchdog_check, "interval", minutes=5, id="watchdog_check")
+
+    # Health log: snapshot every 5 minutes
+    scheduler.add_job(log_health_snapshot, "interval", minutes=5, id="health_log")
+
+    # Cleanup health_log entries older than 7 days: daily
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+    def _cleanup_health_log():
+        from storage.database import db_cursor, ph, get_connection, _is_postgres
+        cutoff = (_dt.now(_tz.utc) - _td(days=7)).isoformat()
+        with db_cursor() as cur:
+            cur.execute(f"DELETE FROM health_log WHERE timestamp < {ph()}", (cutoff,))
+            if not _is_postgres():
+                get_connection().commit()
+
+    scheduler.add_job(_cleanup_health_log, "interval", hours=24, id="cleanup_health_log")
 
     # Initial parse on startup (includes auto-review)
     for mins in intervals:

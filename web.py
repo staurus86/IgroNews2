@@ -136,6 +136,9 @@ class AdminHandler(BaseHTTPRequestHandler):
         if path == "/api/health/sources":
             self._handle_source_health()
             return
+        if path == "/api/health/log":
+            self._handle_health_log()
+            return
         if path == "/api/health/ready":
             self._handle_readiness()
             return
@@ -432,6 +435,14 @@ class AdminHandler(BaseHTTPRequestHandler):
             "circuits": get_circuit_status(),
             "system": watchdog.get_system_health(),
         })
+
+    def _handle_health_log(self):
+        """Публичный endpoint: последние 100 снапшотов health_log."""
+        from storage.database import db_cursor, rows_to_dicts
+        with db_cursor() as cur:
+            cur.execute("SELECT * FROM health_log ORDER BY timestamp DESC LIMIT 100")
+            rows = rows_to_dicts(cur)
+        self._json({"log": rows})
 
     def _handle_readiness(self):
         """Readiness probe: 200 only when scheduler is alive."""

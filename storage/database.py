@@ -282,6 +282,39 @@ def _init_db_impl(conn, cur):
     if not _is_postgres():
         conn.commit()
 
+    # Health log table for uptime metrics
+    if _is_postgres():
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS health_log (
+                id SERIAL PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                parsed_count INTEGER DEFAULT 0,
+                failed_count INTEGER DEFAULT 0,
+                active_sources INTEGER DEFAULT 0,
+                disabled_sources INTEGER DEFAULT 0,
+                zombie_threads INTEGER DEFAULT 0,
+                active_threads INTEGER DEFAULT 0,
+                circuit_breakers_open INTEGER DEFAULT 0,
+                scheduler_age_seconds INTEGER DEFAULT 0
+            )
+        """)
+    else:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS health_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                parsed_count INTEGER DEFAULT 0,
+                failed_count INTEGER DEFAULT 0,
+                active_sources INTEGER DEFAULT 0,
+                disabled_sources INTEGER DEFAULT 0,
+                zombie_threads INTEGER DEFAULT 0,
+                active_threads INTEGER DEFAULT 0,
+                circuit_breakers_open INTEGER DEFAULT 0,
+                scheduler_age_seconds INTEGER DEFAULT 0
+            )
+        """)
+        conn.commit()
+
     # Phase 2: article_versions table for content versioning
     cur.execute("""
         CREATE TABLE IF NOT EXISTS article_versions (
@@ -618,3 +651,48 @@ def get_digests(limit: int = 10) -> list[dict]:
             return [dict(row) for row in cur.fetchall()]
     finally:
         cur.close()
+
+
+def log_health_snapshot():
+    """Record current health metrics to DB (called every 5 minutes)."""
+    import threading as _threading
+    from core.watchdog import watchdog
+    from core.source_health import source_health
+    from core.circuit_breaker import get_circuit_status
+    from core.timeouts import get_zombie_thread_count
+
+    try:
+        status = source_health.get_status()
+        circuits = get_circuit_status()
+        health = watchdog.check_health()
+        sched = health.get("scheduler", {})
+
+        active_src = sum(1 for s in status.values() if s.get("healthy"))
+        disabled_src = sum(1 for s in status.values() if not s.get("healthy"))
+        open_circuits = sum(1 for c in circuits.values() if c.get("open"))
+        zombies = get_zombie_thread_count()
+        active_threads = _threading.active_count()
+        sched_age = int(sched.get("age_seconds", 0))
+
+        with db_cursor() as cur:
+            cur.execute(
+                f"""INSERT INTO health_log
+                    (timestamp, parsed_count, failed_count, active_sources, disabled_sources,
+                     zombie_threads, active_threads, circuit_breakers_open, scheduler_age_seconds)
+                    VALUES ({ph()},{ph()},{ph()},{ph()},{ph()},{ph()},{ph()},{ph()},{ph()})""",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    0,  # parsed_count not available per-snapshot
+                    disabled_src,
+                    active_src,
+                    disabled_src,
+                    zombies,
+                    active_threads,
+                    open_circuits,
+                    sched_age,
+                )
+            )
+            if not _is_postgres():
+                get_connection().commit()
+    except Exception as e:
+        logger.warning("log_health_snapshot failed: %s", e)
