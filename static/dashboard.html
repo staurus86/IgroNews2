@@ -393,6 +393,19 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <div style="margin-left:auto"><a href="/logout" class="btn btn-secondary btn-sm">Выйти</a></div>
   </div>
 
+  <!-- Health Status Bar -->
+  <div id="health-bar" style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:10px 16px;margin-bottom:16px;font-size:13px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer" onclick="document.getElementById('hbar-details').style.display=document.getElementById('hbar-details').style.display==='none'?'block':'none'">
+      <span id="hbar-summary" style="color:#aaa">&#8987; Загрузка здоровья...</span>
+      <span style="color:#666;font-size:11px">&#9660; подробнее</span>
+    </div>
+    <div id="hbar-details" style="display:none;margin-top:10px;border-top:1px solid #333;padding-top:10px">
+      <div id="hbar-sources" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px"></div>
+      <div id="hbar-circuits" style="color:#aaa;font-size:12px;margin-bottom:4px"></div>
+      <div id="hbar-system" style="color:#aaa;font-size:12px"></div>
+    </div>
+  </div>
+
   <!-- OPS DASHBOARD (Phase 1, behind feature flag dashboard_v2) -->
   <div class="panel" id="panel-ops" style="display:none">
     <h2>&#9889; Что делать сейчас</h2>
@@ -4133,6 +4146,59 @@ function smartInterval(fn, ms) {
 }
 smartInterval(loadHealth, 60000);
 smartInterval(() => { loadQueue(); if (document.getElementById('panel-queue')?.classList.contains('active')) loadQueueStandalone(); }, 15000);
+
+// Health Status Bar
+function loadHealthBar() {
+  fetch('/api/health/sources')
+    .then(r => r.json())
+    .then(data => {
+      const sources = data.sources || {};
+      const total = Object.keys(sources).length;
+      const healthy = Object.values(sources).filter(s => s.healthy).length;
+      const failed = total - healthy;
+      const circuits = data.circuits || {};
+      const openCircuits = Object.values(circuits).filter(c => c.open).length;
+      const zombies = (data.system || {}).zombie_threads || 0;
+
+      let summary = '';
+      if (failed === 0 && openCircuits === 0 && zombies === 0) {
+        summary = `&#128994; Все ${total} источников работают`;
+      } else {
+        const parts = [];
+        if (failed > 0) parts.push(`&#128308; ${failed} источник(ов) упали`);
+        if (openCircuits > 0) parts.push(`&#9889; ${openCircuits} API circuit open`);
+        if (zombies > 0) parts.push(`&#128123; ${zombies} zombie threads`);
+        summary = parts.join(' &middot; ');
+      }
+      document.getElementById('hbar-summary').innerHTML = summary;
+
+      const srcHtml = Object.entries(sources).map(([name, s]) => {
+        const color = s.healthy ? '#4caf50' : (s.disabled_at ? '#ff9800' : '#f44336');
+        const title = s.healthy ? 'OK' : `${s.last_error || ''} (${s.consecutive_failures || 0} fails)`;
+        return `<span title="${name}: ${title}" style="display:inline-flex;align-items:center;gap:3px;padding:2px 8px;background:#2a2a3e;border-radius:4px;color:#ccc;font-size:11px"><span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block"></span>${name}</span>`;
+      }).join('');
+      document.getElementById('hbar-sources').innerHTML = srcHtml || '<span style="color:#657786">нет данных</span>';
+
+      const circuitEntries = Object.entries(circuits);
+      if (circuitEntries.length > 0) {
+        const circHtml = circuitEntries.map(([name, c]) =>
+          c.open ? `&#9889; ${name}: OPEN (reset in ${c.seconds_until_reset}s)` : `&#10003; ${name}: OK`
+        ).join(' &middot; ');
+        document.getElementById('hbar-circuits').innerHTML = 'Circuit Breakers: ' + circHtml;
+      } else {
+        document.getElementById('hbar-circuits').innerHTML = 'Circuit Breakers: нет данных';
+      }
+
+      const sys = data.system || {};
+      document.getElementById('hbar-system').innerHTML =
+        `Threads: ${sys.active_threads || '?'} active, ${sys.zombie_threads || 0} zombie`;
+    })
+    .catch(() => {
+      document.getElementById('hbar-summary').innerHTML = '&#9888;&#65039; Health check недоступен';
+    });
+}
+loadHealthBar();
+smartInterval(loadHealthBar, 60000);
 
 let _edSearchTimer;
 function debounceEdSearch() {
