@@ -75,3 +75,65 @@ def test_source_status_report_no_deadlock():
     assert report["ign"]["healthy"] is True
     assert report["pcgamer"]["healthy"] is False
     assert report["pcgamer"]["consecutive_failures"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Watchdog tests
+# ---------------------------------------------------------------------------
+from unittest.mock import patch
+from core.watchdog import Watchdog
+
+
+def test_watchdog_detects_stale_heartbeat():
+    wd = Watchdog(max_stale_seconds=60)
+    wd.heartbeat("scheduler")
+    with patch("core.watchdog.time") as mock_time:
+        mock_time.time.return_value = wd._components["scheduler"]["last_heartbeat"] + 120
+        report = wd.check_health()
+        assert report["scheduler"]["stale"] is True
+
+
+def test_watchdog_healthy_heartbeat():
+    wd = Watchdog(max_stale_seconds=60)
+    wd.heartbeat("scheduler")
+    report = wd.check_health()
+    assert report["scheduler"]["stale"] is False
+
+
+def test_watchdog_overall_status():
+    wd = Watchdog(max_stale_seconds=60)
+    wd.heartbeat("scheduler")
+    wd.heartbeat("web")
+    assert wd.is_alive() is True
+
+
+def test_watchdog_recovery_fires_for_stale():
+    """Recovery action должен вызываться для stale компонентов."""
+    wd = Watchdog(max_stale_seconds=60)
+    wd.heartbeat("scheduler")
+    recovered = []
+    wd.register_recovery("scheduler", lambda: recovered.append("scheduler"))
+    with patch("core.watchdog.time") as mock_time:
+        mock_time.time.return_value = wd._components["scheduler"]["last_heartbeat"] + 120
+        wd.run_recovery()
+    assert "scheduler" in recovered
+
+
+def test_watchdog_recovery_handles_exception():
+    """Recovery с ошибкой не крашит watchdog."""
+    wd = Watchdog(max_stale_seconds=60)
+    wd.heartbeat("scheduler")
+    wd.register_recovery("scheduler", lambda: 1/0)
+    with patch("core.watchdog.time") as mock_time:
+        mock_time.time.return_value = wd._components["scheduler"]["last_heartbeat"] + 120
+        wd.run_recovery()  # Не должен крашить
+
+
+def test_watchdog_system_health_has_thread_info():
+    """get_system_health() должен включать zombie threads и active threads."""
+    wd = Watchdog(max_stale_seconds=60)
+    wd.heartbeat("scheduler")
+    health = wd.get_system_health()
+    assert "zombie_threads" in health
+    assert "active_threads" in health
+    assert health["active_threads"] > 0
