@@ -987,10 +987,11 @@ def merge_news(body):
 # ---------------------------------------------------------------------------
 
 def export_sheets(body):
-    """Export single news to Google Sheets."""
+    """Export single news using current Sheets routing policy."""
     news_id = body.get("news_id")
     try:
-        from storage.sheets import write_news_row, get_sheets_config_error
+        from storage.sheets import get_sheets_config_error
+        from api.sheets_export import export_news_by_policy
         config_error = get_sheets_config_error()
         if config_error:
             return {"status": "error", "message": config_error}
@@ -1017,8 +1018,13 @@ def export_sheets(body):
                 analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
                            "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
 
-            sheet_row = write_news_row(news, analysis)
-            return {"status": "ok", "row": sheet_row}
+            result = export_news_by_policy(cur, news, analysis)
+            row = result.get("row")
+            if row and row > 0:
+                return {"status": "ok", "row": row, "destination": result.get("destination")}
+            if row == -1:
+                return {"status": "ok", "row": -1, "destination": result.get("destination")}
+            return {"status": "skipped", "destination": result.get("destination"), "message": result.get("reason", "Not eligible for export")}
         finally:
             cur.close()
     except Exception as e:
@@ -1026,12 +1032,13 @@ def export_sheets(body):
 
 
 def export_sheets_bulk(body):
-    """Export multiple news to Google Sheets."""
+    """Export multiple news using current Sheets routing policy."""
     news_ids = body.get("news_ids", [])
     if not news_ids:
         return {"status": "error", "message": "news_ids required"}
     try:
-        from storage.sheets import write_news_row, get_sheets_config_error
+        from storage.sheets import get_sheets_config_error
+        from api.sheets_export import export_news_by_policy
         config_error = get_sheets_config_error()
         if config_error:
             return {"status": "error", "message": config_error}
@@ -1042,6 +1049,8 @@ def export_sheets_bulk(body):
             exported = 0
             skipped = 0
             errors = 0
+            ready = 0
+            not_ready = 0
             for nid in news_ids:
                 try:
                     cur.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
@@ -1064,15 +1073,22 @@ def export_sheets_bulk(body):
                     else:
                         analysis = {"bigrams": "[]", "trends_data": "{}", "keyso_data": "{}",
                                    "llm_recommendation": "", "llm_trend_forecast": "", "llm_merged_with": ""}
-                    sheet_row = write_news_row(news, analysis)
+                    result = export_news_by_policy(cur, news, analysis)
+                    sheet_row = result.get("row")
                     if sheet_row and sheet_row > 0:
                         exported += 1
+                        if result.get("destination") == "Ready":
+                            ready += 1
+                        elif result.get("destination") == "NotReady":
+                            not_ready += 1
                     elif sheet_row == -1:
+                        skipped += 1
+                    else:
                         skipped += 1
                 except Exception as e:
                     logger.warning("Bulk export error for %s: %s", nid, e)
                     errors += 1
-            return {"status": "ok", "exported": exported, "skipped": skipped, "errors": errors}
+            return {"status": "ok", "exported": exported, "skipped": skipped, "errors": errors, "ready": ready, "not_ready": not_ready}
         finally:
             cur.close()
     except Exception as e:
@@ -1113,7 +1129,7 @@ def export_all_processed(body):
         cur2.close()
 
     def _bg_export(ids, tids):
-        from storage.sheets import write_news_row
+        from api.sheets_export import export_news_by_policy
         from scheduler import _update_task, _fetch_news_by_id, _fetch_analysis_by_id
         ok_count = 0
         skip_count = 0
@@ -1127,16 +1143,21 @@ def export_all_processed(body):
                     _update_task(tid, "error", {"error": "News not found"})
                     err_count += 1
                     continue
-                sheet_row = write_news_row(news, analysis or {})
+                cur_local = get_connection().cursor()
+                try:
+                    result = export_news_by_policy(cur_local, news, analysis or {})
+                finally:
+                    cur_local.close()
+                sheet_row = result.get("row")
                 if sheet_row and sheet_row > 0:
-                    _update_task(tid, "done", {"sheet_row": sheet_row})
+                    _update_task(tid, "done", {"sheet_row": sheet_row, "destination": result.get("destination")})
                     ok_count += 1
                 elif sheet_row == -1:
-                    _update_task(tid, "skipped", {"reason": "duplicate in Sheets"})
+                    _update_task(tid, "skipped", {"reason": "duplicate in Sheets", "destination": result.get("destination")})
                     skip_count += 1
                 else:
-                    _update_task(tid, "error", {"error": "Sheets write returned None"})
-                    err_count += 1
+                    _update_task(tid, "skipped", {"reason": result.get("reason", "Not eligible for export")})
+                    skip_count += 1
             except Exception as e:
                 _update_task(tid, "error", {"error": str(e)[:500]})
                 err_count += 1

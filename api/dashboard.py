@@ -575,14 +575,11 @@ def save_storylines_settings(body: dict) -> dict:
 def _update_storylines_cron(enabled: bool, hour: int, minute: int, days: int):
     """Add/remove/update the storylines auto-export cron job in APScheduler."""
     try:
-        from apscheduler.schedulers.blocking import BlockingScheduler
         import scheduler as sched_module
-        # Access the running scheduler instance (if available)
-        for obj in dir(sched_module):
-            val = getattr(sched_module, obj, None)
-            if isinstance(val, BlockingScheduler):
-                _do_update_cron(val, enabled, hour, minute, days)
-                return
+        val = getattr(sched_module, "RUNNING_SCHEDULER", None)
+        if val is not None:
+            _do_update_cron(val, enabled, hour, minute, days)
+            return
     except Exception as e:
         logger.debug("Storylines cron update skipped (scheduler not running): %s", e)
 

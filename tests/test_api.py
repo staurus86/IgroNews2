@@ -1034,6 +1034,72 @@ class TestStorageSheetsCache(APITestBase):
         self.assertEqual(ws.title, "Лист1")
 
 
+class TestSheetsRouting(APITestBase):
+
+    @patch("storage.sheets.write_not_ready_row", return_value=12)
+    def test_export_sheets_routes_scored_news_to_not_ready(self, mock_write_not_ready):
+        _insert_test_news(self.conn, self.cur)
+
+        import config
+        from api.news import export_sheets
+
+        old_id = config.GOOGLE_SHEETS_ID
+        old_sa = config.GOOGLE_SERVICE_ACCOUNT_JSON
+        try:
+            config.GOOGLE_SHEETS_ID = "test-sheet-id"
+            config.GOOGLE_SERVICE_ACCOUNT_JSON = '{"type":"service_account"}'
+            result = export_sheets({"news_id": "n3"})
+        finally:
+            config.GOOGLE_SHEETS_ID = old_id
+            config.GOOGLE_SERVICE_ACCOUNT_JSON = old_sa
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["destination"], "NotReady")
+        self.assertEqual(result["row"], 12)
+        self.assertEqual(mock_write_not_ready.call_count, 1)
+
+    @patch("storage.sheets.write_ready_row", return_value=22)
+    def test_export_sheets_routes_rewritten_news_to_ready(self, mock_write_ready):
+        _insert_test_news(self.conn, self.cur)
+        _insert_test_article(self.conn, self.cur, aid="art_ready", news_id="n1")
+
+        import config
+        from api.news import export_sheets
+
+        old_id = config.GOOGLE_SHEETS_ID
+        old_sa = config.GOOGLE_SERVICE_ACCOUNT_JSON
+        try:
+            config.GOOGLE_SHEETS_ID = "test-sheet-id"
+            config.GOOGLE_SERVICE_ACCOUNT_JSON = '{"type":"service_account"}'
+            result = export_sheets({"news_id": "n1"})
+        finally:
+            config.GOOGLE_SHEETS_ID = old_id
+            config.GOOGLE_SERVICE_ACCOUNT_JSON = old_sa
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["destination"], "Ready")
+        self.assertEqual(result["row"], 22)
+        self.assertEqual(mock_write_ready.call_count, 1)
+
+
+class TestStorylinesScheduler(APITestBase):
+
+    @patch("api.dashboard._do_update_cron")
+    def test_update_storylines_cron_uses_running_scheduler(self, mock_do_update):
+        import scheduler as sched_module
+        from api.dashboard import _update_storylines_cron
+
+        fake_scheduler = object()
+        old_scheduler = getattr(sched_module, "RUNNING_SCHEDULER", None)
+        try:
+            sched_module.RUNNING_SCHEDULER = fake_scheduler
+            _update_storylines_cron(True, 9, 0, 3)
+        finally:
+            sched_module.RUNNING_SCHEDULER = old_scheduler
+
+        mock_do_update.assert_called_once_with(fake_scheduler, True, 9, 0, 3)
+
+
 # ===========================================================================
 # 7. Viral tests
 # ===========================================================================

@@ -16,7 +16,7 @@ def _start_sheets_worker(task_ids: list[str]):
     def _process_sheets_queue(ids: list[str]):
         import json as _json
         from datetime import datetime, timezone
-        from storage.sheets import write_news_row
+        from api.sheets_export import export_news_by_policy
 
         conn2 = get_connection()
         cur2 = conn2.cursor()
@@ -72,10 +72,11 @@ def _start_sheets_worker(task_ids: list[str]):
                             "llm_merged_with": "",
                         }
 
-                    sheet_row = write_news_row(news, analysis)
+                    result = export_news_by_policy(cur2, news, analysis)
+                    sheet_row = result.get("row")
                     _now2 = datetime.now(timezone.utc).isoformat()
                     if sheet_row and sheet_row > 0:
-                        res_data = _json.dumps({"row": sheet_row}, ensure_ascii=False)
+                        res_data = _json.dumps({"row": sheet_row, "destination": result.get("destination")}, ensure_ascii=False)
                         cur2.execute(
                             f"UPDATE task_queue SET status = 'done', result = {ph}, updated_at = {ph} WHERE id = {ph}",
                             (res_data, _now2, tid),
@@ -84,6 +85,11 @@ def _start_sheets_worker(task_ids: list[str]):
                         cur2.execute(
                             f"UPDATE task_queue SET status = 'skipped', result = 'duplicate', updated_at = {ph} WHERE id = {ph}",
                             (_now2, tid),
+                        )
+                    elif result.get("destination") == "skip":
+                        cur2.execute(
+                            f"UPDATE task_queue SET status = 'skipped', result = {ph}, updated_at = {ph} WHERE id = {ph}",
+                            (result.get("reason", "Not eligible for export"), _now2, tid),
                         )
                     else:
                         cur2.execute(

@@ -31,6 +31,7 @@ from pipeline.orchestrator import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
+RUNNING_SCHEDULER = None
 
 
 def parse_sources(interval_min: int):
@@ -105,7 +106,9 @@ def parse_sources(interval_min: int):
 
 def start_scheduler():
     """Start the APScheduler with all configured jobs."""
+    global RUNNING_SCHEDULER
     scheduler = BlockingScheduler(timezone="Europe/Moscow")
+    RUNNING_SCHEDULER = scheduler
 
     # Parsing by interval (includes auto-review)
     intervals = sorted(set(s["interval"] for s in config.SOURCES))
@@ -143,21 +146,22 @@ def start_scheduler():
     # Auto-digest: daily at 23:00 Moscow time
     scheduler.add_job(generate_auto_digest, "cron", hour=23, minute=0, id="auto_digest")
 
-    # Storylines auto-export (if enabled in settings)
+    # Storylines daily export: hard schedule at 09:00 Moscow time.
+    # This job is intentionally independent from dashboard toggles so it
+    # always runs on weekdays/weekends after restarts.
     try:
         from api.dashboard import get_storylines_settings, export_storylines_to_sheets
-        sl_cfg = get_storylines_settings()
-        if sl_cfg.get("enabled"):
-            sl_days = sl_cfg.get("days", 3)
-            scheduler.add_job(
-                lambda: export_storylines_to_sheets(days=sl_days, trigger="auto"),
-                "cron", hour=sl_cfg.get("hour", 9), minute=sl_cfg.get("minute", 0),
-                id="storylines_auto_export", replace_existing=True,
-            )
-            logger.info("Storylines auto-export: %02d:%02d, %d days",
-                        sl_cfg.get("hour", 9), sl_cfg.get("minute", 0), sl_days)
+        scheduler.add_job(
+            lambda: export_storylines_to_sheets(
+                days=get_storylines_settings().get("days", 3),
+                trigger="daily_9msk",
+            ),
+            "cron", hour=9, minute=0,
+            id="storylines_daily_export_9msk", replace_existing=True,
+        )
+        logger.info("Storylines daily export scheduled: 09:00 Europe/Moscow")
     except Exception as e:
-        logger.debug("Storylines auto-export init skipped: %s", e)
+        logger.debug("Storylines daily export init skipped: %s", e)
 
     # Watchdog: periodic health check + recovery actions
     from core.watchdog import watchdog
@@ -213,4 +217,7 @@ def start_scheduler():
         parse_sources(mins)
 
     logger.info("Scheduler started")
-    scheduler.start()
+    try:
+        scheduler.start()
+    finally:
+        RUNNING_SCHEDULER = None
