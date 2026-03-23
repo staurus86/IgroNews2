@@ -38,3 +38,40 @@ def test_zombie_thread_counter_increments_on_timeout():
     run_with_timeout(hang, timeout=0.5, default=None)
     after = get_zombie_thread_count()
     assert after > before
+
+
+from core.source_health import SourceHealth
+
+
+def test_source_starts_healthy():
+    sh = SourceHealth()
+    assert sh.is_healthy("ign") is True
+
+
+def test_source_disabled_after_failures():
+    sh = SourceHealth(threshold=3, cooldown=60)
+    sh.record_failure("ign")
+    sh.record_failure("ign")
+    sh.record_failure("ign")
+    assert sh.is_healthy("ign") is False
+
+
+def test_source_recovers_after_success():
+    sh = SourceHealth(threshold=2, cooldown=60)
+    sh.record_failure("ign")
+    sh.record_failure("ign")
+    assert sh.is_healthy("ign") is False
+    sh.record_success("ign")
+    assert sh.is_healthy("ign") is True
+
+
+def test_source_status_report_no_deadlock():
+    """get_status() не должен deadlock'ить (использует RLock)."""
+    sh = SourceHealth(threshold=2, cooldown=60)
+    sh.record_success("ign")
+    sh.record_failure("pcgamer")
+    sh.record_failure("pcgamer")
+    report = sh.get_status()
+    assert report["ign"]["healthy"] is True
+    assert report["pcgamer"]["healthy"] is False
+    assert report["pcgamer"]["consecutive_failures"] == 2
