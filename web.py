@@ -136,6 +136,9 @@ class AdminHandler(BaseHTTPRequestHandler):
         if path == "/api/health/sources":
             self._handle_source_health()
             return
+        if path == "/api/health/ready":
+            self._handle_readiness()
+            return
         if not self._require_auth():
             return
 
@@ -429,6 +432,14 @@ class AdminHandler(BaseHTTPRequestHandler):
             "circuits": get_circuit_status(),
             "system": watchdog.get_system_health(),
         })
+
+    def _handle_readiness(self):
+        """Readiness probe: 200 only when scheduler is alive."""
+        from core.watchdog import watchdog
+        if watchdog.is_alive():
+            self._json({"ready": True}, 200)
+        else:
+            self._json({"ready": False, "reason": "scheduler not yet started or stale"}, 503)
 
     def _serve_diag(self):
         """Публичный диагностический endpoint — проверка БД и парсинга."""
