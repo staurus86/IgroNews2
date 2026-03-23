@@ -45,10 +45,12 @@ class SourceHealth:
             s["failures"] += 1
             s["total_failures"] += 1
             s["last_error"] = str(error)[:200]
-            if s["failures"] >= self._threshold and s["disabled_at"] is None:
+            if s["failures"] >= self._threshold:
+                if s["disabled_at"] is None:
+                    logger.warning("Source DISABLED: %s after %d consecutive failures: %s",
+                                   source, s["failures"], error)
+                # Always refresh disabled_at to restart cooldown timer (including after failed probe)
                 s["disabled_at"] = time.time()
-                logger.warning("Source DISABLED: %s after %d consecutive failures: %s",
-                               source, s["failures"], error)
 
     def is_healthy(self, source: str) -> bool:
         with self._lock:

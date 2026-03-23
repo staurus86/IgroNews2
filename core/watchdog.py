@@ -33,7 +33,8 @@ class Watchdog:
 
     def register_recovery(self, component: str, action):
         """Регистрирует функцию восстановления для компонента."""
-        self._recovery_actions[component] = action
+        with self._lock:
+            self._recovery_actions[component] = action
 
     def check_health(self) -> dict:
         now = time.time()
@@ -64,17 +65,19 @@ class Watchdog:
 
     def is_alive(self) -> bool:
         health = self.check_health()
-        return all(not v["stale"] for v in health.values())
+        return bool(health) and all(not v["stale"] for v in health.values())
 
     def run_recovery(self):
         """Проверяет здоровье и запускает recovery для зависших компонентов."""
         health = self.check_health()
+        with self._lock:
+            actions = dict(self._recovery_actions)
         for name, status in health.items():
-            if status["stale"] and name in self._recovery_actions:
+            if status["stale"] and name in actions:
                 logger.warning("WATCHDOG: %s stale (%ds), running recovery...",
                                name, status["age_seconds"])
                 try:
-                    self._recovery_actions[name]()
+                    actions[name]()
                     logger.info("WATCHDOG: %s recovery triggered", name)
                 except Exception as e:
                     logger.error("WATCHDOG: %s recovery failed: %s", name, e)
