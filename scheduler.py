@@ -148,6 +148,29 @@ def start_scheduler():
     except Exception as e:
         logger.debug("Storylines auto-export init skipped: %s", e)
 
+    # Watchdog: periodic health check + recovery actions
+    from core.watchdog import watchdog
+
+    def _recovery_gc():
+        """Recovery: forced GC on stale components."""
+        gc.collect()
+        logger.warning("RECOVERY: forced GC")
+
+    watchdog.register_recovery("scheduler", _recovery_gc)
+
+    def _watchdog_check():
+        watchdog.run_recovery()
+        health = watchdog.check_health()
+        stale = [name for name, v in health.items() if v["stale"]]
+        if stale:
+            logger.warning("WATCHDOG: stale components: %s", stale)
+        from core.timeouts import get_zombie_thread_count
+        zombies = get_zombie_thread_count()
+        if zombies > 0:
+            logger.warning("WATCHDOG: %d zombie threads detected", zombies)
+
+    scheduler.add_job(_watchdog_check, "interval", minutes=5, id="watchdog_check")
+
     # Initial parse on startup (includes auto-review)
     for mins in intervals:
         parse_sources(mins)

@@ -1,6 +1,7 @@
 import logging
 import signal
 import sys
+import threading
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,13 +18,21 @@ from apis.cache import setup_dashboard_logging
 
 
 def _handle_shutdown(signum, frame):
-    """Graceful shutdown: stop pipelines, then exit."""
-    logging.info("Received signal %s, shutting down gracefully...", signum)
+    """Graceful shutdown with 30s timeout."""
+    logging.info("Received signal %s, shutting down...", signum)
     try:
         from scheduler import pipeline_stop
         pipeline_stop()
     except Exception as e:
-        logging.warning("pipeline_stop() failed during shutdown: %s", e)
+        logging.warning("pipeline_stop() failed: %s", e)
+
+    # Force exit after 30s if graceful shutdown hangs
+    def _force_exit():
+        import time; time.sleep(30)
+        logging.error("Shutdown timed out (30s), forcing exit")
+        import os; os._exit(1)
+
+    threading.Thread(target=_force_exit, daemon=True).start()
     sys.exit(0)
 
 
@@ -46,6 +55,22 @@ def main():
 
     # Инициализация БД
     init_db()
+
+    # Startup health check
+    try:
+        from storage.database import db_cursor
+        with db_cursor() as cur:
+            cur.execute("SELECT 1")
+        logging.info("Startup: DB OK")
+    except Exception as e:
+        logging.error("Startup: DB failed: %s. Retrying in 10s...", e)
+        import time as _t; _t.sleep(10)
+        try:
+            init_db()
+            logging.info("Startup: DB reconnected")
+        except Exception:
+            logging.critical("Cannot connect to database. Exiting.")
+            sys.exit(1)
 
     # Создание заголовков в Sheets (если пусто)
     setup_headers()
