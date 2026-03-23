@@ -69,7 +69,15 @@ def _auto_review_new():
                         "published_at": r.get("published_at", ""),
                         "parsed_at": r.get("parsed_at", ""),
                     }
-                    check_results = r.get("checks", {})
+                    check_results = {
+                        "checks": r.get("checks", {}),
+                        "total_score": r.get("total_score", 0),
+                        "sentiment": r.get("sentiment"),
+                        "tags": r.get("tags"),
+                        "headline": r.get("headline"),
+                        "momentum": r.get("momentum"),
+                        "game_entities": r.get("game_entities"),
+                    }
                     high_score_items.append((news_dict, check_results))
             if high_score_items:
                 from storage.sheets import write_not_ready_batch
