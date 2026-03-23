@@ -34,32 +34,66 @@ logger = logging.getLogger(__name__)
 
 
 def parse_sources(interval_min: int):
-    """Parse all sources with the given interval."""
+    """Parse all sources with the given interval. Error-isolated per source."""
+    from core.watchdog import watchdog
+    from core.source_health import source_health
+    from core.timeouts import run_with_timeout
+
     sources = [s for s in config.SOURCES if s["interval"] == interval_min]
     total = 0
+    failed = 0
+
     for source in sources:
-        if source["type"] == "rss":
-            total += parse_rss_source(source)
-        elif source["type"] in ("html", "dtf", "gamesradar", "homepage"):
-            total += parse_html_source(source)
-        elif source["type"] == "sitemap":
-            from parsers.html_parser import parse_sitemap_source
-            total += parse_sitemap_source(source)
-        elif source["type"] == "vk":
-            from parsers.vk_parser import parse_vk_source
-            total += parse_vk_source(source)
-        elif source["type"] == "telegram":
-            from parsers.telegram_parser import parse_telegram_source
-            total += parse_telegram_source(source)
-        elif source["type"] == "bluesky":
-            from parsers.bluesky_parser import parse_bluesky_source
-            total += parse_bluesky_source(source)
-    logger.info("[%dmin] Total new articles: %d", interval_min, total)
+        name = source.get("name", source.get("url", "unknown"))
+
+        # Skip unhealthy sources (auto-disabled after consecutive failures)
+        if not source_health.is_healthy(name):
+            logger.debug("Skipping unhealthy source: %s", name)
+            continue
+
+        try:
+            def _parse_one(src=source):
+                if src["type"] == "rss":
+                    return parse_rss_source(src)
+                elif src["type"] in ("html", "dtf", "gamesradar", "homepage"):
+                    return parse_html_source(src)
+                elif src["type"] == "sitemap":
+                    from parsers.html_parser import parse_sitemap_source
+                    return parse_sitemap_source(src)
+                elif src["type"] == "vk":
+                    from parsers.vk_parser import parse_vk_source
+                    return parse_vk_source(src)
+                elif src["type"] == "telegram":
+                    from parsers.telegram_parser import parse_telegram_source
+                    return parse_telegram_source(src)
+                elif src["type"] == "bluesky":
+                    from parsers.bluesky_parser import parse_bluesky_source
+                    return parse_bluesky_source(src)
+                return 0
+
+            count = run_with_timeout(_parse_one, timeout=90, default=None,
+                                     label=f"parse:{name}")
+            if count is None:
+                source_health.record_failure(name, "timeout or error")
+                failed += 1
+            else:
+                total += count
+                source_health.record_success(name)
+        except Exception as e:
+            logger.error("Parser error [%s]: %s", name, e)
+            source_health.record_failure(name, str(e))
+            failed += 1
+
+    logger.info("[%dmin] Parsed: %d new, %d failed sources", interval_min, total, failed)
+    watchdog.heartbeat("scheduler", f"parsed {total} new, {failed} failed")
 
     gc.collect()
 
     if total > 0:
-        _auto_review_new()
+        try:
+            _auto_review_new()
+        except Exception as e:
+            logger.error("Auto-review error (non-fatal): %s", e)
 
 
 def start_scheduler():
