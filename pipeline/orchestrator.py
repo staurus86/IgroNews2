@@ -654,6 +654,48 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
 
             # Stage 5: Rewrite
             _update_task(task_id, "running", {"stage": "rewriting", "score": total_score, "final_score": final_score})
+
+            # Graceful degradation: if LLM circuit is open, skip rewrite and send raw to NotReady
+            if _api_circuit_open("llm"):
+                logger.warning("LLM circuit open — sending %s to NotReady without rewrite", news_id)
+                try:
+                    from storage.sheets import write_not_ready_row
+                    # Build a minimal check_results dict from available analysis data
+                    _check_res = {}
+                    if analysis:
+                        _check_res = {
+                            "total_score": analysis.get("total_score", total_score),
+                            "checks": {
+                                "quality": {"score": analysis.get("quality_score", 0)},
+                                "relevance": {"score": analysis.get("relevance_score", 0)},
+                                "freshness": {"age_hours": -1},
+                                "viral": {"score": analysis.get("viral_score", 0), "triggers": []},
+                            },
+                            "tags": analysis.get("tags", []),
+                            "game_entities": [],
+                            "sentiment": {"label": "neutral"},
+                            "headline": {"score": 0},
+                            "momentum": {"score": 0},
+                        }
+                    else:
+                        _check_res = {"total_score": total_score, "checks": {}}
+                    write_not_ready_row(news, _check_res)
+                    update_news_status(news_id, "not_ready")
+                    _update_task(task_id, "done", {
+                        "stage": "not_ready_fallback",
+                        "reason": "LLM circuit open — sent to NotReady raw",
+                        "score": total_score,
+                        "final_score": final_score,
+                    })
+                    _trace(news_id, "full_auto", "not_ready_llm_circuit_open",
+                           "LLM недоступен (circuit breaker) — отправлен в NotReady без рерайта",
+                           {"total_score": total_score, "final_score": final_score},
+                           s_before=total_score, s_after=final_score)
+                except Exception as e:
+                    logger.error("NotReady fallback failed for %s: %s", news_id, e)
+                    _update_task(task_id, "error", {"stage": "not_ready_fallback", "error": f"NotReady fallback failed: {e}"})
+                continue  # skip to next news item
+
             import config
             style = getattr(config, "AUTO_REWRITE_STYLE", "news")
             rewrite = None
