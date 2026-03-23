@@ -188,3 +188,47 @@ def test_llm_skips_when_circuit_open():
     with patch("apis.llm._api_circuit_open", return_value=True):
         result = _call_llm("test prompt")
     assert result is None
+
+
+def test_full_self_healing_cycle():
+    """Полный цикл: источник падает -> отключается -> cooldown -> probe -> восстанавливается."""
+    sh = SourceHealth(threshold=3, cooldown=2)
+
+    # Фаза 1: работает
+    sh.record_success("test_src")
+    assert sh.is_healthy("test_src") is True
+
+    # Фаза 2: 3 ошибки -> отключение
+    sh.record_failure("test_src", "Connection refused")
+    sh.record_failure("test_src", "Connection refused")
+    sh.record_failure("test_src", "Connection refused")
+    assert sh.is_healthy("test_src") is False
+
+    # Фаза 3: ждём cooldown -> probe
+    import time; time.sleep(2.5)
+    assert sh.is_healthy("test_src") is True
+
+    # Фаза 4: probe OK -> восстановление
+    sh.record_success("test_src")
+    assert sh.is_healthy("test_src") is True
+    assert sh._sources["test_src"]["failures"] == 0
+
+    # Статистика
+    status = sh.get_status()
+    assert status["test_src"]["total_failures"] == 3
+    assert status["test_src"]["total_success"] == 2
+
+
+def test_watchdog_with_source_health_integration():
+    """Watchdog + source health + timeouts работают вместе."""
+    from core.watchdog import Watchdog
+
+    wd = Watchdog(max_stale_seconds=60)
+    wd.heartbeat("scheduler")
+
+    health = wd.get_system_health()
+    assert "zombie_threads" in health
+    assert "active_threads" in health
+    assert health["active_threads"] > 0
+    assert "components" in health
+    assert "scheduler" in health["components"]
