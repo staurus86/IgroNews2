@@ -3,6 +3,7 @@ import logging
 import os
 from openai import OpenAI
 import config
+from core.circuit_breaker import _api_circuit_open
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,7 @@ def _call_llm_raw(prompt: str, key_index: int = 0, news_id: str = "") -> dict | 
         model=config.LLM_MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
+        timeout=45,
     )
     latency_ms = int((_t.time() - t0) * 1000)
     text = response.choices[0].message.content
@@ -135,6 +137,9 @@ def _call_llm(prompt: str) -> dict | None:
     from apis.cache import rate_check, rate_increment
     if not rate_check("llm"):
         logger.warning("LLM rate limit exceeded")
+        return None
+    if _api_circuit_open("llm"):
+        logger.warning("LLM circuit breaker open — skipping")
         return None
     for i in range(len(_API_KEYS)):
         # Up to 3 attempts per key (JSON errors are retryable)

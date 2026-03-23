@@ -179,3 +179,12 @@ def test_db_connection_returns_valid():
     assert conn is not None
     with db_cursor() as cur:
         cur.execute("SELECT 1")
+
+
+def test_llm_skips_when_circuit_open():
+    """LLM должен вернуть None если circuit breaker открыт."""
+    from unittest.mock import patch
+    from apis.llm import _call_llm
+    with patch("apis.llm._api_circuit_open", return_value=True):
+        result = _call_llm("test prompt")
+    assert result is None
