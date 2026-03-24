@@ -190,7 +190,7 @@ def start_scheduler():
         if zombies > 0:
             logger.warning("WATCHDOG: %d zombie threads detected", zombies)
         # Emergency: too many zombie threads — force restart (Railway will auto-restart)
-        if zombies > 10:
+        if zombies > 5:
             logger.critical("WATCHDOG: %d zombie threads — forcing process restart", zombies)
             import os; os._exit(1)
 
