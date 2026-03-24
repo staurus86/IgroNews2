@@ -3,6 +3,7 @@
 import logging
 import threading
 import time
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ class SourceHealth:
         self._threshold = threshold
         self._cooldown = cooldown
         self._sources: dict[str, dict] = {}
+        self._latencies: dict[str, deque] = {}  # last 5 latencies per source
 
     def _ensure(self, source: str):
         if source not in self._sources:
@@ -50,7 +52,7 @@ class SourceHealth:
                 "disabled_at": None, "last_error": "", "error_type": "",
             }
 
-    def record_success(self, source: str):
+    def record_success(self, source: str, latency_ms: float = 0):
         with self._lock:
             self._ensure(source)
             s = self._sources[source]
@@ -59,6 +61,10 @@ class SourceHealth:
             s["total_success"] += 1
             s["disabled_at"] = None
             s["last_error"] = ""
+            if latency_ms > 0:
+                if source not in self._latencies:
+                    self._latencies[source] = deque(maxlen=5)
+                self._latencies[source].append(latency_ms)
             if was_disabled:
                 logger.info("Source RECOVERED: %s", source)
 
@@ -89,6 +95,19 @@ class SourceHealth:
                 return True
             return False
 
+    def avg_latency(self, source: str) -> float:
+        """Return average latency in ms for last 5 requests. 0 if no data."""
+        with self._lock:
+            lat = self._latencies.get(source)
+            if not lat:
+                return 0
+            return sum(lat) / len(lat)
+
+    def is_slow(self, source: str, threshold_ms: float = 30000) -> bool:
+        """Return True if average latency exceeds threshold (default 30s)."""
+        avg = self.avg_latency(source)
+        return avg > threshold_ms if avg > 0 else False
+
     def get_status(self) -> dict:
         """Возвращает статус всех источников. Safe: RLock позволяет вызов is_healthy()."""
         with self._lock:
@@ -101,6 +120,7 @@ class SourceHealth:
                     "last_error": s["last_error"],
                     "error_type": s["error_type"],
                     "disabled_at": s["disabled_at"],
+                    "avg_latency_ms": self.avg_latency(name),
                 }
                 for name, s in self._sources.items()
             }

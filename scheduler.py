@@ -21,7 +21,7 @@ from core.circuit_breaker import (  # noqa: F401
     pipeline_stop, pipeline_reset, is_pipeline_stopped,
 )
 from pipeline.orchestrator import (  # noqa: F401
-    _auto_review_new, _auto_rescore_zero,
+    _auto_review_new, _auto_rescore_zero,  # NOTE: _auto_rescore_zero has LIMIT 200 inside orchestrator.py
     process_news, _process_single_news, _do_process,
     _update_task, _create_task, _fetch_news_by_id, _fetch_analysis_by_id,
     _calc_final_score, run_full_auto_pipeline, run_no_llm_pipeline,
@@ -104,6 +104,35 @@ def parse_sources(interval_min: int):
             logger.error("Auto-review error (non-fatal): %s", e)
 
 
+def _recover_stuck_tasks():
+    """Reset tasks stuck in 'running' for >30 minutes back to 'pending'."""
+    from storage.database import db_cursor, ph, get_connection, _is_postgres
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+    with db_cursor() as cur:
+        cur.execute(f"UPDATE task_queue SET status = 'pending', updated_at = {ph()} WHERE status = 'running' AND updated_at < {ph()}",
+                    (datetime.now(timezone.utc).isoformat(), cutoff))
+        if not _is_postgres():
+            get_connection().commit()
+        count = cur.rowcount
+    if count:
+        logger.warning("RECOVERY: reset %d stuck tasks (running > 30min) back to pending", count)
+
+
+def _cancel_expired_scheduled():
+    """Cancel scheduled articles that are >48h overdue."""
+    from storage.database import db_cursor, ph, get_connection, _is_postgres
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+    with db_cursor() as cur:
+        cur.execute(f"UPDATE articles SET status = 'cancelled' WHERE status = 'scheduled' AND scheduled_at < {ph()}", (cutoff,))
+        if not _is_postgres():
+            get_connection().commit()
+        count = cur.rowcount
+    if count:
+        logger.info("Cancelled %d overdue scheduled articles (>48h past)", count)
+
+
 def start_scheduler():
     """Start the APScheduler with all configured jobs."""
     global RUNNING_SCHEDULER
@@ -139,6 +168,12 @@ def start_scheduler():
     # Retry failed Sheets exports every 15 minutes
     from pipeline.orchestrator import retry_sheets_exports
     scheduler.add_job(retry_sheets_exports, "interval", minutes=15, id="retry_sheets")
+
+    # Recover tasks stuck in 'running' for >30 minutes
+    scheduler.add_job(_recover_stuck_tasks, "interval", minutes=15, id="recover_stuck_tasks")
+
+    # Cancel scheduled articles that are >48h overdue
+    scheduler.add_job(_cancel_expired_scheduled, "interval", hours=1, id="cancel_expired_scheduled")
 
     # Auto-rescore news with score=0: daily at 04:00
     scheduler.add_job(_auto_rescore_zero, "cron", hour=4, minute=0, id="auto_rescore_zero")
@@ -193,6 +228,12 @@ def start_scheduler():
         if zombies > 5:
             logger.critical("WATCHDOG: %d zombie threads — forcing process restart", zombies)
             import os; os._exit(1)
+        # Mass source failure alert
+        from core.source_health import source_health
+        status = source_health.get_status()
+        down_count = sum(1 for s in status.values() if isinstance(s, dict) and s.get("failures", 0) >= 5)
+        if down_count >= 3:
+            logger.critical("MASS FAILURE: %d sources down simultaneously — check network/DNS", down_count)
 
     scheduler.add_job(_watchdog_check, "interval", minutes=5, id="watchdog_check")
 

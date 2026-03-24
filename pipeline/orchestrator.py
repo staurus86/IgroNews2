@@ -131,7 +131,7 @@ def _auto_rescore_zero():
                 AND (a.total_score IS NULL OR a.total_score = 0 OR a.news_id IS NULL)
                 AND n.plain_text != '' AND n.plain_text IS NOT NULL
                 ORDER BY n.parsed_at DESC
-                LIMIT 200
+                LIMIT 500
             """)
             if _is_postgres():
                 columns = [desc[0] for desc in cur.description]
@@ -567,20 +567,41 @@ def _calc_final_score(analysis: dict) -> int:
 
 # ─── Sheets retry ───
 
+SHEETS_RETRY_MAX_AGE_HOURS = 24  # Dead-letter after this many hours
+
 def retry_sheets_exports():
-    """Retry failed Sheets exports from task_queue."""
+    """Retry failed Sheets exports from task_queue. Dead-letter after 24h."""
+    from datetime import datetime, timezone, timedelta
     from storage.database import db_cursor, rows_to_dicts
     try:
         with db_cursor() as cur:
             cur.execute(
-                "SELECT id, news_id FROM task_queue WHERE task_type='sheets_retry' AND status='pending' ORDER BY created_at LIMIT 10"
+                "SELECT id, news_id, created_at FROM task_queue WHERE task_type='sheets_retry' AND status='pending'"
+                " ORDER BY CASE WHEN style = 'urgent' THEN 0 ELSE 1 END, created_at ASC LIMIT 10"
             )
             tasks = rows_to_dicts(cur)
 
         if not tasks:
             return
 
+        now = datetime.now(timezone.utc)
+        deadline = now - timedelta(hours=SHEETS_RETRY_MAX_AGE_HOURS)
+
         for task in tasks:
+            # Dead-letter: if task has been pending for over 24h, give up
+            created_at = task.get("created_at", "")
+            try:
+                task_created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                if task_created.tzinfo is None:
+                    task_created = task_created.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError, AttributeError):
+                task_created = now  # can't parse — treat as fresh
+
+            if task_created < deadline:
+                logger.warning("Dead-letter: sheets export task %s failed after 24h, giving up", task["id"])
+                _update_task(task["id"], "dead_letter", "Exceeded max retry period (24h)")
+                continue
+
             news_id = task["news_id"]
             try:
                 news = _fetch_news_by_id(news_id)
@@ -604,6 +625,11 @@ def retry_sheets_exports():
 
 def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
     """Mode 1: Full auto — score → enrich → rewrite → Sheets/Ready."""
+    # TODO: Add LLM daily cost cap when api_cost_tracking is fully implemented
+    # daily_cap = float(get_flag_value("llm_daily_cap", "5.0"))
+    # if get_daily_llm_cost() >= daily_cap:
+    #     logger.warning("LLM daily cost cap ($%.2f) reached, skipping full-auto pipeline", daily_cap)
+    #     return {"status": "error", "message": f"LLM daily cost cap (${daily_cap}) reached"}
     pipeline_reset()
     from checks.pipeline import run_review_pipeline
     from apis.llm import rewrite_news

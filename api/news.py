@@ -630,6 +630,9 @@ def delete_news(body):
         _ph = "%s" if _is_postgres() else "?"
         cur.execute(f"UPDATE news SET is_deleted=1, deleted_at={_ph} WHERE id IN ({placeholders})",
                     (now, *news_ids))
+        # Cascade: soft-delete related articles
+        cur.execute(f"UPDATE articles SET is_deleted = 1, deleted_at = {_ph} WHERE news_id IN ({placeholders}) AND COALESCE(is_deleted, 0) = 0",
+                    (now, *news_ids))
         if not _is_postgres():
             conn.commit()
         return {"status": "ok", "deleted": len(news_ids)}
@@ -650,6 +653,9 @@ def restore_news(body):
         else:
             placeholders = ",".join(["?"] * len(news_ids))
         cur.execute(f"UPDATE news SET is_deleted=0, deleted_at=NULL WHERE id IN ({placeholders})",
+                    tuple(news_ids))
+        # Cascade: restore related articles
+        cur.execute(f"UPDATE articles SET is_deleted = 0, deleted_at = NULL WHERE news_id IN ({placeholders}) AND is_deleted = 1",
                     tuple(news_ids))
         if not _is_postgres():
             conn.commit()
@@ -790,7 +796,10 @@ def auto_purge_old_deleted(days=30):
             return 0
         placeholders = ",".join([_ph] * len(old_ids))
         cur.execute(f"DELETE FROM news_analysis WHERE news_id IN ({placeholders})", tuple(old_ids))
+        cur.execute(f"DELETE FROM task_queue WHERE news_id IS NOT NULL AND news_id IN ({placeholders})", tuple(old_ids))
         cur.execute(f"DELETE FROM news WHERE id IN ({placeholders})", tuple(old_ids))
+        # Also purge old deleted articles
+        cur.execute(f"DELETE FROM articles WHERE is_deleted = 1 AND deleted_at < {_ph}", (cutoff,))
         if not _is_postgres():
             conn.commit()
         logger.info("Auto-purged %d old deleted news items", len(old_ids))
