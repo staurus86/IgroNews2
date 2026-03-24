@@ -148,8 +148,8 @@ def init_flags_table():
         "storyline_mode_v1", "source_health_plus_v1", "seo_extended_v1",
     ]
     for flag_id in _ENABLE_BY_DEFAULT:
+        cur2 = conn.cursor()
         try:
-            cur2 = conn.cursor()
             # Only enable if still set by 'system' (not manually toggled by admin)
             cur2.execute(
                 f"UPDATE feature_flags SET enabled = 1 WHERE flag_id = {ph} AND enabled = 0 AND updated_by = {ph}",
@@ -157,9 +157,10 @@ def init_flags_table():
             )
             if not is_pg:
                 conn.commit()
-            cur2.close()
         except Exception:
             pass
+        finally:
+            cur2.close()
 
     cur.close()
     logger.info("Feature flags table initialized (%d flags)", len(DEFAULT_FLAGS))

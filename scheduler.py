@@ -161,7 +161,7 @@ def start_scheduler():
         )
         logger.info("Storylines daily export scheduled: 09:00 Europe/Moscow")
     except Exception as e:
-        logger.debug("Storylines daily export init skipped: %s", e)
+        logger.warning("Storylines daily export init skipped: %s", e)
 
     # Watchdog: periodic health check + recovery actions
     from core.watchdog import watchdog

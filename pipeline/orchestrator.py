@@ -332,11 +332,15 @@ def _process_single_news(news_id: str) -> dict:
     try:
         ph = "%s" if _is_postgres() else "?"
         cur.execute(f"SELECT * FROM news WHERE id = {ph}", (news_id,))
+        row = cur.fetchone()
+        if not row:
+            logger.warning("_process_single_news: news_id=%s not found", news_id)
+            return {}
         if _is_postgres():
             columns = [desc[0] for desc in cur.description]
-            news = dict(zip(columns, cur.fetchone()))
+            news = dict(zip(columns, row))
         else:
-            news = dict(cur.fetchone())
+            news = dict(row)
     finally:
         cur.close()
     return _do_process(news)
@@ -450,21 +454,29 @@ def _process_auto_rewrite(task_id: str):
 
     try:
         cur.execute(f"SELECT * FROM task_queue WHERE id = {ph}", (task_id,))
+        task_row = cur.fetchone()
+        if not task_row:
+            logger.warning("_process_auto_rewrite: task_id=%s not found", task_id)
+            return
         if _is_postgres():
             cols = [d[0] for d in cur.description]
-            task = dict(zip(cols, cur.fetchone()))
+            task = dict(zip(cols, task_row))
         else:
-            task = dict(cur.fetchone())
+            task = dict(task_row)
 
         nid = task["news_id"]
         style = task.get("style", "news")
 
         cur.execute(f"SELECT * FROM news WHERE id = {ph}", (nid,))
+        news_row = cur.fetchone()
+        if not news_row:
+            logger.warning("_process_auto_rewrite: news_id=%s not found for task %s", nid, task_id)
+            return
         if _is_postgres():
             cols2 = [d[0] for d in cur.description]
-            news = dict(zip(cols2, cur.fetchone()))
+            news = dict(zip(cols2, news_row))
         else:
-            news = dict(cur.fetchone())
+            news = dict(news_row)
 
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).isoformat()

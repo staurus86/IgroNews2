@@ -2,7 +2,7 @@
 
 ВАЖНО: run_with_timeout запускает функцию в daemon thread. При таймауте
 поток продолжает жить (Python не может убить thread). Для мониторинга
-утечек используется счётчик zombie_thread_count.
+утечек используется set живых zombie threads (не кумулятивный счётчик).
 """
 
 import logging
@@ -12,19 +12,25 @@ from functools import wraps
 logger = logging.getLogger(__name__)
 
 _zombie_lock = threading.Lock()
-_zombie_count = 0
+_zombie_threads: set[threading.Thread] = set()
+_zombie_total = 0  # cumulative, for logging only
 
 
 def get_zombie_thread_count() -> int:
+    """Return count of currently alive zombie threads (not cumulative)."""
     with _zombie_lock:
-        return _zombie_count
+        # Purge threads that have since finished
+        _zombie_threads.discard(None)
+        dead = {t for t in _zombie_threads if not t.is_alive()}
+        _zombie_threads.difference_update(dead)
+        return len(_zombie_threads)
 
 
 def run_with_timeout(fn, args=(), kwargs=None, timeout=30, default=None, label=""):
     """Запускает fn в daemon thread с таймаутом.
     Возвращает результат fn или default при таймауте/ошибке.
     """
-    global _zombie_count
+    global _zombie_total
     kwargs = kwargs or {}
     result_holder = [default]
     error_holder = [None]
@@ -42,9 +48,10 @@ def run_with_timeout(fn, args=(), kwargs=None, timeout=30, default=None, label="
     if t.is_alive():
         name = label or getattr(fn, '__name__', str(fn))
         with _zombie_lock:
-            _zombie_count += 1
-        logger.error("TIMEOUT (%ds): %s — zombie thread #%d",
-                      timeout, name, _zombie_count)
+            _zombie_threads.add(t)
+            _zombie_total += 1
+        logger.error("TIMEOUT (%ds): %s — zombie thread #%d (alive: %d)",
+                      timeout, name, _zombie_total, get_zombie_thread_count())
         return default
 
     if error_holder[0]:
