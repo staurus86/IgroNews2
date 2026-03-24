@@ -554,8 +554,10 @@ def _extract_publish_date(soup) -> str:
     for script in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(script.string or "")
-            if isinstance(data, list):
+            if isinstance(data, list) and data:
                 data = data[0]
+            if not isinstance(data, dict):
+                continue
             for key in ("datePublished", "dateCreated", "uploadDate"):
                 if key in data:
                     return data[key]

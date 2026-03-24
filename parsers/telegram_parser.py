@@ -240,6 +240,7 @@ def _parse_via_web_preview(source: dict) -> int:
 
     except Exception as e:
         logger.error("Error parsing Telegram channel %s via web preview: %s", name, e)
+        return -1  # signal error so caller can try RSSHub fallback
 
     logger.info("Parsed Telegram %s (web preview): %d new articles", name, count)
     return count
@@ -249,6 +250,8 @@ def parse_telegram_source(source: dict) -> int:
     """Парсит Telegram-канал, возвращает количество новых новостей.
 
     Приоритет: Telethon API → t.me/s/ web preview → RSSHub fallback.
+    Web preview вызывается первым; RSSHub только если web preview упал с ошибкой
+    (а не просто вернул 0 новых — это нормальная ситуация).
     """
     if TELETHON_AVAILABLE:
         from config import TELEGRAM_API_ID, TELEGRAM_API_HASH
@@ -256,9 +259,10 @@ def parse_telegram_source(source: dict) -> int:
             return _parse_via_telethon(source)
 
     # Web preview — самый надёжный бесплатный вариант
+    # Возвращает >= 0 при успехе, -1 при ошибке (web preview не загрузился)
     result = _parse_via_web_preview(source)
-    if result > 0:
+    if result >= 0:
         return result
 
-    # RSSHub как последний fallback
+    # RSSHub только если web preview сломался (не просто 0 new)
     return _parse_via_rsshub(source)

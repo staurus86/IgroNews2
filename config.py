@@ -87,9 +87,10 @@ SOURCES = [
     {"name": "TheGamer",         "type": "rss",  "url": "https://www.thegamer.com/feed/",              "interval": 45},
     {"name": "GamingBolt",       "type": "rss",  "url": "https://www.gamingbolt.com/feed",             "interval": 45},
     {"name": "StopGame",         "type": "html", "url": "https://stopgame.ru/news",                    "interval": 30, "selector": "a[href*='/newsdata/']", "title_selector": "", "url_pattern": r"/newsdata/\d+"},
-    {"name": "Playground",       "type": "rss",  "url": "https://www.playground.ru/rss/news.xml",      "interval": 45},
+    # Playground RSS disabled — site times out, creates zombie threads. TG:Playground works fine.
+    # {"name": "Playground",       "type": "rss",  "url": "https://www.playground.ru/rss/news.xml",      "interval": 45},
     # HTML
-    {"name": "DTF",              "type": "dtf",  "url": "https://dtf.ru/editorial",                     "interval": 30, "selector": "a[href*='/editorial/']", "title_selector": "", "url_pattern": r"/editorial/\d+"},
+    {"name": "DTF",              "type": "dtf",  "url": "https://dtf.ru/games",                         "interval": 30, "selector": "a[href*='/games/']", "title_selector": "", "url_pattern": r"/games/\d+"},
     {"name": "iXBT.games",       "type": "html", "url": "https://ixbt.games/news",                    "interval": 90, "selector": "a[href*='/news/']", "title_selector": "h3", "url_pattern": r"/news/\d{4}/\d{2}/\d{2}/"},
     {"name": "VGTimes",          "type": "html", "url": "https://vgtimes.ru/news/",                    "interval": 90, "selector": "a[href*='.html']", "title_selector": "", "url_pattern": r"/\d+-.*\.html"},
     # New RSS (from audit)
