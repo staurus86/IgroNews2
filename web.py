@@ -27,12 +27,18 @@ _DASHBOARD_HTML_GZIP = None
 _DASHBOARD_HTML_BYTES = None
 
 # Secret key for signing cookies — stable across redeploys via env var
-_COOKIE_SECRET = os.getenv("COOKIE_SECRET", "igronews-default-secret-key-2024")
+_COOKIE_SECRET = os.getenv("COOKIE_SECRET", "")
+if not _COOKIE_SECRET:
+    import secrets as _secrets
+    _COOKIE_SECRET = _secrets.token_hex(32)
+    logging.warning("COOKIE_SECRET not set — generated random key (sessions won't survive restart)")
 
 # Users: {username: {"hash": password_hash, "role": "admin"|"editor"|"viewer"}}
+_admin_pw = os.getenv("ADMIN_PASSWORD", "admin123")
 USERS = {
-    "admin": {"hash": hashlib.sha256("admin123".encode()).hexdigest(), "role": "admin"},
+    "admin": {"hash": hashlib.sha256(_admin_pw.encode()).hexdigest(), "role": "admin"},
 }
+_users_lock = __import__("threading").Lock()
 
 # Role permissions
 ROLE_PERMISSIONS = {
@@ -54,9 +60,9 @@ def _user_has_perm(username: str, perm: str) -> bool:
 
 def _sign_cookie(username: str) -> str:
     """Создаёт подписанную куку: username.expiry.signature"""
-    expiry = int(_time.time()) + 86400 * 7  # 7 дней
+    expiry = int(_time.time()) + 86400  # 24 часа
     payload = f"{username}:{expiry}"
-    sig = hmac.new(_COOKIE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:24]
+    sig = hmac.new(_COOKIE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}:{sig}"
 
 
@@ -71,7 +77,7 @@ def _verify_cookie(value: str) -> str | None:
         if _time.time() > expiry:
             return None
         payload = f"{username}:{expiry_str}"
-        expected = hmac.new(_COOKIE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:24]
+        expected = hmac.new(_COOKIE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(sig, expected):
             return None
         if username not in USERS:
@@ -334,9 +340,14 @@ class AdminHandler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
     # --- Helpers ---
+    _MAX_BODY_SIZE = 5 * 1024 * 1024  # 5 MB
+
     def _read_body(self):
         length = int(self.headers.get("Content-Length", 0))
         if length == 0:
+            return {}
+        if length > self._MAX_BODY_SIZE:
+            logger.warning("Request body too large: %d bytes", length)
             return {}
         try:
             return json.loads(self.rfile.read(length))
@@ -350,7 +361,10 @@ class AdminHandler(BaseHTTPRequestHandler):
         body = json.dumps(data, ensure_ascii=False, default=str).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin", "")
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Cache-Control", "no-cache, no-store")
         # Gzip if body > 1KB and client supports it
         if len(body) > 1024 and self._accepts_gzip():
@@ -371,7 +385,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             signed = _sign_cookie(username)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Set-Cookie", f"session={signed}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
+            self.send_header("Set-Cookie", f"session={signed}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=86400")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "ok", "role": _user_role(username)}).encode())
         else:
@@ -399,7 +413,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         if not _user_has_perm(user, "users"):
             self._json({"status": "error", "message": "Недостаточно прав"}, 403)
             return
-        USERS[username] = {"hash": hashlib.sha256(password.encode()).hexdigest(), "role": role}
+        with _users_lock:
+            USERS[username] = {"hash": hashlib.sha256(password.encode()).hexdigest(), "role": role}
         self._json({"status": "ok", "users": self._get_users()})
 
     def _delete_user(self, body):
@@ -411,7 +426,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         if not _user_has_perm(user, "users"):
             self._json({"status": "error", "message": "Недостаточно прав"}, 403)
             return
-        USERS.pop(username, None)
+        with _users_lock:
+            USERS.pop(username, None)
         self._json({"status": "ok", "users": self._get_users()})
 
     def _require_perm(self, perm: str) -> bool:
