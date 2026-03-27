@@ -322,6 +322,14 @@ def save_settings(body, user="admin"):
             except (ValueError, TypeError):
                 pass
 
+    # Validate score weights sum to ~1.0
+    weight_keys = ["score_weight_internal", "score_weight_viral", "score_weight_keyso",
+                    "score_weight_trends", "score_weight_headline"]
+    if any(k in body for k in weight_keys):
+        total = sum(float(body.get(k, getattr(config, k.upper(), 0))) for k in weight_keys)
+        if abs(total - 1.0) > 0.05:
+            return {"status": "error", "message": f"Сумма весов скоринга = {total:.2f}, должна быть 1.0 (допуск ±0.05)"}
+
     # Float settings
     _float_settings = {
         "llm_temperature": "LLM_TEMPERATURE",
@@ -395,6 +403,52 @@ def save_settings(body, user="admin"):
             pass
 
     return {"status": "ok"}
+
+
+def preview_rewrite(body):
+    """Test current rewrite prompt on a sample news article."""
+    try:
+        news_id = body.get("news_id", "")
+        style = body.get("style", "news")
+        custom_prompt = body.get("custom_prompt", "")
+
+        # Get news article
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            ph = "%s" if _is_postgres() else "?"
+            if news_id:
+                cur.execute(f"SELECT title, plain_text FROM news WHERE id = {ph}", (news_id,))
+            else:
+                # Pick a random recent article with content
+                cur.execute("SELECT title, plain_text FROM news WHERE plain_text IS NOT NULL AND LENGTH(plain_text) > 200 ORDER BY parsed_at DESC LIMIT 1")
+            row = cur.fetchone()
+            if not row:
+                return {"status": "error", "message": "Нет подходящих новостей для превью"}
+            if _is_postgres():
+                title, text = row[0], row[1]
+            else:
+                title, text = row["title"], row["plain_text"]
+        finally:
+            cur.close()
+
+        if custom_prompt:
+            # Use custom prompt directly
+            import apis.llm as llm
+            result = llm._call_llm(custom_prompt.format(
+                title=title, text=text[:3000],
+                style_instructions=llm.REWRITE_STYLES.get(style, llm.REWRITE_STYLES["news"])["instructions"],
+                language="русский",
+            ))
+        else:
+            from apis.llm import rewrite_news
+            result = rewrite_news(title, text, style=style)
+
+        if result:
+            return {"status": "ok", "original_title": title, "result": result}
+        return {"status": "error", "message": "LLM не вернул результат"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 def test_llm(body):

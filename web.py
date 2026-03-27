@@ -296,6 +296,7 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/articles/improve": lambda: self._improve_article(body),
             "/api/articles/detail": lambda: self._article_detail(body),
             "/api/articles/schedule": lambda: self._schedule_article(body),
+            "/api/preview_rewrite": lambda: self._preview_rewrite(body),
             "/api/prompt_versions/save": lambda: self._save_prompt_version(body),
             "/api/prompt_versions/activate": lambda: self._activate_prompt_version(body),
             "/api/generate_digest": lambda: self._generate_digest(body),
@@ -1131,6 +1132,10 @@ async function login() {
     def _get_prompt_versions(self):
         from api.settings import get_prompt_versions
         return get_prompt_versions()
+    def _preview_rewrite(self, body):
+        from api.settings import preview_rewrite
+        self._json(preview_rewrite(body))
+
     def _save_prompt_version(self, body):
         from api.settings import save_prompt_version
         self._json(save_prompt_version(body))

@@ -1450,7 +1450,33 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <p style="color:#657786;font-size:0.82em;margin-bottom:8px">Инструкции для каждого стиля (подставляются в {style_instructions})</p>
         <div id="rewrite-styles-editor"></div>
       </div>
-      <button class="btn btn-primary" onclick="savePrompts()" style="margin-bottom:20px">Сохранить промпты</button>
+      <div style="display:flex;gap:8px;margin-bottom:15px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-primary" onclick="savePrompts()">Сохранить промпты</button>
+        <button class="btn btn-success" onclick="previewRewrite()" title="Попробовать текущий промпт на случайной новости">Превью рерайта</button>
+        <select id="preview-style" style="padding:4px 8px;background:#192734;color:#e1e8ed;border:1px solid #38444d;border-radius:6px">
+          <option value="news">news</option><option value="seo">seo</option><option value="review">review</option>
+          <option value="clickbait">clickbait</option><option value="short">short</option><option value="social">social</option>
+        </select>
+      </div>
+      <div id="preview-result" style="display:none;margin-bottom:15px" class="card">
+        <h3 style="margin-bottom:8px">Результат превью</h3>
+        <div id="preview-content" style="font-size:0.88em"></div>
+      </div>
+      <!-- Prompt version history -->
+      <div class="card" style="margin-bottom:15px">
+        <h2>История версий промптов</h2>
+        <div id="prompt-versions-list" style="max-height:300px;overflow-y:auto"></div>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+          <select id="pv-name-select" style="padding:4px 8px;background:#192734;border:1px solid #38444d;border-radius:6px;color:#e1e8ed">
+            <option value="rewrite">rewrite</option>
+            <option value="trend_forecast">trend_forecast</option>
+            <option value="merge_analysis">merge_analysis</option>
+            <option value="keyso_queries">keyso_queries</option>
+          </select>
+          <input id="pv-notes" placeholder="Заметка..." style="padding:4px 8px;background:#192734;border:1px solid #38444d;border-radius:6px;color:#e1e8ed;flex:1">
+          <button class="btn btn-sm btn-success" onclick="savePromptVersion()">Сохранить версию</button>
+        </div>
+      </div>
       <hr style="border-color:#38444d">
       <div class="card" style="margin-bottom:15px;margin-top:15px">
         <h2>Промпт прогноза трендов</h2>
@@ -1737,7 +1763,7 @@ document.querySelectorAll('.settings-tab').forEach(t => t.addEventListener('clic
   // Refresh sub-tab data
   const s = t.dataset.stab;
   if (s === 'sources') loadSources();
-  if (s === 'prompts') loadPrompts();
+  if (s === 'prompts') { loadPrompts(); loadPromptVersionsInSettings(); }
   if (s === 'logs') loadLogs();
   if (s === 'queue') loadQueue();
   if (s === 'users') loadUsers();
@@ -2049,7 +2075,6 @@ async function savePrompts() {
     keyso_queries: document.getElementById('prompt-keyso').value,
     rewrite: document.getElementById('prompt-rewrite').value,
   };
-  // Collect rewrite styles
   const styles = {};
   document.querySelectorAll('[id^="style-"]').forEach(el => {
     const key = el.id.replace('style-', '');
@@ -2058,6 +2083,69 @@ async function savePrompts() {
   if (Object.keys(styles).length > 0) payload.rewrite_styles = styles;
   await api('/api/prompts/save', payload);
   toast('Промпты сохранены');
+}
+
+async function previewRewrite() {
+  const el = document.getElementById('preview-result');
+  const cnt = document.getElementById('preview-content');
+  el.style.display = 'block';
+  cnt.innerHTML = '<span style="color:#8899a6">Генерация превью...</span>';
+  try {
+    const style = document.getElementById('preview-style').value;
+    const r = await api('/api/preview_rewrite', {style});
+    if (r.status === 'ok' && r.result) {
+      const d = r.result;
+      cnt.innerHTML =
+        `<p style="color:#657786;margin-bottom:6px">Оригинал: <b>${r.original_title||''}</b></p>` +
+        `<p><b>Заголовок:</b> ${d.title||''}</p>` +
+        `<p><b>SEO Title:</b> ${d.seo_title||''}</p>` +
+        `<p><b>SEO Desc:</b> ${d.seo_description||''}</p>` +
+        `<p><b>Теги:</b> ${(d.tags||[]).join(', ')}</p>` +
+        `<hr style="border-color:#38444d;margin:8px 0">` +
+        `<div style="line-height:1.6">${d.text||''}</div>`;
+    } else {
+      cnt.innerHTML = `<span style="color:#e0245e">${r.message||'Ошибка'}</span>`;
+    }
+  } catch(e) {
+    cnt.innerHTML = `<span style="color:#e0245e">${e.message}</span>`;
+  }
+}
+
+async function loadPromptVersionsInSettings() {
+  const r = await api('/api/prompt_versions');
+  const el = document.getElementById('prompt-versions-list');
+  if (!el) return;
+  if (r.status !== 'ok' || !r.versions?.length) {
+    el.innerHTML = '<span style="color:#8899a6;font-size:0.82em">Нет сохранённых версий</span>';
+    return;
+  }
+  el.innerHTML = r.versions.map(v =>
+    `<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;font-size:0.82em;padding:4px 8px;background:${v.is_active?'#17bf6318':'transparent'};border-radius:6px">
+      <span style="font-weight:500;min-width:100px">${v.prompt_name}</span>
+      <span style="color:#8899a6">v${v.version}</span>
+      <span style="color:#657786;flex:1">${v.notes||''}</span>
+      <span style="color:#8899a6;font-size:0.9em">${(v.created_at||'').slice(0,16).replace('T',' ')}</span>
+      ${v.is_active ? '<span style="color:#17bf63;font-weight:bold">ACTIVE</span>' : `<button class="btn btn-sm" style="padding:1px 6px;font-size:0.8em" onclick="activatePromptVer('${v.id}')">Откатить</button>`}
+    </div>`
+  ).join('');
+}
+
+async function savePromptVersion() {
+  const name = document.getElementById('pv-name-select').value;
+  const notes = document.getElementById('pv-notes').value;
+  const prompts = await api('/api/prompts');
+  const content = prompts[name] || '';
+  if (!content) { toast('Промпт пуст', true); return; }
+  const r = await api('/api/prompt_versions/save', {prompt_name: name, content, notes});
+  if (r.status === 'ok') { toast('Версия v' + r.version + ' сохранена'); document.getElementById('pv-notes').value = ''; loadPromptVersionsInSettings(); }
+  else toast(r.message, true);
+}
+
+async function activatePromptVer(id) {
+  if (!confirm('Откатить промпт к этой версии?')) return;
+  const r = await api('/api/prompt_versions/activate', {id});
+  if (r.status === 'ok') { toast('Промпт откачен'); loadPromptVersionsInSettings(); loadPrompts(); }
+  else toast(r.message, true);
 }
 
 // Settings
