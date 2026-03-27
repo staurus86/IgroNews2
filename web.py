@@ -206,6 +206,11 @@ class AdminHandler(BaseHTTPRequestHandler):
                 self._json({"error": "id required"}, 400)
             return
 
+        # XLSX export of filtered news
+        if path == "/api/news/xlsx":
+            self._serve_news_xlsx()
+            return
+
         # Bulk DOCX (ZIP with multiple DOCX)
         if path == "/api/articles/docx_bulk":
             from urllib.parse import parse_qs
@@ -1308,6 +1313,25 @@ async function login() {
     def _improve_article(self, body):
         from api.articles import improve_article
         self._json(improve_article(body))
+    def _serve_news_xlsx(self):
+        """Generate and serve XLSX export of filtered news."""
+        from urllib.parse import parse_qs, urlparse
+        from api.news import export_news_xlsx
+        try:
+            qs = parse_qs(urlparse(self.path).query)
+            xlsx_bytes = export_news_xlsx(qs)
+            from datetime import datetime
+            fname = f"igronews_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+            self.send_header("Content-Length", str(len(xlsx_bytes)))
+            self.end_headers()
+            self.wfile.write(xlsx_bytes)
+        except Exception as e:
+            logger.error("XLSX export error: %s", e)
+            self._json({"status": "error", "message": str(e)}, 500)
+
     def _serve_docx(self, article_id):
         """Генерация и отдача DOCX файла."""
         conn = get_connection()

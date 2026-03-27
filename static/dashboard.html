@@ -512,6 +512,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
       <button class="btn btn-sm btn-warning" onclick="edAutoApprove()">&#9889; Авто-одобрение (&gt;70)</button>
       <span style="color:#38444d">|</span>
       <button class="btn btn-sm btn-secondary" onclick="edExportSheets()">&#9776; Sheets</button>
+      <button class="btn btn-sm btn-secondary" onclick="edExportXlsx()" title="Скачать текущий вид как XLSX">&#128202; XLSX</button>
       <button class="btn btn-sm btn-secondary" onclick="edBatchRewrite()">&#9998; Рерайт</button>
       <span style="color:#38444d">|</span>
       <span id="pipeline-controls">
@@ -4204,6 +4205,29 @@ let _edSearchTimer;
 function debounceEdSearch() {
   clearTimeout(_edSearchTimer);
   _edSearchTimer = setTimeout(() => loadEditorial(0), 400);
+}
+
+function edExportXlsx() {
+  const status = document.getElementById('ed-status').value;
+  const source = document.getElementById('ed-source').value;
+  const viral = document.getElementById('ed-viral').value;
+  const tier = document.getElementById('ed-tier').value;
+  const scoreFilter = document.getElementById('ed-score-filter').value;
+  const search = document.getElementById('ed-search').value;
+
+  let url = '/api/news/xlsx?view=editorial';
+  if (status) url += '&status=' + status;
+  if (source) url += '&source=' + encodeURIComponent(source);
+  if (viral) url += '&viral_level=' + viral;
+  if (scoreFilter === 'zero') url += '&score_filter=zero';
+  else if (scoreFilter.startsWith('max')) url += '&max_score=' + scoreFilter.replace('max','');
+  else if (scoreFilter.startsWith('range')) { const [lo,hi] = scoreFilter.replace('range','').split('_'); url += '&min_score='+lo+'&max_score='+hi; }
+  else if (scoreFilter.startsWith('min')) url += '&min_score=' + scoreFilter.replace('min','');
+  if (tier) url += '&tier=' + tier;
+  if (search) url += '&q=' + encodeURIComponent(search);
+
+  toast('Генерация XLSX...');
+  window.location.href = url;
 }
 
 function resetEdFilters() {

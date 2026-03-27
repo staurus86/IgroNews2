@@ -86,6 +86,16 @@ GAME_ENTITIES = {
     "wolverine":            {"tier": "B", "freq": 35, "aliases": ["marvel's wolverine"]},
     "judas":                {"tier": "B", "freq": 28, "aliases": []},
 
+    # === B-TIER: российские/СНГ проекты ===
+    "atomic heart":         {"tier": "B", "freq": 45, "aliases": ["атомное сердце"]},
+    "pathfinder":           {"tier": "C", "freq": 28, "aliases": ["pathfinder wrath of the righteous", "pathfinder wotr"]},
+    "warhammer 40k rogue trader": {"tier": "C", "freq": 23, "aliases": ["rogue trader"]},
+    "replaced":             {"tier": "C", "freq": 20, "aliases": []},
+    "смута":                {"tier": "C", "freq": 18, "aliases": ["smuta"]},
+    "atom rpg":             {"tier": "C", "freq": 15, "aliases": []},
+    "tiny bunny":           {"tier": "C", "freq": 17, "aliases": ["зайчик"]},
+    "война миров сибирь":   {"tier": "C", "freq": 12, "aliases": ["war of the worlds siberia"]},
+
     # === C-TIER: нишевые, но с лояльной аудиторией ===
     "stardew valley":       {"tier": "C", "freq": 52, "aliases": []},
     "terraria":             {"tier": "C", "freq": 46, "aliases": []},
@@ -145,6 +155,15 @@ STUDIO_ENTITIES = {
     "bungie":               {"tier": "B", "freq": 35, "aliases": []},
     "respawn":              {"tier": "B", "freq": 23, "aliases": ["respawn entertainment"]},
     "guerrilla":            {"tier": "B", "freq": 20, "aliases": ["guerrilla games"]},
+
+    # B-tier studios — Russian/CIS
+    "owlcat games":         {"tier": "B", "freq": 32, "aliases": ["owlcat", "оулкэт"]},
+    "mundfish":             {"tier": "B", "freq": 40, "aliases": ["мандфиш"]},
+
+    # C-tier studios — Russian/CIS
+    "cyberia nova":         {"tier": "C", "freq": 15, "aliases": ["кибериа нова"]},
+    "soviet games":         {"tier": "C", "freq": 12, "aliases": []},
+    "trioskaz":             {"tier": "C", "freq": 8, "aliases": ["триосказ"]},
 
     # C-tier studios
     "konami":               {"tier": "C", "freq": 28, "aliases": []},

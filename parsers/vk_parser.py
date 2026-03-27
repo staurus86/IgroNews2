@@ -13,6 +13,9 @@ from storage.database import insert_news, news_exists
 logger = logging.getLogger(__name__)
 MAX_AGE_DAYS = 7
 
+# Cache resolved screen_name -> group_id (persists for process lifetime)
+_screen_name_cache: dict[str, str] = {}
+
 _HASHTAG_RE = re.compile(r"#\S+")
 _LINK_RE = re.compile(r"https?://\S+")
 _BRACKET_RE = re.compile(r"\[(?:id|club)\d+\|([^\]]+)\]")
@@ -106,6 +109,28 @@ def _extract_url(post: dict) -> str:
     return f"https://vk.com/wall{owner_id}_{post_id}"
 
 
+def _resolve_screen_name(screen_name: str) -> str:
+    """Resolve VK screen_name to numeric group_id via API. Cached."""
+    if screen_name in _screen_name_cache:
+        return _screen_name_cache[screen_name]
+    try:
+        resp = requests.get("https://api.vk.com/method/utils.resolveScreenName", params={
+            "screen_name": screen_name,
+            "v": config.VK_API_VERSION,
+            "access_token": config.VK_API_TOKEN,
+        }, timeout=10)
+        data = resp.json().get("response", {})
+        if data.get("type") == "group":
+            gid = str(data["object_id"])
+            _screen_name_cache[screen_name] = gid
+            logger.info("Resolved VK screen_name '%s' -> group_id %s", screen_name, gid)
+            return gid
+        logger.warning("VK screen_name '%s' is not a group: %s", screen_name, data)
+    except Exception as e:
+        logger.error("Failed to resolve VK screen_name '%s': %s", screen_name, e)
+    return ""
+
+
 def parse_vk_source(source: dict) -> int:
     """Parse VK group wall, returns count of new articles."""
     if not config.VK_API_TOKEN:
@@ -114,6 +139,11 @@ def parse_vk_source(source: dict) -> int:
 
     name = source.get("name", "VK")
     group_id = source.get("group_id", "")
+    # Support screen_name -> auto-resolve to group_id
+    if not group_id and source.get("screen_name"):
+        group_id = _resolve_screen_name(source["screen_name"])
+        if not group_id:
+            return 0
     count = 0
 
     try:

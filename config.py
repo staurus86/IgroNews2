@@ -86,23 +86,25 @@ SOURCES = [
     {"name": "Gematsu",          "type": "rss",  "url": "https://www.gematsu.com/feed",                "interval": 45},
     {"name": "TheGamer",         "type": "rss",  "url": "https://www.thegamer.com/feed/",              "interval": 45},
     {"name": "GamingBolt",       "type": "rss",  "url": "https://www.gamingbolt.com/feed",             "interval": 45},
-    {"name": "StopGame",         "type": "html", "url": "https://stopgame.ru/news",                    "interval": 30, "selector": "a[href*='/newsdata/']", "title_selector": "", "url_pattern": r"/newsdata/\d+"},
+    # StopGame, iXBT.games, VGTimes — отключены по запросу редакции (оставляем только DTF + Игроманию из РУ)
+    # {"name": "StopGame",         "type": "html", "url": "https://stopgame.ru/news",                    "interval": 30, "selector": "a[href*='/newsdata/']", "title_selector": "", "url_pattern": r"/newsdata/\d+"},
+    # {"name": "iXBT.games",       "type": "html", "url": "https://ixbt.games/news",                    "interval": 90, "selector": "a[href*='/news/']", "title_selector": "h3", "url_pattern": r"/news/\d{4}/\d{2}/\d{2}/"},
+    # {"name": "VGTimes",          "type": "html", "url": "https://vgtimes.ru/news/",                    "interval": 90, "selector": "a[href*='.html']", "title_selector": "", "url_pattern": r"/\d+-.*\.html"},
     # Playground RSS disabled — site times out, creates zombie threads. TG:Playground works fine.
     # {"name": "Playground",       "type": "rss",  "url": "https://www.playground.ru/rss/news.xml",      "interval": 45},
     # HTML
     {"name": "DTF",              "type": "dtf",  "url": "https://dtf.ru/games",                         "interval": 30, "selector": "a[href*='/games/']", "title_selector": "", "url_pattern": r"/games/\d+"},
-    {"name": "iXBT.games",       "type": "html", "url": "https://ixbt.games/news",                    "interval": 90, "selector": "a[href*='/news/']", "title_selector": "h3", "url_pattern": r"/news/\d{4}/\d{2}/\d{2}/"},
-    {"name": "VGTimes",          "type": "html", "url": "https://vgtimes.ru/news/",                    "interval": 90, "selector": "a[href*='.html']", "title_selector": "", "url_pattern": r"/\d+-.*\.html"},
     # New RSS (from audit)
     {"name": "InsiderGaming",   "type": "rss",  "url": "https://insidergaming.com/feed",               "interval": 30},
     {"name": "MP1st",           "type": "rss",  "url": "https://mp1st.com/feed",                       "interval": 45},
     {"name": "GamesIndustry",   "type": "rss",  "url": "https://www.gamesindustry.biz/feed",           "interval": 90},
     {"name": "AutomatonWest",   "type": "rss",  "url": "https://automaton-media.com/en/feed/",         "interval": 90},
     # Telegram channels (web preview, no API needed)
-    {"name": "TG:iXBT.games",   "type": "telegram", "channel": "ixbtgames",       "interval": 30},
+    # iXBT, StopGame, Playground — отключены по запросу редакции (оставляем только Игроманию)
+    # {"name": "TG:iXBT.games",   "type": "telegram", "channel": "ixbtgames",       "interval": 30},
+    # {"name": "TG:StopGame",     "type": "telegram", "channel": "stopgamenews",    "interval": 30},
+    # {"name": "TG:Playground",   "type": "telegram", "channel": "playground_ru",   "interval": 45},
     {"name": "TG:Игромания",    "type": "telegram", "channel": "igromania",       "interval": 30},
-    {"name": "TG:StopGame",     "type": "telegram", "channel": "stopgamenews",    "interval": 30},
-    {"name": "TG:Playground",   "type": "telegram", "channel": "playground_ru",   "interval": 45},
     # Bluesky — game devs & journalists (free API, no auth)
     {"name": "BS:Schreier",     "type": "bluesky", "handle": "jasonschreier.bsky.social",                       "interval": 15},
     {"name": "BS:Kojima",       "type": "bluesky", "handle": "hideokojimaen.bsky.kojimaproductions.jp",         "interval": 15},
@@ -141,4 +143,12 @@ SOURCES = [
     {"name": "VK:2K",           "type": "vk", "group_id": "206575709", "interval": 90},
     {"name": "VK:SEGA",         "type": "vk", "group_id": "192435008", "interval": 90},
     {"name": "VK:InfinityWard", "type": "vk", "group_id": "27384116",  "interval": 90},
+    # Российские/СНГ студии (по запросу редакции — публикуют новости раньше всех)
+    {"name": "VK:Owlcat",       "type": "vk", "group_id": "145403847", "interval": 45},
+    {"name": "VK:Mundfish",     "type": "vk", "screen_name": "mundfish",              "interval": 45},
+    {"name": "VK:CyberiaNova",  "type": "vk", "screen_name": "cybnovagames",          "interval": 45},
+    {"name": "VK:TinyBunny",    "type": "vk", "screen_name": "bunnyhorror",           "interval": 45},
+    {"name": "VK:SovietGames",  "type": "vk", "screen_name": "sovietgames",           "interval": 90},
+    {"name": "VK:Trioskaz",     "type": "vk", "screen_name": "trioskaz",              "interval": 90},
+    {"name": "VK:WotWSiberia",  "type": "vk", "screen_name": "waroftheworldssiberia", "interval": 90},
 ]

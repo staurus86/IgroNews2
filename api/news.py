@@ -194,6 +194,113 @@ def get_news_unified(query_params):
         cur.close()
 
 
+def export_news_xlsx(query_params) -> bytes:
+    """Export current filtered view as XLSX file. Returns bytes of the workbook."""
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    # Remove limit cap — export ALL matching rows
+    query_params["limit"] = ["5000"]
+    query_params["offset"] = ["0"]
+    result = get_news_unified(query_params)
+    rows = result.get("news", [])
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "IgroNews Export"
+
+    # Headers
+    headers = [
+        "ID", "Источник", "Заголовок", "Скор", "Качество", "Релевантность",
+        "Вирал", "Вирал уровень", "Свежесть (ч)", "Тон", "Тир",
+        "Headline", "Momentum", "Статус", "Дата парсинга", "Дата публикации",
+        "Теги", "Entities", "LLM рекомендация", "URL"
+    ]
+
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="1DA1F2", end_color="1DA1F2", fill_type="solid")
+    thin_border = Border(
+        bottom=Side(style="thin", color="CCCCCC")
+    )
+
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    # Data rows
+    for row_idx, n in enumerate(rows, 2):
+        tags = n.get("tags_data", [])
+        if isinstance(tags, str):
+            try:
+                tags = json.loads(tags)
+            except Exception:
+                tags = []
+        tags_str = ", ".join(t if isinstance(t, str) else str(t) for t in tags) if tags else ""
+
+        entities = n.get("entity_names", [])
+        if isinstance(entities, str):
+            try:
+                entities = json.loads(entities)
+            except Exception:
+                entities = []
+        ent_str = ", ".join(entities) if entities else ""
+
+        values = [
+            n.get("id", ""),
+            n.get("source", ""),
+            n.get("title", ""),
+            n.get("total_score", 0),
+            n.get("quality_score", 0),
+            n.get("relevance_score", 0),
+            n.get("viral_score", 0),
+            n.get("viral_level", ""),
+            n.get("freshness_hours", ""),
+            n.get("sentiment_label", ""),
+            n.get("entity_best_tier", ""),
+            n.get("headline_score", 0),
+            n.get("momentum_score", 0),
+            n.get("status", ""),
+            (n.get("parsed_at") or "")[:16].replace("T", " "),
+            (n.get("published_at") or "")[:16].replace("T", " "),
+            tags_str,
+            ent_str,
+            n.get("llm_recommendation", ""),
+            n.get("url", ""),
+        ]
+
+        for col_idx, val in enumerate(values, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.border = thin_border
+
+        # Color-code score
+        score = n.get("total_score", 0) or 0
+        score_cell = ws.cell(row=row_idx, column=4)
+        if score >= 70:
+            score_cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        elif score >= 40:
+            score_cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+        elif score > 0:
+            score_cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+
+    # Column widths
+    col_widths = [6, 15, 50, 8, 8, 8, 8, 10, 10, 10, 6, 8, 8, 10, 16, 16, 30, 25, 15, 40]
+    for i, w in enumerate(col_widths, 1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
+
+    # Freeze header row
+    ws.freeze_panes = "A2"
+
+    # Auto-filter
+    ws.auto_filter.ref = ws.dimensions
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 # Deprecated: use get_news_unified(view=...) instead
 def get_news(query_params):
     query_params.setdefault("view", ["all"])
