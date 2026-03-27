@@ -37,6 +37,57 @@ AUTO_APPROVE_THRESHOLD = _int_env("AUTO_APPROVE_THRESHOLD", 0)  # 0 = disabled, 
 AUTO_REWRITE_ON_PUBLISH_NOW = os.getenv("AUTO_REWRITE_ON_PUBLISH_NOW", "true").lower() == "true"
 AUTO_REWRITE_STYLE = os.getenv("AUTO_REWRITE_STYLE", "news")
 
+# Scoring formula weights (must sum to 1.0)
+SCORE_WEIGHT_INTERNAL = float(os.getenv("SCORE_WEIGHT_INTERNAL", "0.4"))
+SCORE_WEIGHT_VIRAL = float(os.getenv("SCORE_WEIGHT_VIRAL", "0.2"))
+SCORE_WEIGHT_KEYSO = float(os.getenv("SCORE_WEIGHT_KEYSO", "0.15"))
+SCORE_WEIGHT_TRENDS = float(os.getenv("SCORE_WEIGHT_TRENDS", "0.1"))
+SCORE_WEIGHT_HEADLINE = float(os.getenv("SCORE_WEIGHT_HEADLINE", "0.15"))
+
+# Pipeline thresholds
+FULL_AUTO_SCORE_THRESHOLD = _int_env("FULL_AUTO_SCORE_THRESHOLD", 70)
+FULL_AUTO_FINAL_THRESHOLD = _int_env("FULL_AUTO_FINAL_THRESHOLD", 60)
+AUTO_EXPORT_THRESHOLD = _int_env("AUTO_EXPORT_THRESHOLD", 60)
+AUTO_REJECT_SCORE_THRESHOLD = _int_env("AUTO_REJECT_SCORE_THRESHOLD", 15)
+PUBLISH_SPACING_MINUTES = _int_env("PUBLISH_SPACING_MINUTES", 15)
+
+# LLM settings
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
+LLM_TIMEOUT_SECONDS = _int_env("LLM_TIMEOUT_SECONDS", 45)
+
+# Viral thresholds
+VIRAL_HIGH_THRESHOLD = _int_env("VIRAL_HIGH_THRESHOLD", 70)
+VIRAL_MEDIUM_THRESHOLD = _int_env("VIRAL_MEDIUM_THRESHOLD", 40)
+VIRAL_LOW_THRESHOLD = _int_env("VIRAL_LOW_THRESHOLD", 20)
+
+# Retention periods
+DELETED_NEWS_RETENTION_DAYS = _int_env("DELETED_NEWS_RETENTION_DAYS", 30)
+PLAINTEXT_RETENTION_DAYS = _int_env("PLAINTEXT_RETENTION_DAYS", 7)
+HEALTH_LOG_RETENTION_DAYS = _int_env("HEALTH_LOG_RETENTION_DAYS", 7)
+
+# Cron schedule (hours, 0-23)
+AUTO_RESCORE_CRON_HOUR = _int_env("AUTO_RESCORE_CRON_HOUR", 4)
+AUTO_DIGEST_CRON_HOUR = _int_env("AUTO_DIGEST_CRON_HOUR", 23)
+STORYLINES_EXPORT_CRON_HOUR = _int_env("STORYLINES_EXPORT_CRON_HOUR", 9)
+
+# Batch sizes
+SHEETS_BATCH_SIZE = _int_env("SHEETS_BATCH_SIZE", 25)
+NEWS_BATCH_FETCH_LIMIT = _int_env("NEWS_BATCH_FETCH_LIMIT", 20)
+VK_POST_MAX_AGE_DAYS = _int_env("VK_POST_MAX_AGE_DAYS", 7)
+VK_POSTS_BATCH_SIZE = _int_env("VK_POSTS_BATCH_SIZE", 20)
+TELEGRAM_POST_MAX_AGE_DAYS = _int_env("TELEGRAM_POST_MAX_AGE_DAYS", 7)
+TELEGRAM_MESSAGES_BATCH_SIZE = _int_env("TELEGRAM_MESSAGES_BATCH_SIZE", 20)
+
+# System health
+WATCHDOG_STALE_TIMEOUT = _int_env("WATCHDOG_STALE_TIMEOUT", 300)
+SOURCE_FAILURE_THRESHOLD = _int_env("SOURCE_FAILURE_THRESHOLD", 5)
+SOURCE_PROBE_COOLDOWN = _int_env("SOURCE_PROBE_COOLDOWN", 600)
+ZOMBIE_THREADS_CRITICAL = _int_env("ZOMBIE_THREADS_CRITICAL", 5)
+
+# Sheets API tuning
+SHEETS_MIN_API_INTERVAL = float(os.getenv("SHEETS_MIN_API_INTERVAL", "1.2"))
+SHEETS_CLIENT_TTL = _int_env("SHEETS_CLIENT_TTL", 3000)
+
 # Proxy & User-Agent rotation
 PROXY_LIST = os.getenv("PROXY_LIST", "")
 USER_AGENT_ROTATE = os.getenv("USER_AGENT_ROTATE", "true").lower() == "true"
@@ -181,7 +232,21 @@ def load_persistent_settings():
                 setattr(config, attr, settings[db_key])
 
         # Int settings
-        for key in ("AUTO_APPROVE_THRESHOLD", "TELEGRAM_NOTIFY_THRESHOLD"):
+        for key in (
+            "AUTO_APPROVE_THRESHOLD", "TELEGRAM_NOTIFY_THRESHOLD",
+            "FULL_AUTO_SCORE_THRESHOLD", "FULL_AUTO_FINAL_THRESHOLD",
+            "AUTO_EXPORT_THRESHOLD", "AUTO_REJECT_SCORE_THRESHOLD",
+            "PUBLISH_SPACING_MINUTES", "LLM_TIMEOUT_SECONDS",
+            "VIRAL_HIGH_THRESHOLD", "VIRAL_MEDIUM_THRESHOLD", "VIRAL_LOW_THRESHOLD",
+            "DELETED_NEWS_RETENTION_DAYS", "PLAINTEXT_RETENTION_DAYS", "HEALTH_LOG_RETENTION_DAYS",
+            "AUTO_RESCORE_CRON_HOUR", "AUTO_DIGEST_CRON_HOUR", "STORYLINES_EXPORT_CRON_HOUR",
+            "SHEETS_BATCH_SIZE", "NEWS_BATCH_FETCH_LIMIT",
+            "VK_POST_MAX_AGE_DAYS", "VK_POSTS_BATCH_SIZE",
+            "TELEGRAM_POST_MAX_AGE_DAYS", "TELEGRAM_MESSAGES_BATCH_SIZE",
+            "WATCHDOG_STALE_TIMEOUT", "SOURCE_FAILURE_THRESHOLD",
+            "SOURCE_PROBE_COOLDOWN", "ZOMBIE_THREADS_CRITICAL",
+            "SHEETS_CLIENT_TTL",
+        ):
             if key in settings:
                 try:
                     setattr(config, key, int(settings[key]))
@@ -191,6 +256,16 @@ def load_persistent_settings():
         # Bool settings
         if "AUTO_REWRITE_ON_PUBLISH_NOW" in settings:
             setattr(config, "AUTO_REWRITE_ON_PUBLISH_NOW", settings["AUTO_REWRITE_ON_PUBLISH_NOW"].lower() == "true")
+
+        # Float settings
+        for key in ("SCORE_WEIGHT_INTERNAL", "SCORE_WEIGHT_VIRAL", "SCORE_WEIGHT_KEYSO",
+                     "SCORE_WEIGHT_TRENDS", "SCORE_WEIGHT_HEADLINE",
+                     "LLM_TEMPERATURE", "SHEETS_MIN_API_INTERVAL"):
+            if key in settings:
+                try:
+                    setattr(config, key, float(settings[key]))
+                except (ValueError, TypeError):
+                    pass
 
         # Reload sheets client if sheets config changed
         if any(k in settings for k in ("GOOGLE_SHEETS_ID", "GOOGLE_SERVICE_ACCOUNT_JSON")):

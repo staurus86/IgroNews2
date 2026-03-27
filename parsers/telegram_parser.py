@@ -1,10 +1,11 @@
 import logging
 from datetime import datetime, timezone, timedelta
 
+import config
 from storage.database import insert_news, news_exists
 
 logger = logging.getLogger(__name__)
-MAX_AGE_DAYS = 7
+MAX_AGE_DAYS = config.TELEGRAM_POST_MAX_AGE_DAYS
 
 # Try to import telethon; if unavailable, fall back to RSS
 try:
@@ -61,7 +62,7 @@ def _parse_via_telethon(source: dict) -> int:
         client.start()
 
         try:
-            messages = client.get_messages(channel_clean, limit=20)
+            messages = client.get_messages(channel_clean, limit=config.TELEGRAM_MESSAGES_BATCH_SIZE)
 
             for message in messages:
                 # Пропуск пустых / сервисных сообщений

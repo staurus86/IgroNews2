@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from typing import Optional
 
+import config
+
 VIRAL_TRIGGERS = {
     # === СКАНДАЛЫ И ДРАМА ===
     "scandal_layoffs": {
@@ -924,13 +926,13 @@ def viral_score(news: dict, precomputed_entities: list = None) -> dict:
 
     score = min(100, score)
 
-    if score >= 70:
+    if score >= config.VIRAL_HIGH_THRESHOLD:
         level = "high"
-    elif score >= 40:
+    elif score >= config.VIRAL_MEDIUM_THRESHOLD:
         level = "medium"
-    elif score >= 20:
+    elif score >= config.VIRAL_LOW_THRESHOLD:
         level = "low"
     else:
         level = "none"
 
-    return {"score": score, "level": level, "triggers": triggered, "pass": score >= 20}
+    return {"score": score, "level": level, "triggers": triggered, "pass": score >= config.VIRAL_LOW_THRESHOLD}

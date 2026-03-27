@@ -4,6 +4,8 @@ import logging
 import threading
 import time
 
+import config
+
 logger = logging.getLogger(__name__)
 
 
@@ -84,4 +86,4 @@ class Watchdog:
 
 
 # Глобальный инстанс
-watchdog = Watchdog(max_stale_seconds=300)
+watchdog = Watchdog(max_stale_seconds=config.WATCHDOG_STALE_TIMEOUT)

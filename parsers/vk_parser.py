@@ -11,7 +11,7 @@ import config
 from storage.database import insert_news, news_exists
 
 logger = logging.getLogger(__name__)
-MAX_AGE_DAYS = 7
+MAX_AGE_DAYS = config.VK_POST_MAX_AGE_DAYS
 
 # Cache resolved screen_name -> group_id (persists for process lifetime)
 _screen_name_cache: dict[str, str] = {}
@@ -149,7 +149,7 @@ def parse_vk_source(source: dict) -> int:
     try:
         resp = requests.get("https://api.vk.com/method/wall.get", params={
             "owner_id": f"-{group_id}",
-            "count": 20,
+            "count": config.VK_POSTS_BATCH_SIZE,
             "filter": "owner",
             "v": config.VK_API_VERSION,
             "access_token": config.VK_API_TOKEN,

@@ -5,6 +5,8 @@ import threading
 import time
 from collections import deque
 
+import config
+
 logger = logging.getLogger(__name__)
 
 
@@ -127,4 +129,4 @@ class SourceHealth:
 
 
 # Глобальный инстанс
-source_health = SourceHealth(threshold=5, cooldown=600)
+source_health = SourceHealth(threshold=config.SOURCE_FAILURE_THRESHOLD, cooldown=config.SOURCE_PROBE_COOLDOWN)

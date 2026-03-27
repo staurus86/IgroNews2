@@ -1326,6 +1326,88 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           </div>
         </div>
       </div>
+      <!-- Scoring & Pipeline -->
+      <div class="grid-2" style="margin-top:15px">
+        <div class="card">
+          <h2>Формула скоринга</h2>
+          <p style="color:#657786;font-size:0.82em;margin-bottom:8px">Веса компонентов (сумма должна быть 1.0)</p>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div class="form-group"><label>Internal</label><input type="number" step="0.05" min="0" max="1" id="set-sw-internal" oninput="updateScoreWeightSum()"></div>
+            <div class="form-group"><label>Viral</label><input type="number" step="0.05" min="0" max="1" id="set-sw-viral" oninput="updateScoreWeightSum()"></div>
+            <div class="form-group"><label>Keys.so</label><input type="number" step="0.05" min="0" max="1" id="set-sw-keyso" oninput="updateScoreWeightSum()"></div>
+            <div class="form-group"><label>Trends</label><input type="number" step="0.05" min="0" max="1" id="set-sw-trends" oninput="updateScoreWeightSum()"></div>
+            <div class="form-group"><label>Headline</label><input type="number" step="0.05" min="0" max="1" id="set-sw-headline" oninput="updateScoreWeightSum()"></div>
+          </div>
+          <div id="sw-sum" style="color:#8899a6;font-size:0.82em;margin:4px 0"></div>
+          <button class="btn btn-primary btn-sm" onclick="saveSettings()">Сохранить</button>
+        </div>
+        <div class="card">
+          <h2>Пороги пайплайна</h2>
+          <div class="form-group"><label>Мин. скор для LLM анализа</label><input type="number" id="set-fas-threshold" min="0" max="100"></div>
+          <div class="form-group"><label>Мин. скор для рерайта</label><input type="number" id="set-faf-threshold" min="0" max="100"></div>
+          <div class="form-group"><label>Мин. скор для авто-экспорта</label><input type="number" id="set-ae-threshold" min="0" max="100"></div>
+          <div class="form-group"><label>Порог авто-отклонения</label><input type="number" id="set-ar-threshold" min="0" max="100"></div>
+          <div class="form-group"><label>Интервал публикаций (мин)</label><input type="number" id="set-pub-spacing" min="1" max="120"></div>
+          <button class="btn btn-primary btn-sm" onclick="saveSettings()">Сохранить</button>
+        </div>
+      </div>
+      <!-- Viral & LLM -->
+      <div class="grid-2" style="margin-top:15px">
+        <div class="card">
+          <h2>Вирал пороги</h2>
+          <div class="form-group"><label>High (&#8805;)</label><input type="number" id="set-vh" min="0" max="100"></div>
+          <div class="form-group"><label>Medium (&#8805;)</label><input type="number" id="set-vm" min="0" max="100"></div>
+          <div class="form-group"><label>Low (&#8805;)</label><input type="number" id="set-vl" min="0" max="100"></div>
+          <button class="btn btn-primary btn-sm" onclick="saveSettings()">Сохранить</button>
+        </div>
+        <div class="card">
+          <h2>LLM настройки</h2>
+          <div class="form-group"><label>Температура (0-1)</label><input type="number" step="0.05" min="0" max="2" id="set-llm-temp"></div>
+          <div class="form-group"><label>Таймаут (сек)</label><input type="number" id="set-llm-timeout" min="10" max="300"></div>
+          <button class="btn btn-primary btn-sm" onclick="saveSettings()">Сохранить</button>
+        </div>
+      </div>
+      <!-- Retention & Cron -->
+      <div class="grid-2" style="margin-top:15px">
+        <div class="card">
+          <h2>Сроки хранения</h2>
+          <div class="form-group"><label>Удалённые новости (дни)</label><input type="number" id="set-ret-deleted" min="1" max="365"></div>
+          <div class="form-group"><label>Plain text (дни)</label><input type="number" id="set-ret-plaintext" min="1" max="365"></div>
+          <div class="form-group"><label>Health log (дни)</label><input type="number" id="set-ret-healthlog" min="1" max="365"></div>
+          <button class="btn btn-primary btn-sm" onclick="saveSettings()">Сохранить</button>
+        </div>
+        <div class="card">
+          <h2>Крон-расписание</h2>
+          <p style="color:#657786;font-size:0.82em;margin-bottom:8px">Час запуска (0-23, UTC)</p>
+          <div class="form-group"><label>Авто-рескоринг</label><input type="number" id="set-cron-rescore" min="0" max="23"></div>
+          <div class="form-group"><label>Авто-дайджест</label><input type="number" id="set-cron-digest" min="0" max="23"></div>
+          <div class="form-group"><label>Экспорт сюжетов</label><input type="number" id="set-cron-storylines" min="0" max="23"></div>
+          <button class="btn btn-primary btn-sm" onclick="saveSettings()">Сохранить</button>
+        </div>
+      </div>
+      <!-- Batch sizes & System health -->
+      <div class="grid-2" style="margin-top:15px">
+        <div class="card">
+          <h2>Размеры батчей</h2>
+          <div class="form-group"><label>Sheets батч</label><input type="number" id="set-batch-sheets" min="5" max="100"></div>
+          <div class="form-group"><label>Лимит новостей</label><input type="number" id="set-batch-news" min="5" max="100"></div>
+          <div class="form-group"><label>VK макс. возраст (дни)</label><input type="number" id="set-vk-age" min="1" max="30"></div>
+          <div class="form-group"><label>VK постов за раз</label><input type="number" id="set-vk-batch" min="5" max="100"></div>
+          <div class="form-group"><label>TG макс. возраст (дни)</label><input type="number" id="set-tg-age" min="1" max="30"></div>
+          <div class="form-group"><label>TG сообщений за раз</label><input type="number" id="set-tg-batch" min="5" max="100"></div>
+          <button class="btn btn-primary btn-sm" onclick="saveSettings()">Сохранить</button>
+        </div>
+        <div class="card">
+          <h2>Здоровье системы</h2>
+          <div class="form-group"><label>Watchdog таймаут (сек)</label><input type="number" id="set-wd-timeout" min="60" max="3600"></div>
+          <div class="form-group"><label>Порог сбоев источника</label><input type="number" id="set-src-fail" min="1" max="20"></div>
+          <div class="form-group"><label>Кулдаун пробы (сек)</label><input type="number" id="set-src-cooldown" min="60" max="3600"></div>
+          <div class="form-group"><label>Крит. зомби-потоков</label><input type="number" id="set-zombie-crit" min="1" max="20"></div>
+          <div class="form-group"><label>Sheets мин. интервал (сек)</label><input type="number" step="0.1" id="set-sheets-interval" min="0.5" max="5"></div>
+          <div class="form-group"><label>Sheets TTL клиента (сек)</label><input type="number" id="set-sheets-ttl" min="600" max="7200"></div>
+          <button class="btn btn-primary btn-sm" onclick="saveSettings()">Сохранить</button>
+        </div>
+      </div>
     </div>
 
     <!-- Sources (moved from separate tab) -->
@@ -1981,6 +2063,7 @@ async function savePrompts() {
 // Settings
 async function loadSettings() {
   const s = await api('/api/settings');
+  // General
   document.getElementById('set-model').value = s.llm_model || '';
   document.getElementById('set-keyso-region').value = s.keyso_region || '';
   document.getElementById('set-sheets-tab').value = s.sheets_tab || '';
@@ -1988,9 +2071,52 @@ async function loadSettings() {
   document.getElementById('set-sheets-tab-ready').value = s.sheets_tab_ready || 'Ready';
   document.getElementById('set-sheets-tab-not-ready').value = s.sheets_tab_not_ready || 'NotReady';
   document.getElementById('set-openai-base-url').value = s.openai_base_url || '';
-  document.getElementById('set-auto-approve').value = s.auto_approve_threshold ?? 70;
+  document.getElementById('set-auto-approve').value = s.auto_approve_threshold ?? 0;
   document.getElementById('set-auto-rewrite').checked = s.auto_rewrite_on_publish_now !== false;
   document.getElementById('set-auto-rewrite-style').value = s.auto_rewrite_style || 'news';
+  // Scoring weights
+  document.getElementById('set-sw-internal').value = s.score_weight_internal ?? 0.4;
+  document.getElementById('set-sw-viral').value = s.score_weight_viral ?? 0.2;
+  document.getElementById('set-sw-keyso').value = s.score_weight_keyso ?? 0.15;
+  document.getElementById('set-sw-trends').value = s.score_weight_trends ?? 0.1;
+  document.getElementById('set-sw-headline').value = s.score_weight_headline ?? 0.15;
+  updateScoreWeightSum();
+  // Pipeline
+  document.getElementById('set-fas-threshold').value = s.full_auto_score_threshold ?? 70;
+  document.getElementById('set-faf-threshold').value = s.full_auto_final_threshold ?? 60;
+  document.getElementById('set-ae-threshold').value = s.auto_export_threshold ?? 60;
+  document.getElementById('set-ar-threshold').value = s.auto_reject_score_threshold ?? 15;
+  document.getElementById('set-pub-spacing').value = s.publish_spacing_minutes ?? 15;
+  // Viral
+  document.getElementById('set-vh').value = s.viral_high_threshold ?? 70;
+  document.getElementById('set-vm').value = s.viral_medium_threshold ?? 40;
+  document.getElementById('set-vl').value = s.viral_low_threshold ?? 20;
+  // LLM
+  document.getElementById('set-llm-temp').value = s.llm_temperature ?? 0.3;
+  document.getElementById('set-llm-timeout').value = s.llm_timeout_seconds ?? 45;
+  // Retention
+  document.getElementById('set-ret-deleted').value = s.deleted_news_retention_days ?? 30;
+  document.getElementById('set-ret-plaintext').value = s.plaintext_retention_days ?? 7;
+  document.getElementById('set-ret-healthlog').value = s.health_log_retention_days ?? 7;
+  // Cron
+  document.getElementById('set-cron-rescore').value = s.auto_rescore_cron_hour ?? 4;
+  document.getElementById('set-cron-digest').value = s.auto_digest_cron_hour ?? 23;
+  document.getElementById('set-cron-storylines').value = s.storylines_export_cron_hour ?? 9;
+  // Batch sizes
+  document.getElementById('set-batch-sheets').value = s.sheets_batch_size ?? 25;
+  document.getElementById('set-batch-news').value = s.news_batch_fetch_limit ?? 20;
+  document.getElementById('set-vk-age').value = s.vk_post_max_age_days ?? 7;
+  document.getElementById('set-vk-batch').value = s.vk_posts_batch_size ?? 20;
+  document.getElementById('set-tg-age').value = s.telegram_post_max_age_days ?? 7;
+  document.getElementById('set-tg-batch').value = s.telegram_messages_batch_size ?? 20;
+  // System health
+  document.getElementById('set-wd-timeout').value = s.watchdog_stale_timeout ?? 300;
+  document.getElementById('set-src-fail').value = s.source_failure_threshold ?? 5;
+  document.getElementById('set-src-cooldown').value = s.source_probe_cooldown ?? 600;
+  document.getElementById('set-zombie-crit').value = s.zombie_threads_critical ?? 5;
+  document.getElementById('set-sheets-interval').value = s.sheets_min_api_interval ?? 1.2;
+  document.getElementById('set-sheets-ttl').value = s.sheets_client_ttl ?? 3000;
+  // API status
   document.getElementById('api-status').innerHTML =
     `<p style="margin:8px 0">OpenAI API: ${s.openai_key_set ? '<span style="color:#17bf63">Connected</span>' : '<span style="color:#e0245e">Not set</span>'}</p>` +
     `<p style="margin:8px 0">Keys.so API: ${s.keyso_key_set ? '<span style="color:#17bf63">Connected</span>' : '<span style="color:#e0245e">Not set</span>'}</p>` +
@@ -1998,20 +2124,54 @@ async function loadSettings() {
     `<p style="margin:8px 0">Sheets ID: <code>${s.sheets_id || 'not set'}</code></p>`;
 }
 
+function updateScoreWeightSum() {
+  const ids = ['set-sw-internal','set-sw-viral','set-sw-keyso','set-sw-trends','set-sw-headline'];
+  const sum = ids.reduce((a,id) => a + (parseFloat(document.getElementById(id).value) || 0), 0);
+  const el = document.getElementById('sw-sum');
+  if (el) el.innerHTML = `Сумма: <b style="color:${Math.abs(sum-1)<0.01?'#17bf63':'#e0245e'}">${sum.toFixed(2)}</b>`;
+}
+
 async function saveSettings() {
+  const v = id => document.getElementById(id)?.value;
+  const n = id => parseFloat(v(id)) || 0;
+  const i = id => parseInt(v(id)) || 0;
   const payload = {
-    llm_model: document.getElementById('set-model').value,
-    keyso_region: document.getElementById('set-keyso-region').value,
-    sheets_tab: document.getElementById('set-sheets-tab').value,
-    sheets_id: document.getElementById('set-sheets-id').value,
-    sheets_tab_ready: document.getElementById('set-sheets-tab-ready').value,
-    sheets_tab_not_ready: document.getElementById('set-sheets-tab-not-ready').value,
-    openai_base_url: document.getElementById('set-openai-base-url').value,
-    auto_approve_threshold: parseInt(document.getElementById('set-auto-approve').value) || 0,
+    // General
+    llm_model: v('set-model'), keyso_region: v('set-keyso-region'),
+    sheets_tab: v('set-sheets-tab'), sheets_id: v('set-sheets-id'),
+    sheets_tab_ready: v('set-sheets-tab-ready'), sheets_tab_not_ready: v('set-sheets-tab-not-ready'),
+    openai_base_url: v('set-openai-base-url'),
+    auto_approve_threshold: i('set-auto-approve'),
     auto_rewrite_on_publish_now: document.getElementById('set-auto-rewrite').checked,
-    auto_rewrite_style: document.getElementById('set-auto-rewrite-style').value,
+    auto_rewrite_style: v('set-auto-rewrite-style'),
+    // Scoring weights
+    score_weight_internal: n('set-sw-internal'), score_weight_viral: n('set-sw-viral'),
+    score_weight_keyso: n('set-sw-keyso'), score_weight_trends: n('set-sw-trends'),
+    score_weight_headline: n('set-sw-headline'),
+    // Pipeline
+    full_auto_score_threshold: i('set-fas-threshold'), full_auto_final_threshold: i('set-faf-threshold'),
+    auto_export_threshold: i('set-ae-threshold'), auto_reject_score_threshold: i('set-ar-threshold'),
+    publish_spacing_minutes: i('set-pub-spacing'),
+    // Viral
+    viral_high_threshold: i('set-vh'), viral_medium_threshold: i('set-vm'), viral_low_threshold: i('set-vl'),
+    // LLM
+    llm_temperature: n('set-llm-temp'), llm_timeout_seconds: i('set-llm-timeout'),
+    // Retention
+    deleted_news_retention_days: i('set-ret-deleted'), plaintext_retention_days: i('set-ret-plaintext'),
+    health_log_retention_days: i('set-ret-healthlog'),
+    // Cron
+    auto_rescore_cron_hour: i('set-cron-rescore'), auto_digest_cron_hour: i('set-cron-digest'),
+    storylines_export_cron_hour: i('set-cron-storylines'),
+    // Batch
+    sheets_batch_size: i('set-batch-sheets'), news_batch_fetch_limit: i('set-batch-news'),
+    vk_post_max_age_days: i('set-vk-age'), vk_posts_batch_size: i('set-vk-batch'),
+    telegram_post_max_age_days: i('set-tg-age'), telegram_messages_batch_size: i('set-tg-batch'),
+    // Health
+    watchdog_stale_timeout: i('set-wd-timeout'), source_failure_threshold: i('set-src-fail'),
+    source_probe_cooldown: i('set-src-cooldown'), zombie_threads_critical: i('set-zombie-crit'),
+    sheets_min_api_interval: n('set-sheets-interval'), sheets_client_ttl: i('set-sheets-ttl'),
   };
-  const saJson = document.getElementById('set-google-sa').value.trim();
+  const saJson = document.getElementById('set-google-sa')?.value?.trim();
   if (saJson) payload.google_service_account_json = saJson;
   await api('/api/settings/save', payload);
   toast('Настройки сохранены (персистентно)');

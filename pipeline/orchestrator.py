@@ -18,9 +18,9 @@ from storage.database import get_unprocessed_news, update_news_status, save_anal
 
 logger = logging.getLogger(__name__)
 
-# Thresholds for full-auto pipeline
-FULL_AUTO_SCORE_THRESHOLD = 70    # internal score to send to LLM
-FULL_AUTO_FINAL_THRESHOLD = 60    # final score for rewrite
+# Thresholds for full-auto pipeline (read from config)
+FULL_AUTO_SCORE_THRESHOLD = config.FULL_AUTO_SCORE_THRESHOLD
+FULL_AUTO_FINAL_THRESHOLD = config.FULL_AUTO_FINAL_THRESHOLD
 
 
 # ─── Auto-review & scoring ───
@@ -52,7 +52,7 @@ def _auto_review_new():
         logger.info("Auto-review: %d checked, %d duplicates", reviewed, dupes)
 
         # Auto-export high-scoring news to NotReady tab in Sheets (score >= 60)
-        AUTO_EXPORT_THRESHOLD = 60
+        AUTO_EXPORT_THRESHOLD = config.AUTO_EXPORT_THRESHOLD
         try:
             high_score_items = []
             news_by_id = {n.get("id", ""): n for n in news_list}
@@ -562,7 +562,13 @@ def _calc_final_score(analysis: dict) -> int:
     except Exception:
         pass
 
-    return round(internal * 0.4 + viral * 0.2 + keyso_bonus * 0.15 + trends_bonus * 0.1 + headline * 0.15)
+    return round(
+        internal * config.SCORE_WEIGHT_INTERNAL
+        + viral * config.SCORE_WEIGHT_VIRAL
+        + keyso_bonus * config.SCORE_WEIGHT_KEYSO
+        + trends_bonus * config.SCORE_WEIGHT_TRENDS
+        + headline * config.SCORE_WEIGHT_HEADLINE
+    )
 
 
 # ─── Sheets retry ───
@@ -663,7 +669,7 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
             if analysis and analysis.get("total_score") is not None and status in ("in_review", "moderation"):
                 total_score = analysis.get("total_score", 0)
                 is_dup = status == "duplicate"
-                is_rejected = status == "rejected" or total_score < 15
+                is_rejected = status == "rejected" or total_score < config.AUTO_REJECT_SCORE_THRESHOLD
             else:
                 review_result = run_review_pipeline([news], update_status=True)
                 results = review_result.get("results", [])
@@ -682,7 +688,7 @@ def run_full_auto_pipeline(news_ids: list[str], task_ids: list[str]):
 
             if is_rejected:
                 _update_task(task_id, "skipped", {"stage": "scoring", "reason": "auto_rejected", "score": total_score})
-                _trace(news_id, "full_auto", "auto_rejected", f"total_score={total_score} < 15", s_after=total_score)
+                _trace(news_id, "full_auto", "auto_rejected", f"total_score={total_score} < {config.AUTO_REJECT_SCORE_THRESHOLD}", s_after=total_score)
                 continue
 
             # Stage 2: Score threshold
@@ -1102,7 +1108,7 @@ def generate_auto_digest():
         logger.error("Auto-digest error: %s", e)
 
 
-PUBLISH_SPACING_MINUTES = 15  # Minimum minutes between auto-publications
+PUBLISH_SPACING_MINUTES = config.PUBLISH_SPACING_MINUTES  # Minimum minutes between auto-publications
 
 
 def publish_scheduled_articles():

@@ -28,20 +28,64 @@ def get_prompts():
 def get_settings():
     import config
     return {
+        # API & LLM
         "llm_model": config.LLM_MODEL,
         "openai_base_url": getattr(config, "OPENAI_BASE_URL", ""),
+        "llm_temperature": getattr(config, "LLM_TEMPERATURE", 0.3),
+        "llm_timeout_seconds": getattr(config, "LLM_TIMEOUT_SECONDS", 45),
         "keyso_region": getattr(config, "KEYSO_REGION", "ru"),
         "regions": config.REGIONS,
+        # Google Sheets
         "sheets_id": config.GOOGLE_SHEETS_ID,
         "sheets_tab": config.SHEETS_TAB,
         "sheets_tab_ready": getattr(config, "SHEETS_TAB_READY", "Ready"),
         "sheets_tab_not_ready": getattr(config, "SHEETS_TAB_NOT_READY", "NotReady"),
+        "sheets_batch_size": getattr(config, "SHEETS_BATCH_SIZE", 25),
+        "sheets_min_api_interval": getattr(config, "SHEETS_MIN_API_INTERVAL", 1.2),
+        "sheets_client_ttl": getattr(config, "SHEETS_CLIENT_TTL", 3000),
+        # API status
         "openai_key_set": bool(config.OPENAI_API_KEY),
         "keyso_key_set": bool(config.KEYSO_API_KEY),
         "google_sa_set": bool(config.GOOGLE_SERVICE_ACCOUNT_JSON),
-        "auto_approve_threshold": getattr(config, "AUTO_APPROVE_THRESHOLD", 70),
+        # Automation
+        "auto_approve_threshold": getattr(config, "AUTO_APPROVE_THRESHOLD", 0),
         "auto_rewrite_on_publish_now": getattr(config, "AUTO_REWRITE_ON_PUBLISH_NOW", True),
         "auto_rewrite_style": getattr(config, "AUTO_REWRITE_STYLE", "news"),
+        # Scoring weights
+        "score_weight_internal": getattr(config, "SCORE_WEIGHT_INTERNAL", 0.4),
+        "score_weight_viral": getattr(config, "SCORE_WEIGHT_VIRAL", 0.2),
+        "score_weight_keyso": getattr(config, "SCORE_WEIGHT_KEYSO", 0.15),
+        "score_weight_trends": getattr(config, "SCORE_WEIGHT_TRENDS", 0.1),
+        "score_weight_headline": getattr(config, "SCORE_WEIGHT_HEADLINE", 0.15),
+        # Pipeline thresholds
+        "full_auto_score_threshold": getattr(config, "FULL_AUTO_SCORE_THRESHOLD", 70),
+        "full_auto_final_threshold": getattr(config, "FULL_AUTO_FINAL_THRESHOLD", 60),
+        "auto_export_threshold": getattr(config, "AUTO_EXPORT_THRESHOLD", 60),
+        "auto_reject_score_threshold": getattr(config, "AUTO_REJECT_SCORE_THRESHOLD", 15),
+        "publish_spacing_minutes": getattr(config, "PUBLISH_SPACING_MINUTES", 15),
+        # Viral thresholds
+        "viral_high_threshold": getattr(config, "VIRAL_HIGH_THRESHOLD", 70),
+        "viral_medium_threshold": getattr(config, "VIRAL_MEDIUM_THRESHOLD", 40),
+        "viral_low_threshold": getattr(config, "VIRAL_LOW_THRESHOLD", 20),
+        # Retention
+        "deleted_news_retention_days": getattr(config, "DELETED_NEWS_RETENTION_DAYS", 30),
+        "plaintext_retention_days": getattr(config, "PLAINTEXT_RETENTION_DAYS", 7),
+        "health_log_retention_days": getattr(config, "HEALTH_LOG_RETENTION_DAYS", 7),
+        # Cron schedule
+        "auto_rescore_cron_hour": getattr(config, "AUTO_RESCORE_CRON_HOUR", 4),
+        "auto_digest_cron_hour": getattr(config, "AUTO_DIGEST_CRON_HOUR", 23),
+        "storylines_export_cron_hour": getattr(config, "STORYLINES_EXPORT_CRON_HOUR", 9),
+        # Batch sizes
+        "news_batch_fetch_limit": getattr(config, "NEWS_BATCH_FETCH_LIMIT", 20),
+        "vk_post_max_age_days": getattr(config, "VK_POST_MAX_AGE_DAYS", 7),
+        "vk_posts_batch_size": getattr(config, "VK_POSTS_BATCH_SIZE", 20),
+        "telegram_post_max_age_days": getattr(config, "TELEGRAM_POST_MAX_AGE_DAYS", 7),
+        "telegram_messages_batch_size": getattr(config, "TELEGRAM_MESSAGES_BATCH_SIZE", 20),
+        # System health
+        "watchdog_stale_timeout": getattr(config, "WATCHDOG_STALE_TIMEOUT", 300),
+        "source_failure_threshold": getattr(config, "SOURCE_FAILURE_THRESHOLD", 5),
+        "source_probe_cooldown": getattr(config, "SOURCE_PROBE_COOLDOWN", 600),
+        "zombie_threads_critical": getattr(config, "ZOMBIE_THREADS_CRITICAL", 5),
     }
 
 
@@ -238,6 +282,67 @@ def save_settings(body, user="admin"):
         changes.append(("auto_rewrite_style", config.AUTO_REWRITE_STYLE, body["auto_rewrite_style"]))
         config.AUTO_REWRITE_STYLE = body["auto_rewrite_style"]
 
+    # Int settings (generic handler)
+    _int_settings = {
+        "full_auto_score_threshold": "FULL_AUTO_SCORE_THRESHOLD",
+        "full_auto_final_threshold": "FULL_AUTO_FINAL_THRESHOLD",
+        "auto_export_threshold": "AUTO_EXPORT_THRESHOLD",
+        "auto_reject_score_threshold": "AUTO_REJECT_SCORE_THRESHOLD",
+        "publish_spacing_minutes": "PUBLISH_SPACING_MINUTES",
+        "llm_timeout_seconds": "LLM_TIMEOUT_SECONDS",
+        "viral_high_threshold": "VIRAL_HIGH_THRESHOLD",
+        "viral_medium_threshold": "VIRAL_MEDIUM_THRESHOLD",
+        "viral_low_threshold": "VIRAL_LOW_THRESHOLD",
+        "deleted_news_retention_days": "DELETED_NEWS_RETENTION_DAYS",
+        "plaintext_retention_days": "PLAINTEXT_RETENTION_DAYS",
+        "health_log_retention_days": "HEALTH_LOG_RETENTION_DAYS",
+        "auto_rescore_cron_hour": "AUTO_RESCORE_CRON_HOUR",
+        "auto_digest_cron_hour": "AUTO_DIGEST_CRON_HOUR",
+        "storylines_export_cron_hour": "STORYLINES_EXPORT_CRON_HOUR",
+        "sheets_batch_size": "SHEETS_BATCH_SIZE",
+        "news_batch_fetch_limit": "NEWS_BATCH_FETCH_LIMIT",
+        "vk_post_max_age_days": "VK_POST_MAX_AGE_DAYS",
+        "vk_posts_batch_size": "VK_POSTS_BATCH_SIZE",
+        "telegram_post_max_age_days": "TELEGRAM_POST_MAX_AGE_DAYS",
+        "telegram_messages_batch_size": "TELEGRAM_MESSAGES_BATCH_SIZE",
+        "watchdog_stale_timeout": "WATCHDOG_STALE_TIMEOUT",
+        "source_failure_threshold": "SOURCE_FAILURE_THRESHOLD",
+        "source_probe_cooldown": "SOURCE_PROBE_COOLDOWN",
+        "zombie_threads_critical": "ZOMBIE_THREADS_CRITICAL",
+        "sheets_client_ttl": "SHEETS_CLIENT_TTL",
+    }
+    for body_key, cfg_attr in _int_settings.items():
+        if body_key in body:
+            try:
+                new_val = int(body[body_key])
+                old_val = getattr(config, cfg_attr, None)
+                if new_val != old_val:
+                    changes.append((body_key, str(old_val), str(new_val)))
+                    setattr(config, cfg_attr, new_val)
+            except (ValueError, TypeError):
+                pass
+
+    # Float settings
+    _float_settings = {
+        "llm_temperature": "LLM_TEMPERATURE",
+        "score_weight_internal": "SCORE_WEIGHT_INTERNAL",
+        "score_weight_viral": "SCORE_WEIGHT_VIRAL",
+        "score_weight_keyso": "SCORE_WEIGHT_KEYSO",
+        "score_weight_trends": "SCORE_WEIGHT_TRENDS",
+        "score_weight_headline": "SCORE_WEIGHT_HEADLINE",
+        "sheets_min_api_interval": "SHEETS_MIN_API_INTERVAL",
+    }
+    for body_key, cfg_attr in _float_settings.items():
+        if body_key in body:
+            try:
+                new_val = round(float(body[body_key]), 4)
+                old_val = getattr(config, cfg_attr, None)
+                if new_val != old_val:
+                    changes.append((body_key, str(old_val), str(new_val)))
+                    setattr(config, cfg_attr, new_val)
+            except (ValueError, TypeError):
+                pass
+
     # New: Sheets configuration
     if "sheets_id" in body and body["sheets_id"] != config.GOOGLE_SHEETS_ID:
         changes.append(("sheets_id", config.GOOGLE_SHEETS_ID, body["sheets_id"]))
@@ -272,6 +377,9 @@ def save_settings(body, user="admin"):
         "auto_rewrite_style": "AUTO_REWRITE_STYLE",
         "openai_base_url": "OPENAI_BASE_URL",
     }
+    # Add all int/float settings to persistence map
+    for body_key, cfg_attr in {**_int_settings, **_float_settings}.items():
+        setting_map[body_key] = cfg_attr
     for body_key, db_key in setting_map.items():
         if body_key in body:
             set_app_setting(db_key, str(body[body_key]))

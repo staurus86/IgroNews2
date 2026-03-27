@@ -101,8 +101,8 @@ def _call_llm_raw(prompt: str, key_index: int = 0, news_id: str = "") -> dict | 
     response = c.chat.completions.create(
         model=config.LLM_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
-        timeout=45,
+        temperature=config.LLM_TEMPERATURE,
+        timeout=config.LLM_TIMEOUT_SECONDS,
     )
     latency_ms = int((_t.time() - t0) * 1000)
     text = response.choices[0].message.content

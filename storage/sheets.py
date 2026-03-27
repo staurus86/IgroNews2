@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _client = None
 _client_created_at = 0
-_CLIENT_TTL = 3000  # refresh client every 50 min (tokens expire at 60)
+_CLIENT_TTL = config.SHEETS_CLIENT_TTL  # refresh client every 50 min (tokens expire at 60)
 
 _worksheet_cache = {}  # {tab_name: worksheet}
 _worksheet_cache_at = 0
@@ -28,7 +28,7 @@ _URL_CACHE_TTL = 600  # cache URLs for 10 min (prevent cache churn during batch 
 
 _rate_lock = threading.Lock()
 _last_api_call = 0
-_MIN_INTERVAL = 1.2  # min 1.2s between API calls (50 req/min safe)
+_MIN_INTERVAL = config.SHEETS_MIN_API_INTERVAL  # min interval between API calls (50 req/min safe)
 
 
 def _rate_limit():
@@ -596,8 +596,8 @@ def write_not_ready_batch(items: list[tuple[dict, dict]]) -> dict:
             errors += 1
             logger.error("NotReady batch row build error: %s", e)
 
-    # Write in sub-batches of 25 rows
-    BATCH_SIZE = 25
+    # Write in sub-batches
+    BATCH_SIZE = config.SHEETS_BATCH_SIZE
     written = 0
     for start in range(0, len(rows_to_write), BATCH_SIZE):
         chunk = rows_to_write[start:start + BATCH_SIZE]
