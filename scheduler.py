@@ -181,20 +181,33 @@ def start_scheduler():
     # Auto-digest: daily at 23:00 Moscow time
     scheduler.add_job(generate_auto_digest, "cron", hour=23, minute=0, id="auto_digest")
 
-    # Storylines daily export: hard schedule at 09:00 Moscow time.
-    # This job is intentionally independent from dashboard toggles so it
-    # always runs on weekdays/weekends after restarts.
+    # Storylines daily export: use dashboard settings if auto-export enabled,
+    # otherwise fall back to hardcoded 09:00 schedule.
     try:
         from api.dashboard import get_storylines_settings, export_storylines_to_sheets
-        scheduler.add_job(
-            lambda: export_storylines_to_sheets(
-                days=get_storylines_settings().get("days", 3),
-                trigger="daily_9msk",
-            ),
-            "cron", hour=9, minute=0,
-            id="storylines_daily_export_9msk", replace_existing=True,
-        )
-        logger.info("Storylines daily export scheduled: 09:00 Europe/Moscow")
+        sl_settings = get_storylines_settings()
+        if sl_settings.get("enabled"):
+            # Dashboard auto-export is configured — use its settings
+            sl_hour = sl_settings.get("hour", 9)
+            sl_minute = sl_settings.get("minute", 0)
+            sl_days = sl_settings.get("days", 3)
+            scheduler.add_job(
+                lambda: export_storylines_to_sheets(days=sl_days, trigger="auto"),
+                "cron", hour=sl_hour, minute=sl_minute,
+                id="storylines_auto_export", replace_existing=True,
+            )
+            logger.info("Storylines auto-export scheduled: %02d:%02d daily, %d days (from settings)", sl_hour, sl_minute, sl_days)
+        else:
+            # Fallback: hardcoded 09:00 MSK (06:00 UTC)
+            scheduler.add_job(
+                lambda: export_storylines_to_sheets(
+                    days=get_storylines_settings().get("days", 3),
+                    trigger="daily_fallback",
+                ),
+                "cron", hour=6, minute=0,
+                id="storylines_daily_export_9msk", replace_existing=True,
+            )
+            logger.info("Storylines daily export scheduled: 06:00 UTC (fallback)")
     except Exception as e:
         logger.warning("Storylines daily export init skipped: %s", e)
 

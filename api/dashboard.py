@@ -595,8 +595,13 @@ def _do_update_cron(scheduler, enabled: bool, hour: int, minute: int, days: int)
     if enabled:
         def _auto_export():
             logger.info("Storylines auto-export triggered (days=%d)", days)
-            export_storylines_to_sheets(days=days)
+            export_storylines_to_sheets(days=days, trigger="auto")
 
         scheduler.add_job(_auto_export, "cron", hour=hour, minute=minute,
                           id=job_id, replace_existing=True)
+        # Remove hardcoded scheduler.py cron to avoid duplicate exports
+        try:
+            scheduler.remove_job("storylines_daily_export_9msk")
+        except Exception:
+            pass
         logger.info("Storylines auto-export scheduled: %02d:%02d daily, %d days", hour, minute, days)
