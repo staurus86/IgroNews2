@@ -10,11 +10,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["DATABASE_URL"] = "sqlite:///test_flags.db"
 
 
-def _reset_db_connection():
-    """Force storage.database to create a fresh connection for the new DATABASE_URL."""
+def _reset_db(db_file):
+    """Create isolated DB for a test class."""
     import threading
     import storage.database as db_mod
+    os.environ["DATABASE_URL"] = f"sqlite:///{db_file}"
     db_mod._local = threading.local()
+    try:
+        os.remove(db_file)
+    except OSError:
+        pass
+    from storage.database import init_db
+    init_db()
 
 
 class TestFeatureFlags(unittest.TestCase):
@@ -23,15 +30,8 @@ class TestFeatureFlags(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Init test DB."""
-        os.environ["DATABASE_URL"] = "sqlite:///test_flags.db"
-        try:
-            os.remove("test_flags.db")
-        except OSError:
-            pass
-        _reset_db_connection()
-        from storage.database import init_db
+        _reset_db("test_ff_flags.db")
         from core.feature_flags import invalidate_cache
-        init_db()
         invalidate_cache()
 
     def test_default_flags_exist(self):
@@ -43,7 +43,8 @@ class TestFeatureFlags(unittest.TestCase):
         assert "api_cost_tracking_v1" in flag_ids
 
     def test_is_enabled_defaults(self):
-        from core.feature_flags import is_enabled
+        from core.feature_flags import is_enabled, invalidate_cache
+        invalidate_cache()
         # Phase 0 flags should be enabled by default
         assert is_enabled("api_cost_tracking_v1") is True
         assert is_enabled("decision_trace_v1") is True
@@ -60,12 +61,13 @@ class TestFeatureFlags(unittest.TestCase):
 
     def test_set_flag(self):
         from core.feature_flags import set_flag, is_enabled, invalidate_cache
-        set_flag("dashboard_v2", True, updated_by="test")
-        invalidate_cache()
-        assert is_enabled("dashboard_v2") is True
         set_flag("dashboard_v2", False, updated_by="test")
         invalidate_cache()
         assert is_enabled("dashboard_v2") is False
+        # Restore to True so other tests see defaults
+        set_flag("dashboard_v2", True, updated_by="test")
+        invalidate_cache()
+        assert is_enabled("dashboard_v2") is True
 
     def test_get_all_flags_structure(self):
         from core.feature_flags import get_all_flags
@@ -80,9 +82,8 @@ class TestFeatureFlags(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        """Cleanup test DB."""
         try:
-            os.remove("test_flags.db")
+            os.remove("test_ff_flags.db")
         except OSError:
             pass
 
@@ -92,10 +93,7 @@ class TestObservability(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        os.environ["DATABASE_URL"] = "sqlite:///test_flags.db"
-        _reset_db_connection()
-        from storage.database import init_db
-        init_db()
+        _reset_db("test_ff_obs.db")
 
     def test_track_api_call(self):
         from core.observability import track_api_call, get_cost_summary
@@ -134,7 +132,7 @@ class TestObservability(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         try:
-            os.remove("test_flags.db")
+            os.remove("test_ff_obs.db")
         except OSError:
             pass
 
@@ -227,10 +225,7 @@ class TestDatabaseMigrations(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        os.environ["DATABASE_URL"] = "sqlite:///test_flags.db"
-        _reset_db_connection()
-        from storage.database import init_db
-        init_db()
+        _reset_db("test_ff_migr.db")
 
     def test_new_columns_exist(self):
         """Verify Phase 0 columns were added."""
@@ -279,7 +274,7 @@ class TestDatabaseMigrations(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         try:
-            os.remove("test_flags.db")
+            os.remove("test_ff_migr.db")
         except OSError:
             pass
 
