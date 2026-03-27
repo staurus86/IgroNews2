@@ -855,13 +855,14 @@ def _save_rewrite_article(news_id: str, news: dict, rewrite: dict, style: str):
 
     try:
         cur.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description,
-            tags, style, language, original_title, original_text, source_url, status, created_at)
-            VALUES ({','.join([ph]*14)})""", (
+            feed_description, tags, style, language, original_title, original_text, source_url, status, created_at)
+            VALUES ({','.join([ph]*15)})""", (
             aid, news_id,
             rewrite.get("title", "")[:500],
             rewrite.get("text", ""),
             rewrite.get("seo_title", "")[:500],
             rewrite.get("seo_description", "")[:1000],
+            rewrite.get("feed_description", "")[:500],
             json.dumps(rewrite.get("tags", []), ensure_ascii=False),
             style, "русский",
             news.get("title", "")[:500],

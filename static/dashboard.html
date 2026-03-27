@@ -589,6 +589,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
             <div style="display:flex;gap:4px">
               <button class="btn btn-sm btn-primary" onclick="downloadSelectedDocx()" id="art-bulk-docx-btn" disabled title="DOCX">&#128196;</button>
+              <button class="btn btn-sm btn-success" onclick="downloadArticlesXlsx()" title="Скачать контент в CMS формате (XLSX)">&#128202; CMS XLSX</button>
               <button class="btn btn-sm btn-danger" onclick="deleteSelectedArticles()" id="art-bulk-del-btn" disabled title="Удалить">&#128465;</button>
             </div>
           </div>
@@ -3058,6 +3059,11 @@ async function deleteCurrentArticle() {
 function downloadArticleDocx() {
   if (!_currentArticleId) return;
   window.open('/api/articles/docx?id=' + _currentArticleId, '_blank');
+}
+
+function downloadArticlesXlsx() {
+  toast('Генерация CMS XLSX...');
+  window.location.href = '/api/articles/xlsx?status=draft';
 }
 
 function copyArticleText() {

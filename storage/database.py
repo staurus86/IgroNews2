@@ -325,6 +325,7 @@ def _init_db_impl(conn, cur):
     _add_column_if_missing(cur, "news", "deleted_at", "TEXT")
     _add_column_if_missing(cur, "articles", "is_deleted", "INTEGER DEFAULT 0")
     _add_column_if_missing(cur, "articles", "deleted_at", "TEXT")
+    _add_column_if_missing(cur, "articles", "feed_description", "TEXT DEFAULT ''")
 
     # Phase 0: new columns for explainability (nullable, safe)
     _add_column_if_missing(cur, "news_analysis", "decision_reason", "TEXT DEFAULT ''")

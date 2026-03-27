@@ -51,11 +51,12 @@ def save_article(body):
     try:
         ph = _ph()
         tags = json.dumps(body.get("tags", []), ensure_ascii=False)
-        cur.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
-            style, language, original_title, original_text, source_url, status, created_at, updated_at)
-            VALUES ({','.join([ph]*15)})""",
+        cur.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description,
+            feed_description, tags, style, language, original_title, original_text, source_url, status, created_at, updated_at)
+            VALUES ({','.join([ph]*16)})""",
             (aid, body.get("news_id", ""), body.get("title", ""), body.get("text", ""),
-             body.get("seo_title", ""), body.get("seo_description", ""), tags,
+             body.get("seo_title", ""), body.get("seo_description", ""),
+             body.get("feed_description", "")[:500], tags,
              body.get("style", ""), body.get("language", "русский"),
              body.get("original_title", ""), body.get("original_text", ""),
              body.get("source_url", ""), "draft", now, now))
@@ -311,11 +312,12 @@ def batch_rewrite(body):
                 aid = str(uuid.uuid4())[:12]
                 now = datetime.now(timezone.utc).isoformat()
                 tags = json.dumps(result.get("tags", []), ensure_ascii=False)
-                cur.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description, tags,
-                    style, language, original_title, original_text, source_url, status, created_at, updated_at)
-                    VALUES ({','.join([ph]*15)})""",
+                cur.execute(f"""INSERT INTO articles (id, news_id, title, text, seo_title, seo_description,
+                    feed_description, tags, style, language, original_title, original_text, source_url, status, created_at, updated_at)
+                    VALUES ({','.join([ph]*16)})""",
                     (aid, nid, result.get("title", ""), result.get("text", ""),
-                     result.get("seo_title", ""), result.get("seo_description", ""), tags,
+                     result.get("seo_title", ""), result.get("seo_description", ""),
+                     result.get("feed_description", "")[:500], tags,
                      style, language, title, text[:5000],
                      news.get("url", ""), "draft", now, now))
                 if not _is_postgres():
@@ -435,6 +437,105 @@ def generate_multi_output(body):
         return {"status": "error", "message": str(e)}
     finally:
         cur.close()
+
+
+def export_articles_xlsx(query_params) -> bytes:
+    """Export rewritten articles as XLSX in CMS-ready format."""
+    import io
+    import json as _json
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        ph = "%s" if _is_postgres() else "?"
+        status_filter = query_params.get("status", [None])[0]
+        style_filter = query_params.get("style", [None])[0]
+        limit = int(query_params.get("limit", ["500"])[0])
+
+        conditions = ["COALESCE(a.is_deleted, 0) = 0"]
+        params = []
+        if status_filter:
+            conditions.append(f"a.status = {ph}")
+            params.append(status_filter)
+        if style_filter:
+            conditions.append(f"a.style = {ph}")
+            params.append(style_filter)
+
+        where = "WHERE " + " AND ".join(conditions)
+
+        cur.execute(f"""
+            SELECT a.title, a.feed_description, a.seo_title, a.seo_description,
+                   a.text, a.tags, a.style, a.source_url, a.status, a.created_at,
+                   a.original_title
+            FROM articles a
+            {where}
+            ORDER BY a.created_at DESC
+            LIMIT {ph}
+        """, params + [limit])
+
+        if _is_postgres():
+            columns = [desc[0] for desc in cur.description]
+            rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+        else:
+            rows = [dict(row) for row in cur.fetchall()]
+    finally:
+        cur.close()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CMS Export"
+
+    headers = [
+        "Заголовок", "Описание для ленты", "SEO заголовок",
+        "SEO описание", "Текст полной новости", "Теги",
+        "Стиль", "URL оригинала", "Статус", "Дата создания"
+    ]
+
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="17BF63", end_color="17BF63", fill_type="solid")
+
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    for row_idx, a in enumerate(rows, 2):
+        tags = a.get("tags", "")
+        if isinstance(tags, str):
+            try:
+                tags = _json.loads(tags)
+            except Exception:
+                tags = []
+        tags_str = ", ".join(t.get("label", t.get("id", str(t))) if isinstance(t, dict) else str(t) for t in tags) if isinstance(tags, list) else str(tags)
+
+        values = [
+            a.get("title", ""),
+            a.get("feed_description", ""),
+            a.get("seo_title", ""),
+            a.get("seo_description", ""),
+            a.get("text", ""),
+            tags_str,
+            a.get("style", ""),
+            a.get("source_url", ""),
+            a.get("status", ""),
+            (a.get("created_at") or "")[:16].replace("T", " "),
+        ]
+        for col_idx, val in enumerate(values, 1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+
+    col_widths = [50, 40, 50, 60, 80, 30, 10, 40, 10, 16]
+    for i, w in enumerate(col_widths, 1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 def regenerate_field(body):

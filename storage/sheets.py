@@ -307,7 +307,7 @@ HEADERS = [
 
 HEADERS_READY = [
     "Дата", "Источник", "Оригинал заголовок", "Рерайт заголовок", "Рерайт текст",
-    "Meta Title", "Meta Description", "Теги", "Скор", "Вирал",
+    "Описание (лента)", "Meta Title", "Meta Description", "Теги", "Скор", "Вирал",
     "Вирал триггеры", "Keys.so частота", "Тренды RU", "LLM рекомендация",
     "Прогноз", "URL оригинала",
 ]
@@ -391,7 +391,7 @@ def write_ready_row(news: dict, analysis: dict, rewrite: dict) -> int | None:
     try:
         news_url = news.get("url") or ""
         if news_url:
-            existing = _get_cached_urls(ws, 16, tab_name)  # col P = URL
+            existing = _get_cached_urls(ws, 17, tab_name)  # col Q = URL
             if news_url in existing:
                 logger.info("Skipped duplicate in Ready: %s", news_url[:80])
                 return -1
@@ -416,17 +416,18 @@ def write_ready_row(news: dict, analysis: dict, rewrite: dict) -> int | None:
             news.get("title") or "",                                 # C
             rewrite.get("title") or "",                              # D
             (rewrite.get("text") or "")[:5000],                      # E
-            rewrite.get("seo_title", rewrite.get("meta_title", "")) or "",  # F
-            rewrite.get("seo_description", rewrite.get("meta_description", "")) or "",  # G
-            tags,                                                    # H
-            str(analysis.get("total_score", "") if analysis else ""),  # I
-            str(analysis.get("viral_score", "") if analysis else ""),  # J
-            _format_viral_triggers(analysis),                        # K
-            str(keyso_data.get("freq", "")),                         # L
-            str(trends_data.get("RU", "")),                          # M
-            (analysis.get("llm_recommendation") or "") if analysis else "",  # N
-            (analysis.get("llm_trend_forecast") or "") if analysis else "",  # O
-            news_url,                                                # P
+            (rewrite.get("feed_description") or "")[:500],           # F
+            rewrite.get("seo_title", rewrite.get("meta_title", "")) or "",  # G
+            rewrite.get("seo_description", rewrite.get("meta_description", "")) or "",  # H
+            tags,                                                    # I
+            str(analysis.get("total_score", "") if analysis else ""),  # J
+            str(analysis.get("viral_score", "") if analysis else ""),  # K
+            _format_viral_triggers(analysis),                        # L
+            str(keyso_data.get("freq", "")),                         # M
+            str(trends_data.get("RU", "")),                          # N
+            (analysis.get("llm_recommendation") or "") if analysis else "",  # O
+            (analysis.get("llm_trend_forecast") or "") if analysis else "",  # P
+            news_url,                                                # Q
         ]
 
         row_num = _append_row(ws, row, tab_name, news_url)

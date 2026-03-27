@@ -195,6 +195,11 @@ class AdminHandler(BaseHTTPRequestHandler):
             "/api/storylines/history": lambda: self._json(self._get_storylines_history()),
         }
 
+        # CMS-ready XLSX export of articles
+        if path == "/api/articles/xlsx":
+            self._serve_articles_xlsx()
+            return
+
         # DOCX download (GET with query param)
         if path == "/api/articles/docx":
             from urllib.parse import parse_qs
@@ -1335,6 +1340,25 @@ async function login() {
             self.wfile.write(xlsx_bytes)
         except Exception as e:
             logger.error("XLSX export error: %s", e)
+            self._json({"status": "error", "message": str(e)}, 500)
+
+    def _serve_articles_xlsx(self):
+        """Generate and serve CMS-ready XLSX export of articles."""
+        from urllib.parse import parse_qs, urlparse
+        from api.articles import export_articles_xlsx
+        try:
+            qs = parse_qs(urlparse(self.path).query)
+            xlsx_bytes = export_articles_xlsx(qs)
+            from datetime import datetime
+            fname = f"igronews_cms_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+            self.send_header("Content-Length", str(len(xlsx_bytes)))
+            self.end_headers()
+            self.wfile.write(xlsx_bytes)
+        except Exception as e:
+            logger.error("Articles XLSX export error: %s", e)
             self._json({"status": "error", "message": str(e)}, 500)
 
     def _serve_docx(self, article_id):
