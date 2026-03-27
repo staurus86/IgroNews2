@@ -152,3 +152,75 @@ SOURCES = [
     {"name": "VK:Trioskaz",     "type": "vk", "screen_name": "trioskaz",              "interval": 90},
     {"name": "VK:WotWSiberia",  "type": "vk", "screen_name": "waroftheworldssiberia", "interval": 90},
 ]
+
+
+def load_persistent_settings():
+    """Load settings from DB, overriding env defaults. Called after init_db()."""
+    try:
+        from storage.database import get_all_app_settings
+        settings = get_all_app_settings()
+        if not settings:
+            return
+
+        import config
+        # Override config values from DB if they exist
+        _str_keys = {
+            "GOOGLE_SHEETS_ID": "GOOGLE_SHEETS_ID",
+            "GOOGLE_SERVICE_ACCOUNT_JSON": "GOOGLE_SERVICE_ACCOUNT_JSON",
+            "SHEETS_TAB": "SHEETS_TAB",
+            "SHEETS_TAB_READY": "SHEETS_TAB_READY",
+            "SHEETS_TAB_NOT_READY": "SHEETS_TAB_NOT_READY",
+            "LLM_MODEL": "LLM_MODEL",
+            "KEYSO_REGION": "KEYSO_REGION",
+            "AUTO_REWRITE_STYLE": "AUTO_REWRITE_STYLE",
+            "OPENAI_API_KEY": "OPENAI_API_KEY",
+            "OPENAI_BASE_URL": "OPENAI_BASE_URL",
+        }
+        for db_key, attr in _str_keys.items():
+            if db_key in settings and settings[db_key]:
+                setattr(config, attr, settings[db_key])
+
+        # Int settings
+        for key in ("AUTO_APPROVE_THRESHOLD", "TELEGRAM_NOTIFY_THRESHOLD"):
+            if key in settings:
+                try:
+                    setattr(config, key, int(settings[key]))
+                except (ValueError, TypeError):
+                    pass
+
+        # Bool settings
+        if "AUTO_REWRITE_ON_PUBLISH_NOW" in settings:
+            setattr(config, "AUTO_REWRITE_ON_PUBLISH_NOW", settings["AUTO_REWRITE_ON_PUBLISH_NOW"].lower() == "true")
+
+        # Reload sheets client if sheets config changed
+        if any(k in settings for k in ("GOOGLE_SHEETS_ID", "GOOGLE_SERVICE_ACCOUNT_JSON")):
+            try:
+                import storage.sheets as sheets_mod
+                sheets_mod._client = None  # Force re-auth on next use
+            except Exception:
+                pass
+
+        # Load saved prompts into LLM module
+        try:
+            import apis.llm as llm
+            prompt_keys = {
+                "PROMPT_TREND_FORECAST": "PROMPT_TREND_FORECAST",
+                "PROMPT_MERGE_ANALYSIS": "PROMPT_MERGE_ANALYSIS",
+                "PROMPT_KEYSO_QUERIES": "PROMPT_KEYSO_QUERIES",
+                "PROMPT_REWRITE": "PROMPT_REWRITE",
+            }
+            for db_key, attr in prompt_keys.items():
+                if db_key in settings and settings[db_key]:
+                    setattr(llm, attr, settings[db_key])
+            if "REWRITE_STYLES" in settings:
+                import json
+                saved_styles = json.loads(settings["REWRITE_STYLES"])
+                for style_name, instructions in saved_styles.items():
+                    if style_name in llm.REWRITE_STYLES:
+                        llm.REWRITE_STYLES[style_name]["instructions"] = instructions
+        except Exception:
+            pass
+
+        logging.getLogger(__name__).info("Loaded %d persistent settings from DB", len(settings))
+    except Exception as e:
+        logging.getLogger(__name__).debug("No persistent settings loaded: %s", e)

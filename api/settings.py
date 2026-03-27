@@ -15,11 +15,13 @@ def get_sources():
 
 
 def get_prompts():
-    from apis.llm import PROMPT_TREND_FORECAST, PROMPT_MERGE_ANALYSIS, PROMPT_KEYSO_QUERIES
+    from apis.llm import PROMPT_TREND_FORECAST, PROMPT_MERGE_ANALYSIS, PROMPT_KEYSO_QUERIES, PROMPT_REWRITE, REWRITE_STYLES
     return {
         "trend_forecast": PROMPT_TREND_FORECAST,
         "merge_analysis": PROMPT_MERGE_ANALYSIS,
         "keyso_queries": PROMPT_KEYSO_QUERIES,
+        "rewrite": PROMPT_REWRITE,
+        "rewrite_styles": {k: v["instructions"] for k, v in REWRITE_STYLES.items()},
     }
 
 
@@ -27,10 +29,13 @@ def get_settings():
     import config
     return {
         "llm_model": config.LLM_MODEL,
+        "openai_base_url": getattr(config, "OPENAI_BASE_URL", ""),
         "keyso_region": getattr(config, "KEYSO_REGION", "ru"),
         "regions": config.REGIONS,
         "sheets_id": config.GOOGLE_SHEETS_ID,
         "sheets_tab": config.SHEETS_TAB,
+        "sheets_tab_ready": getattr(config, "SHEETS_TAB_READY", "Ready"),
+        "sheets_tab_not_ready": getattr(config, "SHEETS_TAB_NOT_READY", "NotReady"),
         "openai_key_set": bool(config.OPENAI_API_KEY),
         "keyso_key_set": bool(config.KEYSO_API_KEY),
         "google_sa_set": bool(config.GOOGLE_SERVICE_ACCOUNT_JSON),
@@ -176,12 +181,25 @@ def delete_source(body):
 
 def save_prompts(body):
     import apis.llm as llm
+    from storage.database import set_app_setting
     if "trend_forecast" in body:
         llm.PROMPT_TREND_FORECAST = body["trend_forecast"]
+        set_app_setting("PROMPT_TREND_FORECAST", body["trend_forecast"])
     if "merge_analysis" in body:
         llm.PROMPT_MERGE_ANALYSIS = body["merge_analysis"]
+        set_app_setting("PROMPT_MERGE_ANALYSIS", body["merge_analysis"])
     if "keyso_queries" in body:
         llm.PROMPT_KEYSO_QUERIES = body["keyso_queries"]
+        set_app_setting("PROMPT_KEYSO_QUERIES", body["keyso_queries"])
+    if "rewrite" in body:
+        llm.PROMPT_REWRITE = body["rewrite"]
+        set_app_setting("PROMPT_REWRITE", body["rewrite"])
+    if "rewrite_styles" in body and isinstance(body["rewrite_styles"], dict):
+        for style_name, instructions in body["rewrite_styles"].items():
+            if style_name in llm.REWRITE_STYLES:
+                llm.REWRITE_STYLES[style_name]["instructions"] = instructions
+        import json
+        set_app_setting("REWRITE_STYLES", json.dumps({k: v["instructions"] for k, v in llm.REWRITE_STYLES.items()}, ensure_ascii=False))
     return {"status": "ok"}
 
 
@@ -219,6 +237,46 @@ def save_settings(body, user="admin"):
     if "auto_rewrite_style" in body and body["auto_rewrite_style"] != config.AUTO_REWRITE_STYLE:
         changes.append(("auto_rewrite_style", config.AUTO_REWRITE_STYLE, body["auto_rewrite_style"]))
         config.AUTO_REWRITE_STYLE = body["auto_rewrite_style"]
+
+    # New: Sheets configuration
+    if "sheets_id" in body and body["sheets_id"] != config.GOOGLE_SHEETS_ID:
+        changes.append(("sheets_id", config.GOOGLE_SHEETS_ID, body["sheets_id"]))
+        config.GOOGLE_SHEETS_ID = body["sheets_id"]
+    if "sheets_tab_ready" in body and body["sheets_tab_ready"] != getattr(config, "SHEETS_TAB_READY", "Ready"):
+        changes.append(("sheets_tab_ready", getattr(config, "SHEETS_TAB_READY", "Ready"), body["sheets_tab_ready"]))
+        config.SHEETS_TAB_READY = body["sheets_tab_ready"]
+    if "sheets_tab_not_ready" in body and body["sheets_tab_not_ready"] != getattr(config, "SHEETS_TAB_NOT_READY", "NotReady"):
+        changes.append(("sheets_tab_not_ready", getattr(config, "SHEETS_TAB_NOT_READY", "NotReady"), body["sheets_tab_not_ready"]))
+        config.SHEETS_TAB_NOT_READY = body["sheets_tab_not_ready"]
+    if "openai_base_url" in body and body["openai_base_url"] != getattr(config, "OPENAI_BASE_URL", ""):
+        changes.append(("openai_base_url", getattr(config, "OPENAI_BASE_URL", ""), body["openai_base_url"]))
+        config.OPENAI_BASE_URL = body["openai_base_url"]
+    if "google_service_account_json" in body and body["google_service_account_json"]:
+        changes.append(("google_service_account_json", "***", "***updated***"))
+        config.GOOGLE_SERVICE_ACCOUNT_JSON = body["google_service_account_json"]
+        # Force sheets client re-auth
+        try:
+            import storage.sheets as sheets_mod
+            sheets_mod._client = None
+        except Exception:
+            pass
+
+    # Persist ALL changed settings to DB
+    from storage.database import set_app_setting
+    setting_map = {
+        "llm_model": "LLM_MODEL", "keyso_region": "KEYSO_REGION",
+        "sheets_tab": "SHEETS_TAB", "sheets_id": "GOOGLE_SHEETS_ID",
+        "sheets_tab_ready": "SHEETS_TAB_READY", "sheets_tab_not_ready": "SHEETS_TAB_NOT_READY",
+        "auto_approve_threshold": "AUTO_APPROVE_THRESHOLD",
+        "auto_rewrite_on_publish_now": "AUTO_REWRITE_ON_PUBLISH_NOW",
+        "auto_rewrite_style": "AUTO_REWRITE_STYLE",
+        "openai_base_url": "OPENAI_BASE_URL",
+    }
+    for body_key, db_key in setting_map.items():
+        if body_key in body:
+            set_app_setting(db_key, str(body[body_key]))
+    if "google_service_account_json" in body and body["google_service_account_json"]:
+        set_app_setting("GOOGLE_SERVICE_ACCOUNT_JSON", body["google_service_account_json"])
 
     # Audit log config changes
     for setting_name, old_val, new_val in changes:

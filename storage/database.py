@@ -107,6 +107,61 @@ def init_db():
     logger.info("Database initialized")
 
 
+def get_app_setting(key: str, default: str = "") -> str:
+    """Get persistent setting from DB. Returns default if not found."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        _ph = "%s" if _is_postgres() else "?"
+        cur.execute(f"SELECT value FROM app_settings WHERE key = {_ph}", (key,))
+        row = cur.fetchone()
+        if row:
+            return row[0] if _is_postgres() else row["value"]
+        return default
+    except Exception:
+        return default
+    finally:
+        cur.close()
+
+
+def set_app_setting(key: str, value: str, user: str = "admin"):
+    """Persist a setting to DB. Upserts."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        _ph = "%s" if _is_postgres() else "?"
+        if _is_postgres():
+            cur.execute(f"""
+                INSERT INTO app_settings (key, value, updated_at, updated_by)
+                VALUES ({_ph}, {_ph}, {_ph}, {_ph})
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by
+            """, (key, value, now, user))
+        else:
+            cur.execute(f"""
+                INSERT OR REPLACE INTO app_settings (key, value, updated_at, updated_by)
+                VALUES ({_ph}, {_ph}, {_ph}, {_ph})
+            """, (key, value, now, user))
+            conn.commit()
+    finally:
+        cur.close()
+
+
+def get_all_app_settings() -> dict:
+    """Get all persistent settings as a dict."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT key, value FROM app_settings")
+        if _is_postgres():
+            return {row[0]: row[1] for row in cur.fetchall()}
+        return {row["key"]: row["value"] for row in cur.fetchall()}
+    except Exception:
+        return {}
+    finally:
+        cur.close()
+
+
 def _init_db_impl(conn, cur):
     articles_sql = """
         CREATE TABLE IF NOT EXISTS articles (
@@ -329,6 +384,15 @@ def _init_db_impl(conn, cur):
             change_type TEXT DEFAULT 'manual',
             changed_by TEXT DEFAULT 'system',
             created_at TEXT NOT NULL
+        )
+    """)
+    # Persistent app settings (key-value store)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT,
+            updated_by TEXT DEFAULT 'system'
         )
     """)
     if not _is_postgres():

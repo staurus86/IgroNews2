@@ -1267,8 +1267,23 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
             </select>
           </div>
           <div class="form-group"><label>Регион Keys.so</label><input id="set-keyso-region"></div>
-          <div class="form-group"><label>Название вкладки Sheets</label><input id="set-sheets-tab"></div>
+          <div class="form-group"><label>Название вкладки Sheets (основная)</label><input id="set-sheets-tab"></div>
           <button class="btn btn-primary" onclick="saveSettings()">Сохранить</button>
+        </div>
+        <div class="card">
+          <h2>Google Sheets</h2>
+          <div class="form-group"><label>Sheets ID</label><input id="set-sheets-id" placeholder="1abc...xyz"></div>
+          <div class="form-group"><label>Вкладка Ready</label><input id="set-sheets-tab-ready" placeholder="Ready"></div>
+          <div class="form-group"><label>Вкладка NotReady</label><input id="set-sheets-tab-not-ready" placeholder="NotReady"></div>
+          <div class="form-group"><label>Service Account JSON</label>
+            <textarea id="set-google-sa" rows="4" placeholder='Вставьте JSON сервисного аккаунта или base64...' style="font-size:0.8em;font-family:monospace"></textarea>
+          </div>
+          <div class="form-group"><label>OpenAI Base URL</label><input id="set-openai-base-url" placeholder="https://openrouter.ai/api/v1"></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary" onclick="saveSettings()">Сохранить</button>
+            <button class="btn btn-secondary" onclick="testSheets()">Проверить Sheets</button>
+          </div>
+          <div id="sheets-test-result" style="color:#8899a6;font-size:0.85em;margin-top:6px"></div>
           <hr style="border-color:#38444d;margin:15px 0">
           <h3 style="margin-bottom:10px">Автоматизация</h3>
           <div class="form-group"><label>Порог авто-одобрения (0 = выкл)</label><input type="number" id="set-auto-approve" min="0" max="100" value="70"></div>
@@ -1344,6 +1359,18 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <!-- Prompts (moved from separate tab) -->
     <div class="settings-section" id="stab-prompts">
       <div class="card" style="margin-bottom:15px">
+        <h2>Промпт рерайта новостей <span style="color:#1da1f2;font-size:0.7em">(основной)</span></h2>
+        <p style="color:#657786;font-size:0.82em;margin-bottom:8px">Этот промпт используется для генерации контента. Переменные: {title}, {text}, {style_instructions}, {language}</p>
+        <textarea id="prompt-rewrite" rows="16" style="font-family:monospace;font-size:0.85em"></textarea>
+      </div>
+      <div class="card" style="margin-bottom:15px">
+        <h2>Стили рерайта</h2>
+        <p style="color:#657786;font-size:0.82em;margin-bottom:8px">Инструкции для каждого стиля (подставляются в {style_instructions})</p>
+        <div id="rewrite-styles-editor"></div>
+      </div>
+      <button class="btn btn-primary" onclick="savePrompts()" style="margin-bottom:20px">Сохранить промпты</button>
+      <hr style="border-color:#38444d">
+      <div class="card" style="margin-bottom:15px;margin-top:15px">
         <h2>Промпт прогноза трендов</h2>
         <textarea id="prompt-trend" rows="10"></textarea>
       </div>
@@ -1920,14 +1947,34 @@ async function loadPrompts() {
   document.getElementById('prompt-trend').value = p.trend_forecast || '';
   document.getElementById('prompt-merge').value = p.merge_analysis || '';
   document.getElementById('prompt-keyso').value = p.keyso_queries || '';
+  document.getElementById('prompt-rewrite').value = p.rewrite || '';
+  // Render rewrite styles editor
+  const stylesEl = document.getElementById('rewrite-styles-editor');
+  if (stylesEl && p.rewrite_styles) {
+    let html = '';
+    const styleLabels = {news:'Новость',seo:'SEO',review:'Обзор',clickbait:'Кликбейт',short:'Короткая',social:'Соцсети'};
+    for (const [key, instr] of Object.entries(p.rewrite_styles)) {
+      html += `<div style="margin-bottom:10px"><label style="font-weight:bold;color:#e1e8ed">${styleLabels[key]||key}</label><textarea id="style-${key}" rows="4" style="font-family:monospace;font-size:0.82em">${instr||''}</textarea></div>`;
+    }
+    stylesEl.innerHTML = html;
+  }
 }
 
 async function savePrompts() {
-  await api('/api/prompts/save', {
+  const payload = {
     trend_forecast: document.getElementById('prompt-trend').value,
     merge_analysis: document.getElementById('prompt-merge').value,
     keyso_queries: document.getElementById('prompt-keyso').value,
+    rewrite: document.getElementById('prompt-rewrite').value,
+  };
+  // Collect rewrite styles
+  const styles = {};
+  document.querySelectorAll('[id^="style-"]').forEach(el => {
+    const key = el.id.replace('style-', '');
+    styles[key] = el.value;
   });
+  if (Object.keys(styles).length > 0) payload.rewrite_styles = styles;
+  await api('/api/prompts/save', payload);
   toast('Промпты сохранены');
 }
 
@@ -1937,6 +1984,10 @@ async function loadSettings() {
   document.getElementById('set-model').value = s.llm_model || '';
   document.getElementById('set-keyso-region').value = s.keyso_region || '';
   document.getElementById('set-sheets-tab').value = s.sheets_tab || '';
+  document.getElementById('set-sheets-id').value = s.sheets_id || '';
+  document.getElementById('set-sheets-tab-ready').value = s.sheets_tab_ready || 'Ready';
+  document.getElementById('set-sheets-tab-not-ready').value = s.sheets_tab_not_ready || 'NotReady';
+  document.getElementById('set-openai-base-url').value = s.openai_base_url || '';
   document.getElementById('set-auto-approve').value = s.auto_approve_threshold ?? 70;
   document.getElementById('set-auto-rewrite').checked = s.auto_rewrite_on_publish_now !== false;
   document.getElementById('set-auto-rewrite-style').value = s.auto_rewrite_style || 'news';
@@ -1948,15 +1999,35 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
-  await api('/api/settings/save', {
+  const payload = {
     llm_model: document.getElementById('set-model').value,
     keyso_region: document.getElementById('set-keyso-region').value,
     sheets_tab: document.getElementById('set-sheets-tab').value,
+    sheets_id: document.getElementById('set-sheets-id').value,
+    sheets_tab_ready: document.getElementById('set-sheets-tab-ready').value,
+    sheets_tab_not_ready: document.getElementById('set-sheets-tab-not-ready').value,
+    openai_base_url: document.getElementById('set-openai-base-url').value,
     auto_approve_threshold: parseInt(document.getElementById('set-auto-approve').value) || 0,
     auto_rewrite_on_publish_now: document.getElementById('set-auto-rewrite').checked,
     auto_rewrite_style: document.getElementById('set-auto-rewrite-style').value,
-  });
-  toast('Настройки сохранены');
+  };
+  const saJson = document.getElementById('set-google-sa').value.trim();
+  if (saJson) payload.google_service_account_json = saJson;
+  await api('/api/settings/save', payload);
+  toast('Настройки сохранены (персистентно)');
+}
+
+async function testSheets() {
+  document.getElementById('sheets-test-result').textContent = 'Проверка...';
+  try {
+    const r = await api('/api/test_sheets', {});
+    document.getElementById('sheets-test-result').innerHTML =
+      r.status === 'ok'
+        ? `<span style="color:#17bf63">OK</span> — Вкладки: ${(r.worksheets||[]).join(', ')}, Строк: ${r.row_count||'?'}`
+        : `<span style="color:#e0245e">Ошибка:</span> ${r.message||JSON.stringify(r)}`;
+  } catch(e) {
+    document.getElementById('sheets-test-result').innerHTML = `<span style="color:#e0245e">Ошибка: ${e.message}</span>`;
+  }
 }
 
 // Tools

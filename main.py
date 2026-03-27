@@ -56,6 +56,10 @@ def main():
     # Инициализация БД
     init_db()
 
+    # Load persistent settings from DB (overrides env defaults)
+    from config import load_persistent_settings
+    load_persistent_settings()
+
     # Startup health check
     try:
         from storage.database import db_cursor
