@@ -238,7 +238,10 @@ def export_news_xlsx(query_params) -> bytes:
                 tags = json.loads(tags)
             except Exception:
                 tags = []
-        tags_str = ", ".join(t if isinstance(t, str) else str(t) for t in tags) if tags else ""
+        tags_str = ", ".join(
+            t.get("label", t.get("id", "")) if isinstance(t, dict) else str(t)
+            for t in tags
+        ) if tags else ""
 
         entities = n.get("entity_names", [])
         if isinstance(entities, str):
