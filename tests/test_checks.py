@@ -221,6 +221,28 @@ class TestDateParsing(unittest.TestCase):
 
 
 class TestDatabaseHelpers(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import os
+        os.environ["DATABASE_URL"] = "sqlite:///test_checks_helpers.db"
+        try:
+            os.remove("test_checks_helpers.db")
+        except OSError:
+            pass
+        # Force re-init connection with new URL
+        import storage.database as db_mod
+        db_mod._local = __import__("threading").local()
+        from storage.database import init_db
+        init_db()
+
+    @classmethod
+    def tearDownClass(cls):
+        import os
+        try:
+            os.remove("test_checks_helpers.db")
+        except OSError:
+            pass
+
     def test_db_cursor_context_manager(self):
         from storage.database import db_cursor
         with db_cursor() as cur:

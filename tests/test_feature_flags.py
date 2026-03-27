@@ -7,7 +7,14 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Force SQLite for tests
-os.environ.setdefault("DATABASE_URL", "sqlite:///test_flags.db")
+os.environ["DATABASE_URL"] = "sqlite:///test_flags.db"
+
+
+def _reset_db_connection():
+    """Force storage.database to create a fresh connection for the new DATABASE_URL."""
+    import threading
+    import storage.database as db_mod
+    db_mod._local = threading.local()
 
 
 class TestFeatureFlags(unittest.TestCase):
@@ -16,10 +23,12 @@ class TestFeatureFlags(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Init test DB."""
+        os.environ["DATABASE_URL"] = "sqlite:///test_flags.db"
         try:
             os.remove("test_flags.db")
         except OSError:
             pass
+        _reset_db_connection()
         from storage.database import init_db
         from core.feature_flags import invalidate_cache
         init_db()
@@ -83,6 +92,8 @@ class TestObservability(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        os.environ["DATABASE_URL"] = "sqlite:///test_flags.db"
+        _reset_db_connection()
         from storage.database import init_db
         init_db()
 
@@ -216,6 +227,8 @@ class TestDatabaseMigrations(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        os.environ["DATABASE_URL"] = "sqlite:///test_flags.db"
+        _reset_db_connection()
         from storage.database import init_db
         init_db()
 
