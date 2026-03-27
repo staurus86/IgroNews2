@@ -1074,6 +1074,7 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
         <button class="btn btn-sm btn-secondary" onclick="loadStorylines()">Обновить</button>
         <button class="btn btn-sm btn-success" onclick="exportStorylinesToSheets()" title="Экспорт сюжетов в Google Sheets (вкладка Сюжеты)">&#9776; В Sheets</button>
         <button class="btn btn-sm" style="background:#253341;color:#8899a6;border:1px solid #38444d" onclick="toggleSlSettings()" title="Настройки авто-экспорта">&#9881;</button>
+        <span id="sl-auto-badge" style="font-size:0.82em;color:#8899a6;margin-left:4px"></span>
       </div>
     </div>
     <!-- Auto-export settings -->
@@ -1750,7 +1751,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   if (t.dataset.tab === 'analytics') { loadAnalytics(); loadSavedDigests(); loadFunnelAnalytics(); loadPromptInsights(); }
   if (t.dataset.tab === 'queue') { loadQueueStandalone(); }
   if (t.dataset.tab === 'health') { loadHealth(); }
-  if (t.dataset.tab === 'storylines') { loadStorylines(); }
+  if (t.dataset.tab === 'storylines') { loadStorylines(); loadSlSettings(); }
   if (t.dataset.tab === 'trash') { loadTrash(); }
   if (t.dataset.tab === 'settings') { loadSettings(); loadLogs(); loadQueue(); loadViralTriggers(); }
 }));
@@ -5773,6 +5774,15 @@ async function loadSlSettings() {
     document.getElementById('sl-auto-hour').value = r.hour ?? 9;
     document.getElementById('sl-auto-minute').value = r.minute ?? 0;
     document.getElementById('sl-auto-days').value = r.days ?? 3;
+    // Update badge
+    const badge = document.getElementById('sl-auto-badge');
+    if (badge) {
+      if (r.enabled) {
+        badge.innerHTML = `<span style="color:#17bf63">&#9202; Авто: ${String(r.hour??9).padStart(2,'0')}:${String(r.minute??0).padStart(2,'0')}, ${r.days??3} дн.</span>`;
+      } else {
+        badge.innerHTML = '<span style="color:#657786">Авто-экспорт выкл</span>';
+      }
+    }
   } catch(e) {}
   // Load export history
   try {
@@ -5782,11 +5792,12 @@ async function loadSlSettings() {
       if (el) el.innerHTML = '<span style="opacity:0.5">Экспортов пока не было</span>';
       return;
     }
-    el.innerHTML = '<b>История экспортов:</b><br>' + history.slice(0, 10).map(h => {
+    el.innerHTML = '<b>Последние экспорты:</b><br>' + history.slice(0, 10).map(h => {
       const d = h.created_at ? new Date(h.created_at).toLocaleString('ru-RU') : '?';
       const icon = h.decision === 'ok' ? '&#9989;' : '&#10060;';
-      const trigger = h.trigger === 'auto' ? '&#9202; авто' : '&#9997; ручной';
-      return `<div style="padding:2px 0">${icon} ${d} — ${trigger} — ${h.reason || ''}</div>`;
+      const t = h.trigger || '';
+      const tLabel = (t === 'auto' || t === 'daily_9msk' || t === 'daily_fallback') ? '&#9202; авто' : '&#9997; ручной';
+      return `<div style="padding:2px 0">${icon} ${d} — ${tLabel} — ${h.reason || ''}</div>`;
     }).join('');
   } catch(e) {}
 }
@@ -5804,6 +5815,7 @@ async function saveSlSettings() {
     if (r.status === 'ok') {
       if (statusEl) statusEl.textContent = body.enabled ? 'Сохранено: ежедневно в ' + String(body.hour).padStart(2,'0') + ':' + String(body.minute).padStart(2,'0') : 'Авто-экспорт выключен';
       toast('Настройки сюжетов сохранены');
+      loadSlSettings(); // refresh badge
     } else {
       toast(r.message || 'Ошибка', true);
     }
