@@ -870,6 +870,25 @@ def viral_score(news: dict, precomputed_entities: list = None) -> dict:
                     score += weight
                     triggered.append({"id": tid, "label": label, "weight": weight})
 
+    # Deduplicate: keep only highest-weight trigger per category
+    _DEDUP_PREFIXES = {"scandal", "leak", "bad", "ai", "person", "speed", "live", "hw", "esports"}
+    if len(triggered) > 1:
+        best_per_cat = {}  # prefix -> best trigger
+        non_cat = []  # triggers without dedup prefix
+        for t in triggered:
+            prefix = t["id"].split("_")[0] if "_" in t["id"] else ""
+            if prefix in _DEDUP_PREFIXES:
+                if prefix not in best_per_cat or t["weight"] > best_per_cat[prefix]["weight"]:
+                    best_per_cat[prefix] = t
+            else:
+                non_cat.append(t)
+        deduped = list(best_per_cat.values()) + non_cat
+        removed_score = sum(t["weight"] for t in triggered) - sum(t["weight"] for t in deduped)
+        if removed_score > 0:
+            score -= removed_score
+            deduped.append({"id": "dedup", "label": f"Dedup (-{removed_score})", "weight": -removed_score})
+        triggered = deduped
+
     # Entity-based boost — reuse precomputed if available
     if precomputed_entities is not None:
         entities = precomputed_entities
@@ -934,5 +953,35 @@ def viral_score(news: dict, precomputed_entities: list = None) -> dict:
         level = "low"
     else:
         level = "none"
+
+    # Time-decay: fresh news gets full score, older news gets penalized
+    age_hours = -1
+    pub = news.get("published_at") or news.get("parsed_at") or ""
+    if pub:
+        try:
+            from datetime import datetime, timezone
+            if pub.endswith("Z"):
+                pub = pub[:-1] + "+00:00"
+            pub_dt = datetime.fromisoformat(pub)
+            if pub_dt.tzinfo is None:
+                pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - pub_dt).total_seconds() / 3600
+        except Exception:
+            pass
+
+    if age_hours >= 0:
+        if age_hours < 3:
+            decay = 1.0
+        elif age_hours < 12:
+            decay = 0.9
+        elif age_hours < 24:
+            decay = 0.75
+        elif age_hours < 48:
+            decay = 0.5
+        else:
+            decay = 0.3
+        score = round(score * decay)
+        if decay < 1.0:
+            triggered.append({"id": "time_decay", "label": f"Time decay ({age_hours:.0f}h, x{decay})", "weight": round(score * (decay - 1))})
 
     return {"score": score, "level": level, "triggers": triggered, "pass": score >= config.VIRAL_LOW_THRESHOLD}

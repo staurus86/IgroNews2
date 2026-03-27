@@ -63,6 +63,42 @@ HEADLINE_PATTERNS = {
         "bonus": 10,
         "label": "Urgency",
     },
+    # Russian-specific patterns
+    "leak_ru": {
+        "pattern": r'утечка|слив|рассекретили|слили',
+        "bonus": 12,
+        "label": "Утечка",
+    },
+    "scandal_ru": {
+        "pattern": r'скандал|разгром|провал|позор',
+        "bonus": 12,
+        "label": "Скандал",
+    },
+    "free_ru": {
+        "pattern": r'бесплатно|раздают|даром|free-to-play',
+        "bonus": 10,
+        "label": "Бесплатно",
+    },
+    "russian_game": {
+        "pattern": r'русск|отечественн|российск|от\s+русских',
+        "bonus": 8,
+        "label": "Русская игра",
+    },
+    "release_ru": {
+        "pattern": r'вышла|релиз|уже доступн|стартовал',
+        "bonus": 8,
+        "label": "Релиз",
+    },
+    "record_ru": {
+        "pattern": r'рекорд|побила|миллион\s+игроков|пик\s+онлайн',
+        "bonus": 10,
+        "label": "Рекорд",
+    },
+    "ban_ru": {
+        "pattern": r'забанили|заблокировали|запрет|удалили\s+из',
+        "bonus": 10,
+        "label": "Бан/Запрет",
+    },
 }
 
 # Pre-compile all patterns at import time
