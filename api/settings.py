@@ -31,8 +31,9 @@ def _mask(val: str, keep: int = 8) -> str:
         return ""
     if len(val) <= keep:
         return "*" * len(val)
-    show = max(4, keep // 2)
-    return val[:show] + "*" * (len(val) - show * 2) + val[-show:]
+    show = min(4, max(2, keep // 2))
+    mid = min(20, len(val) - show * 2)  # cap masked section to avoid UI overflow
+    return val[:show] + "*" * mid + val[-show:]
 
 
 def get_settings():

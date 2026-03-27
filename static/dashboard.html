@@ -93,7 +93,10 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
 
 /* Grid */
 .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:15px; }
-.card { background:#192734; border-radius:10px; padding:15px; transition:box-shadow .2s; }
+.grid-2 > * { min-width:0; overflow:hidden; }
+.card { background:#192734; border-radius:10px; padding:15px; transition:box-shadow .2s; overflow:hidden; word-break:break-word; }
+.card code { word-break:break-all; font-size:0.78em; }
+.card input, .card textarea, .card select { max-width:100%; box-sizing:border-box; }
 .card:hover { box-shadow:0 2px 12px rgba(0,0,0,0.2); }
 
 /* Toast */
