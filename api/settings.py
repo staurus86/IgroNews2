@@ -25,6 +25,16 @@ def get_prompts():
     }
 
 
+def _mask(val: str, keep: int = 8) -> str:
+    """Mask sensitive value, showing first and last chars."""
+    if not val:
+        return ""
+    if len(val) <= keep:
+        return "*" * len(val)
+    show = max(4, keep // 2)
+    return val[:show] + "*" * (len(val) - show * 2) + val[-show:]
+
+
 def get_settings():
     import config
     return {
@@ -43,10 +53,17 @@ def get_settings():
         "sheets_batch_size": getattr(config, "SHEETS_BATCH_SIZE", 25),
         "sheets_min_api_interval": getattr(config, "SHEETS_MIN_API_INTERVAL", 1.2),
         "sheets_client_ttl": getattr(config, "SHEETS_CLIENT_TTL", 3000),
-        # API status
+        # API keys (masked for display)
         "openai_key_set": bool(config.OPENAI_API_KEY),
+        "openai_key_masked": _mask(config.OPENAI_API_KEY),
         "keyso_key_set": bool(config.KEYSO_API_KEY),
+        "keyso_key_masked": _mask(config.KEYSO_API_KEY),
         "google_sa_set": bool(config.GOOGLE_SERVICE_ACCOUNT_JSON),
+        "google_sa_masked": _mask(config.GOOGLE_SERVICE_ACCOUNT_JSON, 20),
+        "vk_token_set": bool(getattr(config, "VK_API_TOKEN", "")),
+        "vk_token_masked": _mask(getattr(config, "VK_API_TOKEN", "")),
+        "tg_bot_token_set": bool(getattr(config, "TELEGRAM_BOT_TOKEN", "")),
+        "tg_bot_token_masked": _mask(getattr(config, "TELEGRAM_BOT_TOKEN", "")),
         # Automation
         "auto_approve_threshold": getattr(config, "AUTO_APPROVE_THRESHOLD", 0),
         "auto_rewrite_on_publish_now": getattr(config, "AUTO_REWRITE_ON_PUBLISH_NOW", True),
@@ -374,6 +391,19 @@ def save_settings(body, user="admin"):
         except Exception:
             pass
 
+    # API keys (only save non-empty values)
+    _api_keys = {
+        "openai_key": ("OPENAI_API_KEY", "openai_key"),
+        "keyso_key": ("KEYSO_API_KEY", "keyso_key"),
+        "vk_token": ("VK_API_TOKEN", "vk_token"),
+        "tg_bot_token": ("TELEGRAM_BOT_TOKEN", "tg_bot_token"),
+    }
+    for body_key, (cfg_attr, _) in _api_keys.items():
+        val = body.get(body_key, "").strip()
+        if val:
+            changes.append((body_key, "***", "***updated***"))
+            setattr(config, cfg_attr, val)
+
     # Persist ALL changed settings to DB
     from storage.database import set_app_setting
     setting_map = {
@@ -393,6 +423,11 @@ def save_settings(body, user="admin"):
             set_app_setting(db_key, str(body[body_key]))
     if "google_service_account_json" in body and body["google_service_account_json"]:
         set_app_setting("GOOGLE_SERVICE_ACCOUNT_JSON", body["google_service_account_json"])
+    # Persist API keys
+    for body_key, (cfg_attr, _) in _api_keys.items():
+        val = body.get(body_key, "").strip()
+        if val:
+            set_app_setting(cfg_attr, val)
 
     # Audit log config changes
     for setting_name, old_val, new_val in changes:

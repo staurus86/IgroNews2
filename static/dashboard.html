@@ -1308,8 +1308,14 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
           <div id="cleanup-result" style="color:#8899a6;font-size:0.85em;margin-top:6px"></div>
         </div>
         <div class="card">
-          <h2>Статус API</h2>
-          <div id="api-status"></div>
+          <h2>API ключи и подключения</h2>
+          <div id="api-status" style="margin-bottom:10px"></div>
+          <div class="form-group"><label>OpenAI API Key</label><input type="password" id="set-openai-key" placeholder="sk-..." autocomplete="off"><button class="btn btn-sm btn-secondary" onclick="this.previousElementSibling.type=this.previousElementSibling.type==='password'?'text':'password'" style="margin-left:4px">&#128065;</button></div>
+          <div class="form-group"><label>Keys.so API Key</label><input type="password" id="set-keyso-key" placeholder="Keys.so API key" autocomplete="off"><button class="btn btn-sm btn-secondary" onclick="this.previousElementSibling.type=this.previousElementSibling.type==='password'?'text':'password'" style="margin-left:4px">&#128065;</button></div>
+          <div class="form-group"><label>VK API Token</label><input type="password" id="set-vk-token" placeholder="VK service token" autocomplete="off"><button class="btn btn-sm btn-secondary" onclick="this.previousElementSibling.type=this.previousElementSibling.type==='password'?'text':'password'" style="margin-left:4px">&#128065;</button></div>
+          <div class="form-group"><label>Telegram Bot Token</label><input type="password" id="set-tg-bot-token" placeholder="123456:ABC..." autocomplete="off"><button class="btn btn-sm btn-secondary" onclick="this.previousElementSibling.type=this.previousElementSibling.type==='password'?'text':'password'" style="margin-left:4px">&#128065;</button></div>
+          <p style="color:#657786;font-size:0.78em;margin:4px 0">Заполните только те поля, которые хотите изменить. Пустые поля не перезаписываются.</p>
+          <button class="btn btn-primary btn-sm" onclick="saveSettings()">Сохранить</button>
         </div>
       </div>
       <div class="grid-2" style="margin-top:15px">
@@ -1687,8 +1693,8 @@ input:focus, textarea:focus, select:focus { outline:none; border-color:#1da1f2; 
     <input type="hidden" id="edit-old-name">
     <div class="form-group"><label>Имя</label><input id="edit-name"></div>
     <div class="form-group"><label>Type</label>
-      <select id="edit-type" onchange="document.getElementById('edit-selector-group').style.display=this.value==='html'?'block':'none'">
-        <option value="rss">RSS</option><option value="html">HTML</option>
+      <select id="edit-type" onchange="document.getElementById('edit-selector-group').style.display=['html','dtf'].includes(this.value)?'block':'none'">
+        <option value="rss">RSS</option><option value="html">HTML</option><option value="dtf">DTF</option><option value="vk">VK</option><option value="telegram">Telegram</option><option value="bluesky">Bluesky</option><option value="homepage">Homepage</option><option value="gamesradar">GamesRadar</option>
       </select>
     </div>
     <div class="form-group"><label>URL</label><input id="edit-url"></div>
@@ -1979,12 +1985,12 @@ async function loadSources() {
       <td><span class="badge" style="background:#22303c;color:#8899a6">${s.type}</span></td>
       <td>${cnt}</td>
       <td style="font-size:0.8em;color:#8899a6">${lastP}${minAgo ? '<br>'+minAgo+' назад' : ''}</td>
-      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${esc(s.url)}">${esc(s.url)}</td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${esc(s.url||s.channel||s.group_id||s.screen_name||s.handle||'')}">${esc(s.url||s.channel||s.group_id||s.screen_name||s.handle||'')}</td>
       <td>${s.interval} мин</td>
       <td style="white-space:nowrap">
-        <button class="btn btn-sm btn-primary" onclick="reparseSource('${esc(s.name)}')">Парсить</button>
-        <button class="btn btn-sm btn-secondary" onclick="openEditModal('${esc(s.name)}')">Ред.</button>
-        <button class="btn btn-sm btn-danger" onclick="deleteSource('${esc(s.name)}')">&#10005;</button>
+        <button class="btn btn-sm btn-primary" onclick="reparseSource(\`${s.name.replace(/`/g,'')}\`)">Парсить</button>
+        <button class="btn btn-sm btn-secondary" onclick="openEditModal(\`${s.name.replace(/`/g,'')}\`)">Ред.</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteSource(\`${s.name.replace(/`/g,'')}\`)">&#10005;</button>
       </td>
     </tr>`;
   }).join('');
@@ -1992,14 +1998,14 @@ async function loadSources() {
 
 function openEditModal(name) {
   const s = _sources.find(x => x.name === name);
-  if (!s) return;
+  if (!s) { toast('Источник не найден: ' + name, true); return; }
   document.getElementById('edit-old-name').value = s.name;
   document.getElementById('edit-name').value = s.name;
-  document.getElementById('edit-type').value = s.type;
-  document.getElementById('edit-url').value = s.url;
+  document.getElementById('edit-type').value = s.type || 'rss';
+  document.getElementById('edit-url').value = s.url || s.channel || s.group_id || s.screen_name || s.handle || '';
   document.getElementById('edit-interval').value = s.interval;
   document.getElementById('edit-selector').value = s.selector || '';
-  document.getElementById('edit-selector-group').style.display = s.type === 'html' ? 'block' : 'none';
+  document.getElementById('edit-selector-group').style.display = ['html','dtf'].includes(s.type) ? 'block' : 'none';
   document.getElementById('edit-modal').classList.add('show');
 }
 
@@ -2206,12 +2212,19 @@ async function loadSettings() {
   document.getElementById('set-zombie-crit').value = s.zombie_threads_critical ?? 5;
   document.getElementById('set-sheets-interval').value = s.sheets_min_api_interval ?? 1.2;
   document.getElementById('set-sheets-ttl').value = s.sheets_client_ttl ?? 3000;
-  // API status
+  // API status with masked keys
+  const _s = (set, masked) => set ? `<span style="color:#17bf63">OK</span> <code style="font-size:0.8em;color:#657786">${masked||''}</code>` : '<span style="color:#e0245e">Not set</span>';
   document.getElementById('api-status').innerHTML =
-    `<p style="margin:8px 0">OpenAI API: ${s.openai_key_set ? '<span style="color:#17bf63">Connected</span>' : '<span style="color:#e0245e">Not set</span>'}</p>` +
-    `<p style="margin:8px 0">Keys.so API: ${s.keyso_key_set ? '<span style="color:#17bf63">Connected</span>' : '<span style="color:#e0245e">Not set</span>'}</p>` +
-    `<p style="margin:8px 0">Google Sheets: ${s.google_sa_set ? '<span style="color:#17bf63">Connected</span>' : '<span style="color:#e0245e">Not set</span>'}</p>` +
-    `<p style="margin:8px 0">Sheets ID: <code>${s.sheets_id || 'not set'}</code></p>`;
+    `<p style="margin:4px 0">OpenAI: ${_s(s.openai_key_set, s.openai_key_masked)}</p>` +
+    `<p style="margin:4px 0">Keys.so: ${_s(s.keyso_key_set, s.keyso_key_masked)}</p>` +
+    `<p style="margin:4px 0">Google SA: ${_s(s.google_sa_set, s.google_sa_masked)}</p>` +
+    `<p style="margin:4px 0">VK Token: ${_s(s.vk_token_set, s.vk_token_masked)}</p>` +
+    `<p style="margin:4px 0">TG Bot: ${_s(s.tg_bot_token_set, s.tg_bot_token_masked)}</p>`;
+  // Set placeholders with masked values
+  if (s.openai_key_masked) document.getElementById('set-openai-key').placeholder = s.openai_key_masked;
+  if (s.keyso_key_masked) document.getElementById('set-keyso-key').placeholder = s.keyso_key_masked;
+  if (s.vk_token_masked) document.getElementById('set-vk-token').placeholder = s.vk_token_masked;
+  if (s.tg_bot_token_masked) document.getElementById('set-tg-bot-token').placeholder = s.tg_bot_token_masked;
 }
 
 function updateScoreWeightSum() {
@@ -2263,8 +2276,20 @@ async function saveSettings() {
   };
   const saJson = document.getElementById('set-google-sa')?.value?.trim();
   if (saJson) payload.google_service_account_json = saJson;
+  // API keys (only non-empty)
+  const openaiKey = document.getElementById('set-openai-key')?.value?.trim();
+  const keysoKey = document.getElementById('set-keyso-key')?.value?.trim();
+  const vkToken = document.getElementById('set-vk-token')?.value?.trim();
+  const tgBotToken = document.getElementById('set-tg-bot-token')?.value?.trim();
+  if (openaiKey) payload.openai_key = openaiKey;
+  if (keysoKey) payload.keyso_key = keysoKey;
+  if (vkToken) payload.vk_token = vkToken;
+  if (tgBotToken) payload.tg_bot_token = tgBotToken;
   await api('/api/settings/save', payload);
+  // Clear key fields after save
+  ['set-openai-key','set-keyso-key','set-vk-token','set-tg-bot-token'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   toast('Настройки сохранены (персистентно)');
+  loadSettings(); // refresh masked values
 }
 
 async function testSheets() {
