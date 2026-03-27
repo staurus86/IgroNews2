@@ -11,17 +11,43 @@ os.environ["DATABASE_URL"] = "sqlite:///test_flags.db"
 
 
 def _reset_db(db_file):
-    """Create isolated DB for a test class."""
+    """Create isolated DB for a test class. Fully resets all connections."""
     import threading
+    import importlib
     import storage.database as db_mod
+
+    # Close any existing connections
+    try:
+        local = getattr(db_mod, '_local', None)
+        if local:
+            conn = getattr(local, 'conn', None)
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     os.environ["DATABASE_URL"] = f"sqlite:///{db_file}"
     db_mod._local = threading.local()
+
     try:
         os.remove(db_file)
     except OSError:
         pass
-    from storage.database import init_db
-    init_db()
+
+    # Re-import to pick up new DATABASE_URL
+    importlib.reload(db_mod)
+    db_mod._local = threading.local()
+    db_mod.init_db()
+
+    # Reset feature_flags cache
+    try:
+        from core.feature_flags import invalidate_cache
+        invalidate_cache()
+    except Exception:
+        pass
 
 
 class TestFeatureFlags(unittest.TestCase):
